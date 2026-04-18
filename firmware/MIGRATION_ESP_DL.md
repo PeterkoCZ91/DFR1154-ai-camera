@@ -1,10 +1,63 @@
 # Migration Guide: FOMO → ESP-DL YOLOv11n
 
-**Status:** Planned (Tier 2 F)
-**Effort:** 2-3 days
-**Risk:** High (major refactor + dependency upgrades)
+**Status:** Attempted 2026-04-10, blocked by PlatformIO tooling (see post-mortem below)
+**Realistic effort:** 5-8 days (not 2-3 as originally estimated)
+**Risk:** High — unknown territory, no public PlatformIO+arduino+ESP-DL integration exists
 
-This guide documents the migration from Edge Impulse FOMO to Espressif's ESP-DL YOLOv11n pedestrian detection.
+This guide documents the migration from Edge Impulse FOMO to Espressif's ESP-DL YOLOv11n pedestrian detection. It was written before a concrete attempt revealed several wrong assumptions; the post-mortem at the bottom lists what actually works.
+
+---
+
+## Post-mortem — attempted spike 2026-04-10
+
+One-day spike in a sibling `Verze: 4.0.0 (ESP-DL YOLOv11n)/` working copy.
+
+**Phase 0 + 1 (success):**
+- Default `platformio/platform-espressif32` has no Linux toolchain for arduino-esp32 3.3.5 — switched to the **pioarduino fork release `55.03.35`** (= arduino-esp32 3.3.5 + ESP-IDF 5.5.1).
+- Pioarduino ships only the libs, not the framework sources — also needed `platform_packages = framework-arduinoespressif32 @ https://github.com/espressif/arduino-esp32.git#3.3.5` (otherwise `FRAMEWORK_DIR=None`).
+- v3.11.0 codebase compiled cleanly under 3.3.5.
+- Cost: RAM 32.3% → 36.7% (+14 KB), Flash 25.2% → 25.7% (+27 KB), **IRAM 100% (16384/16384, zero headroom)** — no budget left for ESP-DL's IRAM-resident helpers.
+
+**Phase 2 (hard blocker):**
+Pioarduino exposes a `custom_component_add` directive that wraps ESP-IDF Component Manager:
+
+```ini
+custom_component_add =
+    espressif/esp-dl@^3.3.0
+    espressif/pedestrian_detect@^0.3.0
+```
+
+A code audit of `~/.platformio/platforms/espressif32/builder/frameworks/` proves this is a **no-op in pure `framework = arduino`**:
+
+| File:line | Behaviour |
+|---|---|
+| `espidf.py:227-228` | Detects option, sets `flag_custom_component_add = True` |
+| `espidf.py:789-790` | Calls `handle_component_settings(add_components=flag, ...)` |
+| `espidf.py:2688` | Code path explicitly gated: `if "espidf" in $PIOFRAMEWORK and ...` |
+| `arduino.py:538` | Declares `flag_custom_component_add = False` |
+| `arduino.py:925` | Calls `handle_component_settings()` with no args → both flags False → no-op |
+| `arduino.py` | **Never** sets `flag_custom_component_add = True` anywhere |
+
+Symptom: build "succeeds" with byte-identical memory stats to Phase 1, no `[ComponentManager]` log lines, `idf_component.yml` created in `src/` but contains only `dependencies: { idf: '>=5.1' }` (custom entries dropped), no `managed_components/` directory anywhere.
+
+**Why:** ESP-IDF Component Manager only runs in `framework = espidf` (or hybrid `arduino, espidf`). In pure arduino mode the framework libs are precompiled and the component pipeline is disabled.
+
+**Required to unblock:** switch to `framework = arduino, espidf` hybrid mode — which means writing CMakeLists.txt, sdkconfig.defaults, and restructuring the build (5-8 days before any actual ESP-DL integration). GitHub code search returns **zero** results for `PedestrianDetect` in any `platformio.ini`; no one has publicly integrated ESP-DL on PlatformIO + pure Arduino.
+
+**Errata in the original guide (below):**
+- Says `esp-dl @ ^2.0.0` — actual latest on registry is **v3.3.0** (GitHub release tag is v3.2.0, registry has v3.3.0).
+- Says `pedestrian_detect ^0.3.0` from `espressif/pedestrian_detect` — component exists at registry v0.3.1. ✓
+- Says model file `esp_pedestrian_yolo11n_s8_v1.espdl` from `esp-detection/releases` — `esp-detection` repo has **no releases**, it's a Python training repo. The real model ships embedded inside the `pedestrian_detect` component itself.
+- Refactor target API in the guide is wrong. Actual API: `dl::image::sw_decode_jpeg(jpeg_img, RGB888)` → `PedestrianDetect *d = new PedestrianDetect(); auto &res = d->run(img);` returns `vector<dl::detect::result_t>` with `.score` and `.box[0..3]` (xyxy).
+
+**Required reading for a retry:**
+- `examples/pedestrian_detect/main/app_main.cpp` in `espressif/esp-dl` — real API usage.
+- `models/pedestrian_detect/pedestrian_detect.hpp` — class definition.
+- Pioarduino docs on hybrid mode (`framework = arduino, espidf`) — required path.
+
+---
+
+## Original guide (kept for reference, assumptions below are wrong in places)
 
 ## Why Migrate
 

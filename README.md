@@ -1021,7 +1021,7 @@ The device will enter AP mode for fresh configuration.
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| ESP-DL YOLOv11n pedestrian | :bulb: Planned | On-device YOLO inference replacing FOMO, see `firmware/MIGRATION_ESP_DL.md` (~2-3 day migration) |
+| ESP-DL YOLOv11n pedestrian | :warning: Attempted, blocked | One-day spike (2026-04-10) hit a PlatformIO tooling wall — `custom_component_add` is a no-op under `framework = arduino` (needs hybrid `arduino, espidf`). See `firmware/MIGRATION_ESP_DL.md` for the post-mortem. Realistic effort: 5-8 days to restructure build before any ESP-DL integration. |
 | FTP / WebDAV upload | :bulb: Planned | Auto-offload recordings to NAS |
 | Intercom (2-way audio) | :bulb: Planned | Browser → ESP speaker output |
 | Deep sleep + PIR wakeup | :bulb: Planned | Battery / solar deployment |
