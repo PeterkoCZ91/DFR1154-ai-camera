@@ -835,9 +835,9 @@ Reduces flash usage by ~395 KB and PSRAM usage by ~400 KB.
 <details>
 <summary><strong>Software limitations</strong></summary>
 
-- **`LAB_MODE true`** — bypasses HTTP auth on mutable endpoints by default. Production deployment requires manual flip.
-- **No HTTPS** — all HTTP endpoints are plain. Telegram uses TLS via `WiFiClientSecure.setInsecure()` (skips cert validation).
-- **FOMO 64×64 false positives** — small objects are inherently noisy. Mitigated by spatial filter (2+ centroids) + temporal filter (2+ frames) + ByteTrack tracker. Future: replace with ESP-DL YOLOv11n (see `MIGRATION_ESP_DL.md`).
+- **`LAB_MODE`** — defaults to `false` (HTTP Basic Auth required). Pass `-DLAB_MODE=1` at build time to bypass auth on mutable endpoints for bench testing.
+- **No HTTPS** — all HTTP endpoints are plain. Telegram uses TLS via `WiFiClientSecure.setInsecure()` (skips cert validation to fit ESP32-S3 heap).
+- **FOMO 64×64 false positives** — small objects are inherently noisy. Mitigated by spatial filter (2+ centroids) + temporal filter (2+ frames) + ByteTrack tracker. Future: replace with ESP-DL YOLOv11n (see `firmware/MIGRATION_ESP_DL.md`).
 - **AVI auto-stop** — recording stops at 45 MB or 120 s. No segmented recording yet (planned).
 - **MQTT min heap** — connection requires ~25 KB free heap; under heavy load, MQTT may disconnect.
 - **NTP required** for time-lapse and SD per-day folders — no internet = no per-day organization.
@@ -1005,7 +1005,6 @@ The device will enter AP mode for fresh configuration.
 | MR²-ByteTrack Kalman tracker | :white_check_mark: Done | Persistent IDs (`tracker.cpp`), eliminates duplicate notifications, +1 KB SRAM |
 | OV3660 HDR + DPC + 2D denoise | :white_check_mark: Done | Init-time SCCB writes (LENC, BPC/WPC auto, SDE, 2D-NR) |
 | Motion detection 4× detail | :white_check_mark: Done | SCALE_FACTOR 8→4 (UXGA: 200×150 → 400×300), grid 64×48 → 128×96 |
-| ESP-DL YOLOv11n pedestrian | :bulb: Planned | See `firmware/MIGRATION_ESP_DL.md` — replaces FOMO entirely (~2-3 day migration) |
 
 ### Other Features (done in v3.11)
 
@@ -1022,6 +1021,7 @@ The device will enter AP mode for fresh configuration.
 
 | Feature | Status | Description |
 |---------|--------|-------------|
+| ESP-DL YOLOv11n pedestrian | :bulb: Planned | On-device YOLO inference replacing FOMO, see `firmware/MIGRATION_ESP_DL.md` (~2-3 day migration) |
 | FTP / WebDAV upload | :bulb: Planned | Auto-offload recordings to NAS |
 | Intercom (2-way audio) | :bulb: Planned | Browser → ESP speaker output |
 | Deep sleep + PIR wakeup | :bulb: Planned | Battery / solar deployment |
