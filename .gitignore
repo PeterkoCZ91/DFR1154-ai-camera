@@ -1,0 +1,38 @@
+# Secrets
+config.env
+.env
+*.pem
+*.key
+
+# Build output
+.pio/
+.vscode/
+__pycache__/
+venv/
+compile_commands.json
+compile.log
+upload.log
+
+# Backup folders
+*.backup_*/
+
+# Model weights (download separately)
+*.onnx
+*.weights
+*.pt
+*.pkl
+
+# Runtime data
+*.db
+*.log
+*.log.*
+logs/
+recordings/
+screenshots/
+!docs/screenshots/
+camera_photos/
+artifacts/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,23 @@
+# Secrets & config
+config.env
+.env
+
+# Model weights (too large for git)
+*.onnx
+*.weights
+*.pt
+
+# Face recognition data
+*.pkl
+
+# Runtime data
+*.db
+*.log
+screenshots/
+venv/
+__pycache__/
+
+# Archives & backups
+archive/
+archive_unused/
+backups/
