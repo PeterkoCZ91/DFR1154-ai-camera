@@ -276,20 +276,33 @@ void recoverCamera() {
 }
 
 // Helper: Check Memory Health
+// Alert policy: 30 min boot grace (so restart cycles don't spam), 6h rate limit,
+// hysteresis of 5 KB (re-alert only if heap dropped further). Critical <30 KB
+// still restarts immediately.
 void checkMemoryHealth() {
     unsigned long freeHeap = ESP.getFreeHeap();
-    
+
     // Warning threshold: 50 KB
     if (freeHeap < 50000 && freeHeap >= 30000) {
         Serial.printf("⚠️ LOW HEAP WARNING: %u bytes free\n", freeHeap);
         static unsigned long lastLowMemAlert = 0;
-        if (millis() - lastLowMemAlert > 3600000) { // Max 1x per hour
+        static unsigned long lastAlertHeap = 0xFFFFFFFF;
+        const unsigned long ALERT_INTERVAL_MS = 6UL * 3600000UL;  // 6 h
+        const unsigned long BOOT_GRACE_MS = 30UL * 60UL * 1000UL; // 30 min
+        const unsigned long HYSTERESIS_BYTES = 5000;              // 5 KB
+
+        bool pastGrace = millis() > BOOT_GRACE_MS;
+        bool pastInterval = (millis() - lastLowMemAlert) > ALERT_INTERVAL_MS;
+        bool heapDroppedFurther = freeHeap + HYSTERESIS_BYTES <= lastAlertHeap;
+
+        if (pastGrace && (pastInterval || heapDroppedFurther)) {
             sendTelegramNotification("⚠️ Low memory: " + String(freeHeap/1024) + " KB free");
             lastLowMemAlert = millis();
+            lastAlertHeap = freeHeap;
         }
     }
-    
-    // FIXED: Critical threshold: 30 KB - immediate restart
+
+    // Critical threshold: 30 KB - immediate restart
     if (freeHeap < 30000) {
         Serial.printf("❌ CRITICAL LOW HEAP: %u bytes! Restarting ESP32...\n", freeHeap);
         sendTelegramNotification("❌ CRITICAL low memory! Restarting ESP32...\nFree: " + String(freeHeap/1024) + " KB");
@@ -299,6 +312,8 @@ void checkMemoryHealth() {
 }
 
 // Helper: Check WiFi Signal
+// Alert policy: 30 min boot grace, 6h rate limit on weak/critical alerts to
+// avoid spam during restart cycles. Latch resets when RSSI recovers >= -70.
 void checkWiFiSignal() {
     if (WiFi.status() != WL_CONNECTED) {
         strncpy(wifi_health.quality, "disconnected", sizeof(wifi_health.quality) - 1);
@@ -307,11 +322,18 @@ void checkWiFiSignal() {
 
     wifi_health.rssi = WiFi.RSSI();
     strncpy(wifi_health.quality, getWiFiQuality(wifi_health.rssi), sizeof(wifi_health.quality) - 1);
-    
-    // Alert on signal degradation
+
+    const unsigned long ALERT_INTERVAL_MS = 6UL * 3600000UL;  // 6 h
+    const unsigned long BOOT_GRACE_MS = 30UL * 60UL * 1000UL; // 30 min
+    bool pastGrace = millis() > BOOT_GRACE_MS;
+
+    // Alert on signal degradation (-75..-85 dBm)
     if (wifi_health.rssi < -75 && wifi_health.rssi >= -85) {
-        if (!wifi_health.signal_degraded) {
+        static unsigned long lastWeakAlert = 0;
+        if (pastGrace && !wifi_health.signal_degraded &&
+            (millis() - lastWeakAlert) > ALERT_INTERVAL_MS) {
             wifi_health.signal_degraded = true;
+            lastWeakAlert = millis();
             String msg = "⚠️ Weak WiFi signal!\n";
             msg += "📶 RSSI: " + String(wifi_health.rssi) + " dBm\n";
             msg += "🎯 Quality: " + String(wifi_health.quality) + "\n";
@@ -320,7 +342,7 @@ void checkWiFiSignal() {
         }
     } else if (wifi_health.rssi < -85) {
         static unsigned long lastCriticalAlert = 0;
-        if (millis() - lastCriticalAlert > 3600000) {
+        if (pastGrace && (millis() - lastCriticalAlert) > ALERT_INTERVAL_MS) {
             String msg = "❌ CRITICALLY weak WiFi signal!\n";
             msg += "📶 RSSI: " + String(wifi_health.rssi) + " dBm\n";
             msg += "🎯 Quality: " + String(wifi_health.quality) + "\n";
