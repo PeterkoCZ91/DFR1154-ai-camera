@@ -6,14 +6,16 @@
 [![Python](https://img.shields.io/badge/A12_companion-Python_3.10+-blue?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Version](https://img.shields.io/badge/Version-3.12.5-blue)]()
+[![Version](https://img.shields.io/badge/Version-3.12.6-blue)]()
 
 Firmware for the **DFRobot DFR1154 AI Camera Module** (FireBeetle 2 ESP32-S3 + OV3660 3 MP + LTR-308 lux + PDM mic). A lock-free PSRAM ring buffer feeds MJPEG streaming, RTSP, AVI recording, on-device person detection (Edge Impulse FOMO + ByteTrack) concurrently from a single camera. MQTT auto-discovery for Home Assistant, Telegram bot, time-lapse, web dashboard with live log. No cloud required.
 
 The optional `a12_system/` Python companion is part of **A12**, a multi-camera surveillance system that pairs with this firmware (and future ESP-camera modules) for YOLOv11n inference, face recognition, and sensor fusion with Home Assistant / Zigbee.
 
 > [!TIP]
-> **New in v3.12.5** — fully English UI (dashboard + settings + Telegram bot), ring-buffer ordering + reader-yield fixes, tracker `notified` flag reset, FOMO temporal counter reset on decode failure, `LAB_MODE` off by default, generic placeholder IPs everywhere, Telegram queue grown 5→16 slots with drop telemetry, SD full guard on time-lapse, motion grid bounds clamp.
+> **New in v3.12.6** — concurrency audit. MQTT mutex (PubSubClient was raced from two cores), recording mutex (`recordingTask` vs HTTP `/record-stop`), audio I2S serialization (3 readers shared one channel), audio stream buffer leak fix, person-detection no longer holds the ring-buffer slot during ~3.5 s FOMO inference (PSRAM copy + early release), atomic pending-sensor-action, per-track Telegram dedup via ByteTrack subject IDs, time-lapse SD path fix (`/sdcard/` → `/`), and `FIRMWARE_VERSION` is now a single build-flag source of truth.
+>
+> *Earlier — v3.12.5* fully English UI (dashboard + settings + Telegram bot), ring-buffer ordering + reader-yield fixes, tracker `notified` flag reset, FOMO temporal counter reset on decode failure, `LAB_MODE` off by default, generic placeholder IPs everywhere, Telegram queue grown 5→16 slots with drop telemetry, SD full guard on time-lapse, motion grid bounds clamp.
 
 ---
 
