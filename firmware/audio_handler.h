@@ -29,6 +29,12 @@ esp_err_t audioStreamHandler(httpd_req_t *req);
 // Get I2S RX channel handle for direct audio reads (recording)
 i2s_chan_handle_t getI2SRxHandle();
 
+// Thread-safe wrapper around i2s_channel_read. Multiple readers (HTTP stream,
+// recordingTask, getAudioLevel) share the same RX channel; concurrent reads
+// race on driver internals. Returns same status as i2s_channel_read.
+esp_err_t audioReadLocked(void* buf, size_t buf_size, size_t* bytes_read,
+                          TickType_t timeout);
+
 // Global variables
 extern bool audio_enabled;
 extern float current_audio_level;

@@ -11,7 +11,7 @@ void setTimelapseEnabled(bool enabled);
 bool getTimelapseEnabled();
 
 // Helper: get per-day directory path on SD (creates if needed)
-// Returns path like "/sdcard/20260409/" — also used by SD recording
+// Returns path like "/20260409" (root-relative — Arduino SD mounts at "/")
 String getPerDayDir();
 
 #else
@@ -19,6 +19,6 @@ String getPerDayDir();
 static inline void startTimelapseTask() {}
 static inline void setTimelapseEnabled(bool) {}
 static inline bool getTimelapseEnabled() { return false; }
-static inline String getPerDayDir() { return "/sdcard/"; }
+static inline String getPerDayDir() { return "/"; }
 
 #endif

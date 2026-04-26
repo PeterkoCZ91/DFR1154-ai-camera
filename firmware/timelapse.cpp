@@ -13,13 +13,15 @@ extern Config config;
 static TaskHandle_t timelapseTaskHandle = NULL;
 
 String getPerDayDir() {
+    // Arduino SD library mounts at root "/", not "/sdcard". Earlier versions
+    // emitted "/sdcard/..." which silently failed every write.
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo, 0)) {
-        return String("/sdcard/");
+        return String("/");
     }
 
-    char dirName[32];
-    snprintf(dirName, sizeof(dirName), "/sdcard/%04d%02d%02d",
+    char dirName[16];
+    snprintf(dirName, sizeof(dirName), "/%04d%02d%02d",
              timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
 
     if (!SD.exists(dirName)) {
@@ -27,7 +29,7 @@ String getPerDayDir() {
             wsLog("SD: Created directory %s", dirName);
         } else {
             Serial.printf("SD: Failed to create %s\n", dirName);
-            return String("/sdcard/");
+            return String("/");
         }
     }
 
@@ -51,8 +53,9 @@ static void timelapseTask(void* param) {
 
         if (!config.timelapse_enabled) continue;
 
-        // Check SD card is available
-        if (!SD.begin()) continue;
+        // SD is mounted once in startCameraServer(); calling SD.begin() here
+        // re-inits with the default CS pin and breaks concurrent recordings.
+        if (SD.cardSize() == 0) continue;
 
         // Skip capture if SD card is near full — avoids half-written files
         // and gives the user (or sd_max_usage_percent cleanup) a chance to

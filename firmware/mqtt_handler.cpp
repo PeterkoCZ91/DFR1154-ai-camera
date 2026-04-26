@@ -3,6 +3,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "ArduinoJson.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 extern Config config;
 
@@ -11,6 +13,20 @@ static PubSubClient mqttClient(mqttWifiClient);
 static bool mqtt_initialized = false;
 static unsigned long last_mqtt_reconnect = 0;
 static unsigned long last_status_publish = 0;
+
+// PubSubClient is not thread-safe. mqttLoop() runs from motionTask (Core 0) and
+// publish helpers fire from motionTask + personDetectionTask. Without this lock
+// the TCP write path corrupts on concurrent calls.
+static SemaphoreHandle_t mqtt_mutex = NULL;
+
+static inline bool mqttLock(TickType_t timeout = pdMS_TO_TICKS(200)) {
+    if (!mqtt_mutex) return true;
+    return xSemaphoreTake(mqtt_mutex, timeout) == pdTRUE;
+}
+
+static inline void mqttUnlock() {
+    if (mqtt_mutex) xSemaphoreGive(mqtt_mutex);
+}
 
 // HA discovery topic prefix
 static String ha_prefix = "homeassistant";
@@ -177,6 +193,14 @@ void initMQTT() {
         return;
     }
 
+    if (mqtt_mutex == NULL) {
+        mqtt_mutex = xSemaphoreCreateMutex();
+        if (!mqtt_mutex) {
+            Serial.println("MQTT: failed to create mutex, aborting init");
+            return;
+        }
+    }
+
     device_topic = "esp32cam/" + config.device_name;
 
     mqttClient.setServer(config.mqtt_server.c_str(), config.mqtt_port);
@@ -190,44 +214,66 @@ void mqttLoop() {
     if (!mqtt_initialized || !config.mqtt_enabled) return;
     if (WiFi.status() != WL_CONNECTED) return;
 
+    if (!mqttLock()) return;  // skip iteration on contention rather than block
+
     if (!mqttClient.connected()) {
         mqttReconnect();
     }
     mqttClient.loop();
 
-    // Publish status every 60 seconds
-    if (mqttClient.connected() && millis() - last_status_publish > 60000) {
-        mqttPublishStatus();
+    bool need_status = mqttClient.connected() && (millis() - last_status_publish > 60000);
+    if (need_status) {
         last_status_publish = millis();
+    }
+    mqttUnlock();
+
+    if (need_status) {
+        mqttPublishStatus();  // takes lock internally
     }
 }
 
 void mqttPublishMotion(bool detected) {
-    if (!mqtt_initialized || !mqttClient.connected()) return;
-    mqttClient.publish((device_topic + "/motion").c_str(), detected ? "ON" : "OFF");
+    if (!mqtt_initialized) return;
+    if (!mqttLock()) return;
+    if (mqttClient.connected()) {
+        mqttClient.publish((device_topic + "/motion").c_str(), detected ? "ON" : "OFF");
+    }
+    mqttUnlock();
 }
 
 void mqttPublishPerson(bool detected, float confidence) {
-    if (!mqtt_initialized || !mqttClient.connected()) return;
-    mqttClient.publish((device_topic + "/person").c_str(), detected ? "ON" : "OFF");
-    if (detected) {
-        mqttClient.publish((device_topic + "/person_confidence").c_str(), String(confidence, 2).c_str());
+    if (!mqtt_initialized) return;
+    if (!mqttLock()) return;
+    if (mqttClient.connected()) {
+        mqttClient.publish((device_topic + "/person").c_str(), detected ? "ON" : "OFF");
+        if (detected) {
+            mqttClient.publish((device_topic + "/person_confidence").c_str(), String(confidence, 2).c_str());
+        }
     }
+    mqttUnlock();
 }
 
 void mqttPublishMotionScore(int score, float percent) {
-    if (!mqtt_initialized || !mqttClient.connected()) return;
-    mqttClient.publish((device_topic + "/motion_score").c_str(), String(score).c_str());
-    mqttClient.publish((device_topic + "/motion_percent").c_str(), String(percent, 1).c_str());
+    if (!mqtt_initialized) return;
+    if (!mqttLock()) return;
+    if (mqttClient.connected()) {
+        mqttClient.publish((device_topic + "/motion_score").c_str(), String(score).c_str());
+        mqttClient.publish((device_topic + "/motion_percent").c_str(), String(percent, 1).c_str());
+    }
+    mqttUnlock();
 }
 
 void mqttPublishBrightness(uint8_t brightness) {
-    if (!mqtt_initialized || !mqttClient.connected()) return;
-    mqttClient.publish((device_topic + "/brightness").c_str(), String(brightness).c_str());
+    if (!mqtt_initialized) return;
+    if (!mqttLock()) return;
+    if (mqttClient.connected()) {
+        mqttClient.publish((device_topic + "/brightness").c_str(), String(brightness).c_str());
+    }
+    mqttUnlock();
 }
 
 void mqttPublishStatus() {
-    if (!mqtt_initialized || !mqttClient.connected()) return;
+    if (!mqtt_initialized) return;
 
     StaticJsonDocument<256> doc;
     doc["rssi"] = WiFi.RSSI();
@@ -238,5 +284,10 @@ void mqttPublishStatus() {
 
     String payload;
     serializeJson(doc, payload);
-    mqttClient.publish((device_topic + "/status").c_str(), payload.c_str());
+
+    if (!mqttLock()) return;
+    if (mqttClient.connected()) {
+        mqttClient.publish((device_topic + "/status").c_str(), payload.c_str());
+    }
+    mqttUnlock();
 }

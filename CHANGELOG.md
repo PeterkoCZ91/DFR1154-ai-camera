@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.12.6] - 2026-04-26
+
+### Fixed — Concurrency audit
+
+- **MQTT mutex** (`mqtt_handler.cpp`) — `PubSubClient` is not thread-safe; previously `mqttPublishMotion/Person/Status/Audio/StateOnline` could be called from `motionTask` (Core 0) and `loop()` (Core 1) concurrently, racing on the underlying `WiFiClient`. Added `mqtt_mutex` with 200 ms timeout and skip-on-contention so callers never block the camera path.
+- **Recording mutex** (`camera_server.cpp`) — `recordingTask` and HTTP `/record-stop` both touched `aviWriter`, `recordFile`, and the audio I2S handle without coordination. All AVI writes, the auto-stop branch (45 MB / 120 s), and the public `stopSDRecording()` now run inside `recordingMutex`. Stop path simplified to a single 2 s critical section.
+- **Audio I2S serialization** (`audio_handler.cpp/.h`) — three readers (HTTP `/stream.wav`, `recordingTask`, `getAudioLevel()`) hit the same `i2s_chan_handle_t` with no lock. Added `i2s_rx_mutex` and `audioReadLocked()` wrapper; `recordingTask` switched from raw `i2s_channel_read` to the wrapper.
+- **Audio stream buffer leak** (`audio_handler.cpp`) — `audioStreamHandler` returned without `free()` on WAV-header send failure. Added matching `free(local_stream_buf)`.
+- **`getAudioLevel()` race** (`audio_handler.cpp`) — global `audio_buffer[4096]` shared between concurrent `/audio-status` callers replaced with stack-local `int16_t buf[1024]`; ~2 KB stack, sufficient for RMS.
+- **Person detection ring-buffer hold** (`camera_capture.cpp`) — slow FOMO inference (~3.5 s) used to keep the source slot's `ref_count > 0` for the entire window, starving `captureTask` and stalling motion. Frame is now copied into a dedicated PSRAM `pdFrameCopy` buffer and the slot released *before* inference runs.
+- **Atomic pending sensor action** (`camera_capture.cpp`) — `applyPendingSensorSettings()` swapped the read+clear sequence for `__atomic_exchange_n` so concurrent settings POSTs cannot lose an action between the load and the store.
+- **Per-track Telegram dedup** (`camera_capture.cpp`) — replaced the time-only person cooldown with `objectTracker.getNextUnnotified()` + `markNotified()`. The cooldown remains as a flood guard, but the same person no longer re-alerts every minute while in view.
+- **Time-lapse SD path** (`timelapse.cpp/.h`) — `/sdcard/YYYYMMDD/` prefix replaced with `/YYYYMMDD/` (Arduino `SD.h` mounts at root). Removed redundant `SD.begin()` inside the loop; cheap `SD.cardSize() == 0` health check used instead.
+
+### Changed
+
+- **Firmware version single source of truth** (`platformio.ini`, `main.cpp`) — `FIRMWARE_VERSION` now defined as a build flag in `platformio.ini`. `main.cpp` falls back to `"unknown"` if the flag is missing. Stops the version string from drifting between source and tag.
+- **Person detection caption** (`camera_capture.cpp`) — Telegram caption rewritten to spell out the ByteTrack subject ID:
+
+  ```
+  Person detected
+  Confidence: 92%
+  Subject ID: #12 (new tracked person — not re-alerted while in view)
+  ```
+
+  Previously read `Person detected! (track #12, confidence: 92%)` which was easy to misread as an alert count.
+
+### Cleanup
+
+- **Stale duplicate headers removed** — root-level `include/config.h`, `include/board_config.h`, `include/audio_handler.h` deleted; the firmware tree's own copies under `firmware/` are the only definitions now. Prevents schema drift between the two locations.
+
+### Build profile (unchanged)
+
+- RAM 32.3 % (105 KB / 320 KB), Flash 25.0 % (1.57 MB / 6.29 MB)
+- Free heap at boot ~99 KB, PSRAM ~5 MB free
+- arduino-esp32 **3.0.0 still pinned**
+
+---
+
 ## [3.12.5] - 2026-04-18
 
 ### Added — English UI (continued)

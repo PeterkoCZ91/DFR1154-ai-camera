@@ -4,6 +4,7 @@
 #include "task_priorities.h" // Task priority definitions
 #include "motion_detection.h" // Motion Detection
 #include "person_detection.h" // Person Detection (AI FOMO)
+#include "tracker.h"          // Per-track notification dedup (objectTracker global)
 #include "config.h" // Config access
 #include "ir_control.h" // readAmbientLightSCCBSafe() for LTR-308 from captureTask
 
@@ -49,9 +50,12 @@ volatile int pendingFrameSize = -1;
 // Called from captureTask AFTER esp_camera_fb_return() when SCCB bus is free
 extern void updateCameraProfile();
 static void applyPendingSensorSettings() {
-    int action = pendingSensorAction;
+    // Atomic exchange so a second HTTP request that fires between the read
+    // and the clear is preserved (it sees PENDING_FLAG_NONE here and overwrites
+    // it for the next captureTask iteration).
+    int action = __atomic_exchange_n(&pendingSensorAction, PENDING_FLAG_NONE,
+                                     __ATOMIC_SEQ_CST);
     if (action == PENDING_FLAG_NONE) return;
-    pendingSensorAction = PENDING_FLAG_NONE;
 
     sensor_t* s = esp_camera_sensor_get();
     if (!s) return;
@@ -63,8 +67,7 @@ static void applyPendingSensorSettings() {
     } else if (action == PENDING_FLAG_FRAMESIZE) {
         // Framesize change requires DMA reconfiguration — not safe during capture.
         // Value is saved to config.json; takes effect on next reboot.
-        int fs = pendingFrameSize;
-        pendingFrameSize = -1;
+        int fs = __atomic_exchange_n(&pendingFrameSize, -1, __ATOMIC_SEQ_CST);
         Serial.printf("📷 Framesize %d saved (reboot required to apply)\n", fs);
     }
     // PENDING_FLAG_SETTINGS: individual settings already applied via sensor API
@@ -317,6 +320,15 @@ void personDetectionTask(void* p) {
     int consecutiveMisses = 0;       // how many re-checks found no person
     const int MAX_MISSES = 3;        // clear presence after this many misses
 
+    // Local PSRAM copy so we don't hold a ring buffer reader for the full
+    // ~3.5s inference window (would starve captureTask with only 3 slots).
+    uint8_t* pdFrameCopy = (uint8_t*)ps_malloc(FRAME_BUFFER_SLOT_SIZE);
+    if (!pdFrameCopy) {
+        Serial.println("❌ PD task: failed to allocate PSRAM copy buffer!");
+        vTaskDelete(NULL);
+        return;
+    }
+
     while (true) {
         // Guard: if person detection disabled at runtime, park the task
         if (!config.person_detection_enabled) {
@@ -357,16 +369,22 @@ void personDetectionTask(void* p) {
         // Acquire reader reference (skip if writer active)
         if (!acquireFrameReader(idx)) continue;
 
-        // Run person detection
-        PersonDetectionResult result = personDetector.detectFromJpeg(
-            frameBuffers[idx].data,
-            frameBuffers[idx].len,
-            frameBuffers[idx].width,
-            frameBuffers[idx].height
-        );
-
-        // Release the frame used for inference
+        // FAST: copy frame data + metadata, release ring buffer immediately
+        size_t copiedLen = frameBuffers[idx].len;
+        uint16_t copiedWidth = frameBuffers[idx].width;
+        uint16_t copiedHeight = frameBuffers[idx].height;
+        if (copiedLen > 0 && copiedLen <= FRAME_BUFFER_SLOT_SIZE) {
+            memcpy(pdFrameCopy, frameBuffers[idx].data, copiedLen);
+        } else {
+            copiedLen = 0;
+        }
         releaseFrameReader(idx);
+
+        if (copiedLen == 0) continue;
+
+        // SLOW: run inference from local copy (ring buffer is free for captureTask)
+        PersonDetectionResult result = personDetector.detectFromJpeg(
+            pdFrameCopy, copiedLen, copiedWidth, copiedHeight);
 
         // --- Person detected ---
         if (result.detected && result.confidence >= config.person_confidence_threshold) {
@@ -374,41 +392,57 @@ void personDetectionTask(void* p) {
             presenceActive = true;
 
             unsigned long now = millis();
-            if (now - lastPersonPhoto > (unsigned long)(config.person_detection_cooldown * 1000)) {
+            // Per-track dedup: only fire the photo when there's a confirmed track
+            // we have not yet notified about. The time cooldown still acts as a
+            // safety net against a flood of new tracks.
+            int unnotifiedTrackId = objectTracker.getNextUnnotified();
+            bool cooldownPassed = (now - lastPersonPhoto > (unsigned long)(config.person_detection_cooldown * 1000));
+
+            if (unnotifiedTrackId > 0 && cooldownPassed) {
                 lastPersonPhoto = now;
 
-                if (isRecheck) {
-                    Serial.printf("PD: Still present (confidence=%.1f%%, recheck, inference=%lums)\n",
-                                  result.confidence * 100, result.inference_ms);
-                } else {
-                    Serial.printf("PD: Person detected! confidence=%.1f%%, detections=%d, inference=%lums\n",
-                                  result.confidence * 100, result.num_detections, result.inference_ms);
-                }
+                Serial.printf("PD: Person detected! track_id=%d, confidence=%.1f%%, detections=%d, inference=%lums\n",
+                              unnotifiedTrackId, result.confidence * 100,
+                              result.num_detections, result.inference_ms);
 
                 // Publish person event via MQTT
                 mqttPublishPerson(true, result.confidence);
 
                 // Send Telegram photo only during active hours and if enabled
+                bool photoSent = false;
                 if (config.motion_telegram_photo && isInActiveHours()) {
                     vTaskDelay(pdMS_TO_TICKS(300));
 
                     int fresh = getLatestFrameIndex();
                     if (fresh >= 0 && acquireFrameReader(fresh)) {
-                        String caption = isRecheck
-                            ? "Person still present (confidence: " + String(result.confidence * 100, 0) + "%)"
-                            : "Person detected! (confidence: " + String(result.confidence * 100, 0) + "%)";
+                        // Caption explains the ByteTrack subject ID so users do not
+                        // mistake the "#N" for an alert count or confidence rank.
+                        String caption = "Person detected\n";
+                        caption += "Confidence: " + String(result.confidence * 100, 0) + "%\n";
+                        caption += "Subject ID: #" + String(unnotifiedTrackId) +
+                                   " (new tracked person — not re-alerted while in view)";
                         sendTelegramPhoto(frameBuffers[fresh].data, frameBuffers[fresh].len, caption);
                         releaseFrameReader(fresh);
-                        Serial.println("PD: Telegram photo sent");
+                        Serial.println("PD: Telegram photo queued");
+                        photoSent = true;
                     } else {
                         Serial.println("PD: failed to acquire fresh frame for photo");
                     }
                 } else {
                     Serial.println("PD: person confirmed (photo skipped: inactive hours or disabled)");
                 }
-            } else {
+
+                // Mark the track as notified regardless of photo outcome — we already
+                // logged the event and published MQTT; further attempts would just spam.
+                objectTracker.markNotified(unnotifiedTrackId);
+                (void)photoSent;
+            } else if (unnotifiedTrackId > 0) {
                 unsigned long remaining = (unsigned long)(config.person_detection_cooldown * 1000) - (now - lastPersonPhoto);
-                Serial.printf("PD: person confirmed, cooldown active (%lus remaining)\n", remaining / 1000);
+                Serial.printf("PD: new track #%d but cooldown active (%lus remaining)\n",
+                              unnotifiedTrackId, remaining / 1000);
+            } else if (isRecheck) {
+                Serial.printf("PD: Still present (confidence=%.1f%%, recheck, inference=%lums)\n",
+                              result.confidence * 100, result.inference_ms);
             }
         }
         // --- No person detected ---

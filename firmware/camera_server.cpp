@@ -691,11 +691,18 @@ static esp_err_t frame_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    if (!acquireFrameReader(idx)) {
-        // Writer active, brief pause then retry
-        vTaskDelay(pdMS_TO_TICKS(5));
-        idx = getLatestFrameIndex();
-        if (idx < 0 || !acquireFrameReader(idx)) {
+    // Exponential backoff retry: 5/10/20 ms — covers a captureTask write window
+    // even when motion + person are also holding readers.
+    bool acquired = acquireFrameReader(idx);
+    if (!acquired) {
+        const int retry_delays_ms[] = {5, 10, 20};
+        for (int i = 0; i < 3 && !acquired; i++) {
+            vTaskDelay(pdMS_TO_TICKS(retry_delays_ms[i]));
+            idx = getLatestFrameIndex();
+            if (idx < 0) break;
+            acquired = acquireFrameReader(idx);
+        }
+        if (!acquired) {
             httpd_resp_set_type(req, "application/json");
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "{\"error\":\"frame_busy\"}");
             return ESP_FAIL;
@@ -1722,6 +1729,9 @@ static esp_err_t ir_control_handler(httpd_req_t *req) {
 // void rtspServerTask(void *parameter) { ... }
 
 // Recording Task — AVI with interleaved MJPEG video + PCM16 audio
+// All accesses to recordingFile/aviWriter must be guarded by recordingMutex.
+// stopSDRecording can flip is_recording to false at any moment, so the task
+// re-checks it inside the mutex before each write.
 void recordingTask(void *parameter) {
     Serial.println("💾 Recording task started (AVI mode)");
     unsigned long my_last_timestamp = 0;
@@ -1743,25 +1753,66 @@ void recordingTask(void *parameter) {
     }
 
     while(true) {
-        if (is_recording) {
+        if (!is_recording) {
+            frame_write_count = 0;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
 
-            // Frame decimation: only record at configured fps
-            unsigned long now = millis();
-            unsigned long frameInterval = 1000 / config.sd_record_fps;
-            if (now - lastFrameTime < frameInterval) {
-                vTaskDelay(pdMS_TO_TICKS(5));
-                continue;
+        // Frame decimation: only record at configured fps
+        unsigned long now = millis();
+        unsigned long frameInterval = 1000 / config.sd_record_fps;
+        if (now - lastFrameTime < frameInterval) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        // Track recording start for auto-stop
+        if (frame_write_count == 0) {
+            recordingStartTime = now;
+        }
+
+        // Check for new frame in Ring Buffer — FAST copy-and-release
+        size_t copiedLen = 0;
+        if (current_frame_index >= 0) {
+            int idx = current_frame_index;
+            if (frameBuffers[idx].timestamp > my_last_timestamp) {
+                int rc = __atomic_load_n(&frameBuffers[idx].ref_count, __ATOMIC_SEQ_CST);
+                if (rc >= 0) {
+                    __atomic_fetch_add(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
+
+                    copiedLen = frameBuffers[idx].len;
+                    if (copiedLen <= FRAME_BUFFER_SLOT_SIZE) {
+                        memcpy(frameCopy, frameBuffers[idx].data, copiedLen);
+                    } else {
+                        copiedLen = 0;
+                    }
+                    my_last_timestamp = frameBuffers[idx].timestamp;
+
+                    __atomic_fetch_sub(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
+                }
             }
+        }
 
-            // Track recording start for auto-stop
-            if (frame_write_count == 0) {
-                recordingStartTime = now;
-            }
+        // Read audio chunk before taking the SD mutex so I2S blocking does not
+        // delay stopSDRecording's lock acquisition. audioReadLocked serializes
+        // I2S RX with HTTP audio stream + getAudioLevel.
+        size_t bytes_read = 0;
+        if (copiedLen > 0) {
+            esp_err_t err = audioReadLocked(audioBuf,
+                AUDIO_SAMPLES_PER_FRAME * sizeof(int16_t),
+                &bytes_read, pdMS_TO_TICKS(50));
+            if (err != ESP_OK) bytes_read = 0;
+        }
 
-            // Auto-stop: 45MB file size or 120s duration
-            if (recordingFile) {
+        // SD write under recordingMutex; auto-stop also handled here
+        if (recordingMutex && xSemaphoreTake(recordingMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+            if (is_recording && recordingFile) {
                 size_t fileSize = recordingFile.position();
-                if (fileSize > 45 * 1024 * 1024 || (now - recordingStartTime > 120000)) {
+                bool autoStop = (fileSize > 45 * 1024 * 1024) ||
+                                (now - recordingStartTime > 120000);
+
+                if (autoStop) {
                     Serial.printf("💾 AVI auto-stop: %uKB, %lus\n",
                         (unsigned)(fileSize / 1024), (now - recordingStartTime) / 1000);
                     is_recording = false;
@@ -1770,60 +1821,21 @@ void recordingTask(void *parameter) {
                     Serial.printf("💾 AVI finalized: %u video, %u audio chunks\n",
                         aviWriter.getVideoFrames(), aviWriter.getAudioChunks());
                     frame_write_count = 0;
-                    continue;
-                }
-            }
-
-            // Check for new frame in Ring Buffer — FAST copy-and-release
-            size_t copiedLen = 0;
-            if (current_frame_index >= 0) {
-                int idx = current_frame_index;
-                if (frameBuffers[idx].timestamp > my_last_timestamp) {
-                    int rc = __atomic_load_n(&frameBuffers[idx].ref_count, __ATOMIC_SEQ_CST);
-                    if (rc >= 0) {
-                        __atomic_fetch_add(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
-
-                        // FAST: Copy frame data and release ring buffer immediately
-                        copiedLen = frameBuffers[idx].len;
-                        if (copiedLen <= FRAME_BUFFER_SLOT_SIZE) {
-                            memcpy(frameCopy, frameBuffers[idx].data, copiedLen);
-                        } else {
-                            copiedLen = 0; // Too large, skip
-                        }
-                        my_last_timestamp = frameBuffers[idx].timestamp;
-
-                        __atomic_fetch_sub(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
-                        // Ring buffer slot is now FREE for captureTask
+                } else if (copiedLen > 0) {
+                    if (!aviWriter.writeVideoFrame(frameCopy, copiedLen)) {
+                        Serial.println("❌ AVI video write error!");
                     }
-                }
-            }
-
-            // SLOW: Write to SD + read audio (ring buffer already released)
-            if (copiedLen > 0 && recordingFile) {
-                if (!aviWriter.writeVideoFrame(frameCopy, copiedLen)) {
-                    Serial.println("❌ AVI video write error!");
-                }
-                frame_write_count++;
-                lastFrameTime = now;
-
-                // Read and write interleaved audio chunk
-                i2s_chan_handle_t rxh = getI2SRxHandle();
-                if (rxh != NULL) {
-                    size_t bytes_read = 0;
-                    esp_err_t err = i2s_channel_read(rxh, audioBuf,
-                        AUDIO_SAMPLES_PER_FRAME * sizeof(int16_t),
-                        &bytes_read, pdMS_TO_TICKS(50));
-                    if (err == ESP_OK && bytes_read > 0) {
+                    frame_write_count++;
+                    lastFrameTime = now;
+                    if (bytes_read > 0) {
                         aviWriter.writeAudioChunk(audioBuf, bytes_read);
                     }
                 }
             }
-
-            vTaskDelay(pdMS_TO_TICKS(5)); // Check frequently when recording
-        } else {
-            frame_write_count = 0;
-            vTaskDelay(pdMS_TO_TICKS(500)); // Sleep if not recording
+            xSemaphoreGive(recordingMutex);
         }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
@@ -2113,21 +2125,24 @@ bool startSDRecording() {
 
 void stopSDRecording() {
     if (!recordingMutex) return;
-    if (!is_recording) return;
 
-    if (xSemaphoreTake(recordingMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
-        is_recording = false;
-        xSemaphoreGive(recordingMutex);
-        // Wait for recordingTask to finish its current write
-        vTaskDelay(pdMS_TO_TICKS(200));
-        if (xSemaphoreTake(recordingMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
-            aviWriter.end();
-            recordingFile.close();
-            Serial.printf("💾 AVI recording stopped: %u frames, %u audio chunks\n",
-                aviWriter.getVideoFrames(), aviWriter.getAudioChunks());
-            xSemaphoreGive(recordingMutex);
-        }
+    // Single critical section: recordingTask checks is_recording inside the
+    // same mutex, so it cannot race with the close. 2s timeout covers worst
+    // case where recordingTask is mid-SD-write.
+    if (xSemaphoreTake(recordingMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        Serial.println("❌ stopSDRecording: mutex timeout — file may remain open!");
+        return;
     }
+
+    if (is_recording) {
+        is_recording = false;
+        aviWriter.end();
+        if (recordingFile) recordingFile.close();
+        Serial.printf("💾 AVI recording stopped: %u frames, %u audio chunks\n",
+            aviWriter.getVideoFrames(), aviWriter.getAudioChunks());
+    }
+
+    xSemaphoreGive(recordingMutex);
 }
 
 // --- SD Download Handler ---

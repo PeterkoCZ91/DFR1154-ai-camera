@@ -10,17 +10,37 @@
 #include <math.h>
 #include <lwip/sockets.h>
 #include <driver/i2s_pdm.h> // New Driver for Core 3.x
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // Global variables
 bool audio_enabled = false;
 float current_audio_level = 0.0;
 unsigned long last_audio_detection = 0;
 
-static int16_t audio_buffer[AUDIO_BUFFER_SIZE];
 // audio_stream_buffer moved to local allocation in audioStreamHandler for thread safety
+// audio_buffer used to be global; getAudioLevel() now uses a stack-local buffer
+// so concurrent /audio-status calls and audioTask cannot corrupt each other.
 
 // I2S Channel Handle (Core 3.x)
 static i2s_chan_handle_t rx_handle = NULL;
+
+// Single-reader gate for the I2S RX channel. The audio stream HTTP handler,
+// recordingTask, and the optional audioTask/getAudioLevel all read from the
+// same channel; without this lock i2s_channel_read internals race.
+static SemaphoreHandle_t i2s_rx_mutex = NULL;
+
+esp_err_t audioReadLocked(void* buf, size_t buf_size, size_t* bytes_read,
+                          TickType_t timeout) {
+    if (!rx_handle) return ESP_ERR_INVALID_STATE;
+    if (i2s_rx_mutex && xSemaphoreTake(i2s_rx_mutex, timeout) != pdTRUE) {
+        if (bytes_read) *bytes_read = 0;
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t res = i2s_channel_read(rx_handle, buf, buf_size, bytes_read, timeout);
+    if (i2s_rx_mutex) xSemaphoreGive(i2s_rx_mutex);
+    return res;
+}
 
 // WAV Header Structure
 typedef struct {
@@ -66,6 +86,14 @@ esp_err_t sendWavHeader(httpd_req_t *req) {
  */
 bool initAudio() {
     Serial.println("🎤 Initializing I2S PDM Microphone (Core 3.x)...");
+
+    if (i2s_rx_mutex == NULL) {
+        i2s_rx_mutex = xSemaphoreCreateMutex();
+        if (!i2s_rx_mutex) {
+            Serial.println("❌ Failed to create I2S RX mutex");
+            return false;
+        }
+    }
 
     // 1. Create I2S Channel
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
@@ -150,14 +178,15 @@ esp_err_t audioStreamHandler(httpd_req_t *req) {
     res = sendWavHeader(req);
     if (res != ESP_OK) {
         Serial.println("❌ Failed to send WAV header");
+        free(local_stream_buf);
         return res;
     }
 
     // Stream loop
     size_t stream_buf_bytes = AUDIO_STREAM_BUFFER_SIZE * sizeof(int16_t);
     while (true) {
-        // Read from I2S Channel (New API)
-        esp_err_t result = i2s_channel_read(rx_handle, local_stream_buf, stream_buf_bytes, &bytes_read, pdMS_TO_TICKS(1000));
+        // Read from I2S Channel via shared mutex (other readers: recording, level)
+        esp_err_t result = audioReadLocked(local_stream_buf, stream_buf_bytes, &bytes_read, pdMS_TO_TICKS(1000));
 
         if (result != ESP_OK) {
             Serial.printf("❌ I2S read error: %d\n", result);
@@ -194,9 +223,13 @@ i2s_chan_handle_t getI2SRxHandle() {
 float getAudioLevel() {
     if (!audio_enabled || rx_handle == NULL) return 0.0;
 
+    // Stack-local buffer so concurrent /audio-status calls do not stomp on
+    // each other. 1024 samples (2 KB) is enough for an RMS estimate and keeps
+    // the HTTP handler stack budget comfortable.
+    const size_t kLevelSamples = 1024;
+    int16_t buf[kLevelSamples];
     size_t bytes_read = 0;
-    // Non-blocking read or short timeout
-    esp_err_t result = i2s_channel_read(rx_handle, audio_buffer, sizeof(audio_buffer), &bytes_read, pdMS_TO_TICKS(100));
+    esp_err_t result = audioReadLocked(buf, sizeof(buf), &bytes_read, pdMS_TO_TICKS(100));
 
     if (result != ESP_OK || bytes_read == 0) {
         return 0.0;
@@ -208,7 +241,7 @@ float getAudioLevel() {
     long long sum_squares = 0; // Use long long to prevent overflow
 
     for (int i = 0; i < samples; i++) {
-        int16_t sample = audio_buffer[i];
+        int16_t sample = buf[i];
         sum_squares += sample * sample;
     }
 

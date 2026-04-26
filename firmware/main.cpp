@@ -55,9 +55,11 @@ extern void stopSDRecording();
 // =============================================================================
 
 // --- VERZE FIRMWARU ---
-// Hardcoded firmware version used in notifications.
-// Avoids the stale-version issue when reading from config.json.
-#define FIRMWARE_VERSION "3.12.5 (English UI: settings page + WiFi portal)"
+// FIRMWARE_VERSION is injected via build_flags in platformio.ini so the
+// reported version stays in sync with the build that produced the binary.
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "unknown"
+#endif
 // --------------------
 
 // Global config instance
