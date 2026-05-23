@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# a12 — CLI wrapper for the A12 companion system
+# Make executable: chmod +x a12_system/tools/a12
+# Can be called from any directory.
+
+set -euo pipefail
+
+# Resolve a12_system/ directory relative to this script's location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+A12_SYSTEM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+A12_DATA_DIR="${A12_DATA_DIR:-/opt/a12-data}"
+COMPOSE_PROJECT="a12_system_v2"
+CONTAINER="a12-system-v2"
+
+cmd="${1:-help}"
+
+case "$cmd" in
+  status)
+    docker compose -p "${COMPOSE_PROJECT}" ps
+    echo ""
+    docker stats "${CONTAINER}" --no-stream
+    ;;
+
+  logs)
+    N="${2:-50}"
+    docker logs --tail="${N}" -f "${CONTAINER}"
+    ;;
+
+  restart)
+    docker compose -p "${COMPOSE_PROJECT}" restart a12
+    ;;
+
+  build)
+    docker compose -p "${COMPOSE_PROJECT}" build
+    ;;
+
+  up)
+    docker compose -p "${COMPOSE_PROJECT}" up -d
+    ;;
+
+  down)
+    docker compose -p "${COMPOSE_PROJECT}" down
+    ;;
+
+  events)
+    N="${2:-20}"
+    DB="${A12_DATA_DIR}/events.db"
+    sqlite3 "${DB}" \
+      "SELECT id, timestamp, type, label, score FROM events ORDER BY id DESC LIMIT ${N};" \
+      2>/dev/null || { echo "Cannot open ${DB}"; exit 1; }
+    ;;
+
+  tail)
+    tail -f "${A12_DATA_DIR}/a12.log"
+    ;;
+
+  enroll)
+    shift
+    python3 "${A12_SYSTEM_DIR}/tools/enroll_faces.py" "$@"
+    ;;
+
+  help|--help|-h)
+    cat <<'EOF'
+Usage: a12 <command> [args]
+
+Commands:
+  status          Show container status and live resource stats
+  logs [N]        Stream last N lines of container logs (default: 50)
+  restart         Restart the a12 service inside the compose project
+  build           Build (or rebuild) the Docker image
+  up              Start the compose stack in detached mode
+  down            Stop and remove the compose stack
+  events [N]      Query last N events from events.db (default: 20)
+  tail            Follow the a12.log file
+  enroll [args]   Run enroll_faces.py with the given arguments
+  help            Show this help text
+EOF
+    ;;
+
+  *)
+    echo "Unknown command: ${cmd}"
+    echo "Run 'a12 help' for a list of available commands."
+    exit 1
+    ;;
+esac

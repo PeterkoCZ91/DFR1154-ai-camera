@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+
+venv/
+.venv/
+
+screenshots/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.log.*
+*.out
+stats.json
+
+config.env
+known_faces.pkl

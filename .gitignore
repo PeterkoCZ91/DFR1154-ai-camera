@@ -1,0 +1,48 @@
+# Secrets
+config.env
+.env
+*.pem
+*.key
+
+# Build output
+.pio/
+.vscode/
+__pycache__/
+venv/
+compile_commands.json
+compile.log
+upload.log
+
+# Backup folders
+*.backup_*/
+
+# Model weights (download separately)
+*.onnx
+*.weights
+*.pt
+*.pkl
+
+# Runtime data
+*.db
+*.log
+*.log.*
+logs/
+recordings/
+screenshots/
+!docs/screenshots/
+camera_photos/
+artifacts/
+
+# OS
+.DS_Store
+Thumbs.db
+.claude/
+
+# Local-only development context and secrets
+LOCAL_*.md
+*_LOCAL.md
+.local/
+
+# Local debug/crash reports (contain device IPs, session-specific data)
+*_crash_report.md
+telegram_crash_report.md

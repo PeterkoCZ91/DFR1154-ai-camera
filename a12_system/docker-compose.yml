@@ -1,0 +1,41 @@
+services:
+  a12:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: a12-system-v2:latest
+    container_name: a12-system-v2
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    cpus: "1.0"
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 64
+    working_dir: /app
+    env_file:
+      - ${A12_DATA_DIR}/config.env
+    environment:
+      A12_CONFIG_DIR: /data
+      A12_DATA_DIR: /data
+      A12_RUNTIME: docker
+      A12_RESOURCE_LIMIT: "1 CPU / 1.5 GB RAM"
+      A12_CV_THREADS: "1"
+      LOG_LEVEL: INFO
+      TZ: Europe/Prague
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      OPENCV_FOR_THREADS_NUM: "1"
+    volumes:
+      - type: bind
+        source: ${A12_DATA_DIR}
+        target: /data
+    command: ["python", "-m", "A12_System_v2"]
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
