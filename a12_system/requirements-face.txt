@@ -1,0 +1,4 @@
+# Optional: face recognition support (requires dlib compilation, ~20 min on ARM)
+# Install inside the container: pip install -r requirements-face.txt
+# Then set FACE_RECOGNITION_ENABLED=true in config.env
+face_recognition>=1.3,<2
