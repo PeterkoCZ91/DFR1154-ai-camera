@@ -1,0 +1,19 @@
+{
+  "face_recognition": {
+    "enabled": false,
+    "known_faces_paths": [
+      "known_faces.pkl"
+    ],
+    "whitelisted_names": [
+      "Person1"
+    ]
+  },
+  "ha_monitored_sensors": [
+    "binary_sensor.venkovni_senzor"
+  ],
+  "security": {
+    "mode": "MONITOR",
+    "require_sensor_confirmation": false,
+    "sensor_fusion_window_seconds": 10.0
+  }
+}
