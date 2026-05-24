@@ -41,6 +41,10 @@ class DetectionPipeline:
         self.shared_state = shared_state
         self.status_monitor = status_monitor
         self.running = True
+        self.camera_id = str(runtime_config.get("camera_id", "esp32_cam")).strip() or "esp32_cam"
+        self.camera_name = str(runtime_config.get("camera_name", self.camera_id)).strip() or self.camera_id
+        self.telegram_label = str(runtime_config.get("telegram.camera_label", self.camera_name)).strip()
+        self.log_prefix = f"[{self.camera_id}:{self.camera_name}]"
 
         # Frame buffer for GIF/MP4 creation. Keep it small and PIR-gated:
         # full-resolution decoded camera frames are too expensive to retain.
@@ -139,19 +143,28 @@ class DetectionPipeline:
         )
 
         # Async notification worker
-        self.notification_queue: queue.Queue = queue.Queue()
+        queue_maxsize = max(1, int(runtime_config.get("notification_queue_maxsize", 10)))
+        self.notification_queue: queue.Queue = queue.Queue(maxsize=queue_maxsize)
         self._notify_thread = threading.Thread(target=self._notification_worker, daemon=True)
         self._notify_thread.start()
 
+    def _telegram_message(self, message: str) -> str:
+        if self.telegram_label:
+            return f"{self.telegram_label}: {message}"
+        return message
+
+    def _media_name(self, label: str, timestamp: str, suffix: str) -> str:
+        return f"{self.camera_id}_{label}_{timestamp}{suffix}"
+
     def _send_recovery_snapshot(self, frame) -> None:
         try:
-            tmp_path = os.path.join(self.screenshot_folder, "_recovery.jpg")
+            tmp_path = os.path.join(self.screenshot_folder, f"{self.camera_id}_recovery.jpg")
             cv2.imwrite(tmp_path, frame)
             self.notifier.send_telegram(
-                "Camera view after recovery:", media_path=tmp_path, bypass_cooldown=True
+                self._telegram_message("Camera view after recovery:"), media_path=tmp_path, bypass_cooldown=True
             )
         except Exception as e:
-            logging.warning(f"Recovery snapshot failed: {e}")
+            logging.warning(f"{self.log_prefix} Recovery snapshot failed: {e}")
 
     def process_frame(self, frame) -> None:
         """Main per-frame processing callback."""
@@ -176,7 +189,7 @@ class DetectionPipeline:
             pipeline_state = self.shared_state.get("pipeline_state", "unknown")
             decode_fps = int(self.shared_state.get("stream_decode_fps", 0))
             logging.info(
-                f"Stream active | state={pipeline_state} | FPS: {fps:.1f} "
+                f"{self.log_prefix} Stream active | state={pipeline_state} | FPS: {fps:.1f} "
                 f"| target_decode_fps={decode_fps} | Frames: {self.frame_count} "
                 f"| buffer={len(self.frame_buffer)} | queue={self.notification_queue.qsize()} "
                 f"| RSSI: {rssi}dBm"
@@ -197,7 +210,10 @@ class DetectionPipeline:
         # Uses a 3-second sticky window — camera publishes OFF every 500ms between checks,
         # so a boolean flag would reset before A12 processes the next frame.
         esp32_motion_window = 3.0
-        if time.time() - float(self.shared_state.get("last_esp32_motion", 0.0)) < esp32_motion_window:
+        esp32_motion_detected = (
+            time.time() - float(self.shared_state.get("last_esp32_motion", 0.0)) < esp32_motion_window
+        )
+        if esp32_motion_detected:
             motion_detected = True
 
         if motion_detected:
@@ -293,7 +309,7 @@ class DetectionPipeline:
         else:
             self.person_confirmation_streaks[detection_profile] = 0
 
-        self.stats.record_motion_event(False, motion_detected, person_found)
+        self.stats.record_motion_event(esp32_motion_detected, motion_detected, person_found)
         self.mqtt_client.publish("person", "ON" if person_found else "OFF")
 
         if self.runtime_config.get("debug_detection", False):
@@ -513,7 +529,7 @@ class DetectionPipeline:
             self.last_save_time[label] = time.time()
 
             # Always save JPG locally
-            jpg_path = os.path.join(label_folder, f"{label}_{timestamp}.jpg")
+            jpg_path = os.path.join(label_folder, self._media_name(label, timestamp, ".jpg"))
             cv2.imwrite(jpg_path, frame)
             self.db.log_event("media", "jpg", 0.0, jpg_path)
 
@@ -563,7 +579,7 @@ class DetectionPipeline:
         label_folder = os.path.join(self.screenshot_folder, label)
         os.makedirs(label_folder, exist_ok=True)
 
-        jpg_path = os.path.join(label_folder, f"{label}_{timestamp}.jpg")
+        jpg_path = os.path.join(label_folder, self._media_name(label, timestamp, ".jpg"))
         cv2.imwrite(jpg_path, frame)
         self.db.log_event("detection", label, 1.0)
         self.db.log_event("media", "jpg", 0.0, jpg_path)
@@ -611,7 +627,7 @@ class DetectionPipeline:
             os.makedirs(label_folder, exist_ok=True)
             self.last_save_time[label] = time.time()
 
-            jpg_path = os.path.join(label_folder, f"{label}_{timestamp}.jpg")
+            jpg_path = os.path.join(label_folder, self._media_name(label, timestamp, ".jpg"))
             cv2.imwrite(jpg_path, frame)
             self.db.log_event("media", "jpg", 0.0, jpg_path)
 
@@ -671,7 +687,13 @@ class DetectionPipeline:
             "bypass_telegram_cooldown": bypass_telegram_cooldown,
             "event_score": event_score,
         }
-        self.notification_queue.put(task)
+        try:
+            self.notification_queue.put_nowait(task)
+        except queue.Full:
+            logging.warning(
+                f"{self.log_prefix} Notification queue full; dropping {label} event "
+                f"at {timestamp}"
+            )
 
     def _cleanup_old_media(self) -> None:
         """Remove media files older than cleanup_max_age_days from screenshots folder."""
@@ -741,7 +763,7 @@ class DetectionPipeline:
 
     def _notification_worker(self) -> None:
         """Background thread to handle media creation and Telegram notifications."""
-        logging.info("Notification worker started")
+        logging.info(f"{self.log_prefix} Notification worker started")
         while self.running:
             try:
                 task = self.notification_queue.get(timeout=1)
@@ -780,7 +802,7 @@ class DetectionPipeline:
                 # Try MP4 first. Audio is optional; if MP4 fails, keep GIF as
                 # the fallback so Telegram still gets a motion preview.
                 mp4_created = False
-                mp4_path = os.path.join(label_folder, f"{label}_{timestamp}.mp4")
+                mp4_path = os.path.join(label_folder, self._media_name(label, timestamp, ".mp4"))
                 msg = f"{label.title()} detected (AV Clip)" if audio_data else f"{label.title()} detected (Video)"
                 if person_name:
                     msg += f" ({person_name})"
@@ -799,10 +821,10 @@ class DetectionPipeline:
                         )
                     elif media_mode == "mp4":
                         self.notifier.send_telegram(
-                            msg, mp4_path, bypass_cooldown=bypass_telegram_cooldown
+                            self._telegram_message(msg), mp4_path, bypass_cooldown=bypass_telegram_cooldown
                         )
                     elif media_mode == "preview_mp4":
-                        preview_path = os.path.join(label_folder, f"{label}_{timestamp}_preview.mp4")
+                        preview_path = os.path.join(label_folder, self._media_name(label, timestamp, "_preview.mp4"))
                         preview_seconds = int(self.runtime_config.get("telegram.preview_seconds", 4))
                         preview_fps = int(self.runtime_config.get("telegram.preview_fps", 4))
                         preview_frames = self._sample_preview_frames(
@@ -818,26 +840,26 @@ class DetectionPipeline:
                             min_size=1_000,
                         ):
                             self.notifier.send_telegram(
-                                f"{msg} - local MP4 saved",
+                                self._telegram_message(f"{msg} - local MP4 saved"),
                                 preview_path,
                                 bypass_cooldown=bypass_telegram_cooldown,
                             )
                             self.db.log_event("media", "mp4_preview", 0.0, preview_path)
                         else:
                             self.notifier.send_telegram(
-                                f"{msg} - local MP4 saved",
+                                self._telegram_message(f"{msg} - local MP4 saved"),
                                 bypass_cooldown=bypass_telegram_cooldown,
                             )
                     elif media_mode == "snapshot":
-                        jpg_path = os.path.join(label_folder, f"{label}_{timestamp}.jpg")
+                        jpg_path = os.path.join(label_folder, self._media_name(label, timestamp, ".jpg"))
                         self.notifier.send_telegram(
-                            f"{msg} - local MP4 saved",
+                            self._telegram_message(f"{msg} - local MP4 saved"),
                             jpg_path,
                             bypass_cooldown=bypass_telegram_cooldown,
                         )
                     elif media_mode == "text":
                         self.notifier.send_telegram(
-                            f"{msg} - local MP4 saved",
+                            self._telegram_message(f"{msg} - local MP4 saved"),
                             bypass_cooldown=bypass_telegram_cooldown,
                         )
                     elif media_mode == "none":
@@ -845,21 +867,21 @@ class DetectionPipeline:
                     else:
                         logging.warning(f"Unknown telegram.media_mode={media_mode}; sending text only")
                         self.notifier.send_telegram(
-                            f"{msg} - local MP4 saved",
+                            self._telegram_message(f"{msg} - local MP4 saved"),
                             bypass_cooldown=bypass_telegram_cooldown,
                         )
 
                 # Fallback to GIF
                 gif_created = False
                 if not mp4_created:
-                    gif_path = os.path.join(label_folder, f"{label}_{timestamp}.gif")
+                    gif_path = os.path.join(label_folder, self._media_name(label, timestamp, ".gif"))
                     if self.notifier.create_gif(frames, gif_path):
                         msg = f"{label.title()} detected"
                         if person_name:
                             msg += f" ({person_name})"
                         if send_telegram:
                             self.notifier.send_telegram(
-                                msg, gif_path, bypass_cooldown=bypass_telegram_cooldown
+                                self._telegram_message(msg), gif_path, bypass_cooldown=bypass_telegram_cooldown
                             )
                         else:
                             logging.info(
@@ -871,13 +893,13 @@ class DetectionPipeline:
 
                 # Fallback to JPEG snapshot
                 if not mp4_created and not gif_created:
-                    jpg_path = os.path.join(label_folder, f"{label}_{timestamp}.jpg")
+                    jpg_path = os.path.join(label_folder, self._media_name(label, timestamp, ".jpg"))
                     if os.path.exists(jpg_path) and send_telegram:
                         msg = f"{label.title()} detected"
                         if person_name:
                             msg += f" ({person_name})"
                         self.notifier.send_telegram(
-                            msg, jpg_path, bypass_cooldown=bypass_telegram_cooldown
+                            self._telegram_message(msg), jpg_path, bypass_cooldown=bypass_telegram_cooldown
                         )
                         self.db.log_event("media", "jpg_notify", 0.0, jpg_path)
 

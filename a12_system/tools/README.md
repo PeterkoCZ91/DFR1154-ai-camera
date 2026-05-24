@@ -1,5 +1,52 @@
 # A12 Tools
 
+## a12 — Runtime CLI Wrapper
+
+`tools/a12` is the recommended user-facing entry point for local Docker operation.
+It can be called from any directory and uses `a12_system/docker-compose.yml` explicitly.
+
+### Quick Start
+
+```bash
+cd a12_system
+cp .env.example .env
+./tools/a12 setup
+nano /opt/a12-data/config.env
+./tools/a12 doctor
+./tools/a12 build
+./tools/a12 up
+./tools/a12 logs 80
+```
+
+### Useful Commands
+
+| Command | What it does |
+|---|---|
+| `a12 doctor` | Checks Docker, config, model, camera `/health`, stream port 81, MQTT, Telegram, and basic git hygiene |
+| `a12 setup` | Creates data dir, config template, model file, and screenshots folders |
+| `a12 config` | Prints sanitized runtime paths and key config values |
+| `a12 test-camera` | Checks ESP32 `/health` and port 81 stream reachability |
+| `a12 build` / `a12 rebuild` | Builds the Docker image |
+| `a12 up` / `a12 start` | Starts the A12 service |
+| `a12 restart` | Restarts the A12 service |
+| `a12 logs [N]` | Follows Docker logs, default last 50 lines |
+| `a12 events [N]` | Shows recent SQLite events |
+| `a12 tail` | Follows `/data/a12.log` |
+
+### Multi-Instance Example
+
+```bash
+A12_DATA_DIR=/opt/a12-gate A12_COMPOSE_PROJECT=a12_gate A12_CONTAINER=a12-gate \
+  ./tools/a12 up
+
+A12_DATA_DIR=/opt/a12-yard A12_COMPOSE_PROJECT=a12_yard A12_CONTAINER=a12-yard \
+  ./tools/a12 up
+```
+
+Use unique `CAMERA_ID`, `MQTT_BASE_TOPIC`, and `ESP32_MQTT_DEVICE` in each instance config.
+
+---
+
 ## enroll_faces.py — Face Enrollment
 
 Register people for face recognition. The script encodes faces and saves them to

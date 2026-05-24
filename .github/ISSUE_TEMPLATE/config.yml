@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support guidelines
+    url: https://github.com/PeterkoCZ91/DFR1154-ai-camera/blob/main/SUPPORT.md
+    about: Read this before posting logs or deployment details.
+  - name: Security policy
+    url: https://github.com/PeterkoCZ91/DFR1154-ai-camera/blob/main/SECURITY.md
+    about: Do not report secrets or sensitive deployment details in public issues.

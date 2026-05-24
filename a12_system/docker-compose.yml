@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: a12-system-v2:latest
-    container_name: a12-system-v2
+    container_name: ${A12_CONTAINER:-a12-system-v2}
     restart: unless-stopped
     init: true
     network_mode: host

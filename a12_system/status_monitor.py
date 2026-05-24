@@ -50,6 +50,7 @@ class StatusMonitor(threading.Thread):
         self._pending_profile: str | None = None
         self._pending_since: float = 0.0
         self._profile_confirm_seconds: int = 90
+        self._profile_apply_disabled_logged = False
 
         # Daily summary
         self._last_daily_date: date | None = None
@@ -133,6 +134,11 @@ class StatusMonitor(threading.Thread):
 
         profiles = self.runtime_config.get("camera_profiles")
         if not profiles:
+            return
+        if not profiles.get("apply_from_a12", False):
+            if not self._profile_apply_disabled_logged:
+                logging.info("A12 camera profile writes disabled; firmware owns DAY/DUSK/NIGHT profiles")
+                self._profile_apply_disabled_logged = True
             return
 
         thresholds = profiles.get("thresholds", {})

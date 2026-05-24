@@ -135,6 +135,14 @@ class Detector:
 
     def detect_objects(self, frame: np.ndarray) -> list[tuple[str, float]]:
         """Run YOLO inference and return list of (label, confidence)."""
+        try:
+            return self._detect_objects_impl(frame)
+        except Exception as e:
+            logging.error(f"YOLO inference failed: {e}")
+            return []
+
+    def _detect_objects_impl(self, frame: np.ndarray) -> list[tuple[str, float]]:
+        """Run YOLO inference and return list of (label, confidence)."""
         if not self.net:
             return []
 

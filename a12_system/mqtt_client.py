@@ -18,10 +18,16 @@ class MQTTClient:
         self.callback = callback
         self.client = None
         self.connected = False
+        self.camera_id = self._slug(config.get("camera_id", "esp32_cam"), "esp32_cam")
+        self.camera_name = str(config.get("camera_name", self.camera_id)).strip() or self.camera_id
+        self.camera_label = str(config.get("telegram", {}).get("camera_label", self.camera_name)).strip() or self.camera_name
+        self.log_prefix = f"[{self.camera_id}:{self.camera_name}]"
+        mqtt_config = config.get("mqtt", {})
+        default_node = "esp32_camera" if self.camera_id == "esp32_cam" else self.camera_id
+        self.discovery_node = self._slug(mqtt_config.get("discovery_node", default_node), default_node)
         self.esp32_motion_topic = ""
         self.esp32_uncertain_topic = ""
 
-        mqtt_config = config.get("mqtt", {})
         if not mqtt_config.get("enabled", False) or not MQTT_AVAILABLE:
             return
 
@@ -43,16 +49,32 @@ class MQTTClient:
             self.client.on_message = self._on_message
             self.client.on_disconnect = self._on_disconnect
 
-            logging.info(f"Connecting to MQTT broker {broker}...")
+            logging.info(f"{self.log_prefix} Connecting to MQTT broker {broker}...")
             self.client.connect(broker, port, 60)
             self.client.loop_start()
         except Exception as e:
-            logging.error(f"MQTT init failed: {e}")
+            logging.error(f"{self.log_prefix} MQTT init failed: {e}")
+
+    @staticmethod
+    def _slug(value, default: str) -> str:
+        text = str(value or default).strip().lower()
+        slug = "".join(ch if ch.isalnum() else "_" for ch in text).strip("_")
+        return slug or default
+
+    def _unique_id(self, suffix: str) -> str:
+        if self.camera_id == "esp32_cam":
+            return f"esp32_cam_{suffix}"
+        return f"{self.camera_id}_{suffix}"
+
+    def _entity_name(self, default_name: str) -> str:
+        if self.camera_id == "esp32_cam":
+            return default_name
+        return f"{self.camera_label} {default_name}"
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code == 0:
             self.connected = True
-            logging.info("MQTT Connected")
+            logging.info(f"{self.log_prefix} MQTT connected")
             self._publish_discovery()
 
             base_topic = self.config["mqtt"]["base_topic"]
@@ -73,7 +95,7 @@ class MQTTClient:
                 f"{self.esp32_motion_topic}, {self.esp32_uncertain_topic}"
             )
         else:
-            logging.error(f"MQTT Connection failed: {reason_code}")
+            logging.error(f"{self.log_prefix} MQTT connection failed: {reason_code}")
 
     def _on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages."""
@@ -83,7 +105,7 @@ class MQTTClient:
             base_topic = self.config["mqtt"]["base_topic"]
             camera_url = self.config["camera_url"]
 
-            logging.debug(f"MQTT Message: {topic} = {payload}")
+            logging.debug(f"{self.log_prefix} MQTT message: {topic} = {payload}")
 
             # IR LED Control
             if topic == f"{base_topic}/ir/set":
@@ -95,7 +117,7 @@ class MQTTClient:
                         json={"auto_mode": False, "state": state_str},
                         timeout=5,
                     )
-                    logging.info(f"IR LED set to {state_str} (Auto: False)")
+                    logging.info(f"{self.log_prefix} IR LED set to {state_str} (Auto: False)")
                 except Exception as e:
                     logging.error(f"Failed to set IR LED: {e}")
 
@@ -107,7 +129,7 @@ class MQTTClient:
                         json={"auto_mode": auto_mode},
                         timeout=2,
                     )
-                    logging.info(f"IR Auto Mode set to {auto_mode}")
+                    logging.info(f"{self.log_prefix} IR Auto Mode set to {auto_mode}")
                 except Exception as e:
                     logging.error(f"Failed to set IR Auto Mode: {e}")
 
@@ -126,9 +148,9 @@ class MQTTClient:
             if self.esp32_motion_topic and topic == self.esp32_motion_topic and self.callback:
                 detected = payload.strip().upper() == "ON"
                 if detected:
-                    logging.info(f"ESP32 motion: ON")
+                    logging.info(f"{self.log_prefix} ESP32 motion: ON")
                 else:
-                    logging.debug(f"ESP32 motion: OFF")
+                    logging.debug(f"{self.log_prefix} ESP32 motion: OFF")
                 try:
                     self.callback("esp32_motion", {"detected": detected})
                 except Exception as e:
@@ -139,7 +161,7 @@ class MQTTClient:
                 try:
                     data = json.loads(payload)
                     confidence = float(data.get("confidence", 0.0))
-                    logging.info(f"ESP32 person_uncertain: conf={confidence:.2f}")
+                    logging.info(f"{self.log_prefix} ESP32 person_uncertain: conf={confidence:.2f}")
                     self.callback("esp32_person_uncertain", {"confidence": confidence})
                 except Exception as e:
                     logging.error(f"ESP32 person_uncertain callback error: {e}")
@@ -156,7 +178,7 @@ class MQTTClient:
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         self.connected = False
-        logging.warning("MQTT Disconnected")
+        logging.warning(f"{self.log_prefix} MQTT disconnected")
 
     def publish(self, topic_suffix: str, payload, retain: bool = False) -> None:
         if not self.client or not self.connected:
@@ -166,7 +188,7 @@ class MQTTClient:
         try:
             self.client.publish(full_topic, payload, retain=retain)
         except Exception as e:
-            logging.error(f"MQTT publish failed: {e}")
+            logging.error(f"{self.log_prefix} MQTT publish failed ({topic_suffix}): {e}")
 
     def _publish_discovery(self) -> None:
         if not self.config["mqtt"].get("discovery", False):
@@ -174,136 +196,136 @@ class MQTTClient:
 
         base_topic = self.config["mqtt"]["base_topic"]
         device_info = {
-            "identifiers": ["esp32_camera_a12"],
-            "name": "ESP32 AI Camera",
+            "identifiers": ["esp32_camera_a12" if self.camera_id == "esp32_cam" else f"{self.camera_id}_a12"],
+            "name": self.camera_name,
             "model": "ESP32-S3 FireBeetle 2",
             "manufacturer": "DFRobot",
         }
 
         # Motion Sensor
         self._publish_ha_config("binary_sensor", "motion", {
-            "name": "Camera Motion",
+            "name": self._entity_name("Camera Motion"),
             "device_class": "motion",
             "state_topic": f"{base_topic}/motion",
             "payload_on": "ON", "payload_off": "OFF",
-            "unique_id": "esp32_cam_motion",
+            "unique_id": self._unique_id("motion"),
             "device": device_info,
         })
 
         # Person Detected
         self._publish_ha_config("binary_sensor", "person", {
-            "name": "Person Detected",
+            "name": self._entity_name("Person Detected"),
             "device_class": "occupancy",
             "state_topic": f"{base_topic}/person",
             "payload_on": "ON", "payload_off": "OFF",
-            "unique_id": "esp32_cam_person",
+            "unique_id": self._unique_id("person"),
             "device": device_info,
         })
 
         # Audio Sensor
         if self.config.get("audio_enabled", False):
             self._publish_ha_config("sensor", "audio_level", {
-                "name": "Audio Level",
+                "name": self._entity_name("Audio Level"),
                 "device_class": "signal_strength",
                 "unit_of_measurement": "dB",
                 "state_topic": f"{base_topic}/audio/level",
-                "unique_id": "esp32_cam_audio_level",
+                "unique_id": self._unique_id("audio_level"),
                 "device": device_info,
             })
 
         # IR Status
         self._publish_ha_config("binary_sensor", "ir_led_status", {
-            "name": "IR LED Status",
+            "name": self._entity_name("IR LED Status"),
             "device_class": "light",
             "state_topic": f"{base_topic}/ir/status",
             "value_template": "{{ value_json.ir_led_state | iif(true, 'ON', 'OFF') }}",
-            "unique_id": "esp32_cam_ir_led_status",
+            "unique_id": self._unique_id("ir_led_status"),
             "device": device_info,
         })
 
         # IR Control Switch
         self._publish_ha_config("switch", "ir_led", {
-            "name": "IR LED Control",
+            "name": self._entity_name("IR LED Control"),
             "icon": "mdi:led-on",
             "command_topic": f"{base_topic}/ir/set",
             "state_topic": f"{base_topic}/ir/status",
             "value_template": "{{ value_json.ir_led_state | iif(true, 'ON', 'OFF') }}",
             "payload_on": "ON", "payload_off": "OFF",
-            "unique_id": "esp32_cam_ir_switch",
+            "unique_id": self._unique_id("ir_switch"),
             "device": device_info,
         })
 
         # IR Auto Mode Switch
         self._publish_ha_config("switch", "ir_auto", {
-            "name": "IR Auto Mode",
+            "name": self._entity_name("IR Auto Mode"),
             "icon": "mdi:brightness-auto",
             "command_topic": f"{base_topic}/ir/auto/set",
             "state_topic": f"{base_topic}/ir/status",
             "value_template": "{{ value_json.auto_mode | iif(true, 'ON', 'OFF') }}",
             "payload_on": "ON", "payload_off": "OFF",
-            "unique_id": "esp32_cam_ir_auto_switch",
+            "unique_id": self._unique_id("ir_auto_switch"),
             "device": device_info,
         })
 
         # Camera profile (DAY / DUSK / NIGHT)
         self._publish_ha_config("sensor", "camera_profile", {
-            "name": "Camera Profile",
+            "name": self._entity_name("Camera Profile"),
             "icon": "mdi:weather-sunset",
             "state_topic": f"{base_topic}/camera/status/profile",
-            "unique_id": "esp32_cam_profile",
+            "unique_id": self._unique_id("profile"),
             "device": device_info,
         })
 
         # Stream FPS
         self._publish_ha_config("sensor", "stream_fps", {
-            "name": "Stream FPS",
+            "name": self._entity_name("Stream FPS"),
             "icon": "mdi:video",
             "unit_of_measurement": "fps",
             "state_topic": f"{base_topic}/camera/status/stream_fps",
-            "unique_id": "esp32_cam_stream_fps",
+            "unique_id": self._unique_id("stream_fps"),
             "device": device_info,
         })
 
         # Connection status
         self._publish_ha_config("binary_sensor", "connection", {
-            "name": "Camera Connection",
+            "name": self._entity_name("Camera Connection"),
             "device_class": "connectivity",
             "state_topic": f"{base_topic}/camera/status/connection",
             "payload_on": "online", "payload_off": "offline",
-            "unique_id": "esp32_cam_connection",
+            "unique_id": self._unique_id("connection"),
             "device": device_info,
         })
 
         # Pipeline state
         self._publish_ha_config("sensor", "pipeline_state", {
-            "name": "Pipeline State",
+            "name": self._entity_name("Pipeline State"),
             "icon": "mdi:state-machine",
             "state_topic": f"{base_topic}/camera/status/pipeline_state",
-            "unique_id": "esp32_cam_pipeline_state",
+            "unique_id": self._unique_id("pipeline_state"),
             "device": device_info,
         })
 
         # Last event score
         self._publish_ha_config("sensor", "event_score", {
-            "name": "Last Event Score",
+            "name": self._entity_name("Last Event Score"),
             "icon": "mdi:gauge",
             "state_topic": f"{base_topic}/camera/detection/score",
-            "unique_id": "esp32_cam_event_score",
+            "unique_id": self._unique_id("event_score"),
             "device": device_info,
         })
 
         # Animal detection
         self._publish_ha_config("sensor", "animal_detected", {
-            "name": "Animal Detected",
+            "name": self._entity_name("Animal Detected"),
             "icon": "mdi:paw",
             "state_topic": f"{base_topic}/camera/detection/animal",
-            "unique_id": "esp32_cam_animal",
+            "unique_id": self._unique_id("animal"),
             "device": device_info,
         })
 
     def _publish_ha_config(self, component: str, object_id: str, payload: dict) -> None:
         discovery_prefix = self.config["mqtt"].get("discovery_prefix", "homeassistant")
-        topic = f"{discovery_prefix}/{component}/esp32_camera/{object_id}/config"
+        topic = f"{discovery_prefix}/{component}/{self.discovery_node}/{object_id}/config"
         self.client.publish(topic, json.dumps(payload), retain=True)
 
     def stop(self) -> None:
@@ -311,4 +333,4 @@ class MQTTClient:
         if self.client:
             self.client.loop_stop()
             self.client.disconnect()
-            logging.info("MQTT Client stopped")
+            logging.info(f"{self.log_prefix} MQTT client stopped")

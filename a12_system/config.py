@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 
 DEFAULT_CONFIG = {
     # Placeholder — override via ESP32_IP env var in config.env
+    "camera_id": "esp32_cam",
+    "camera_name": "ESP32 AI Camera",
     "camera_url": "http://192.168.1.100",
     "camera_http_user": "admin",
     "camera_http_pass": "admin",
@@ -41,6 +43,7 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "token": None,
         "chat_id": None,
+        "camera_label": "ESP32 AI Camera",
         "media_mode": "mp4",  # mp4, preview_mp4, snapshot, text, none
         "preview_seconds": 4,
         "preview_fps": 4,
@@ -64,6 +67,7 @@ DEFAULT_CONFIG = {
         "base_topic": "esp32_camera",
         "discovery": True,
         "discovery_prefix": "homeassistant",
+        "discovery_node": None,
     },
     "audio_enabled": True,
     "audio": {
@@ -109,6 +113,7 @@ DEFAULT_CONFIG = {
     },
     "media_retention_days": 2,
     "media_cleanup_interval_seconds": 3600,
+    "notification_queue_maxsize": 10,
     "ir_control": {
         "enabled": False,
         "mqtt_publish": True,
@@ -130,6 +135,7 @@ DEFAULT_CONFIG = {
         "sensor_fusion_window_seconds": 10.0,
     },
     "camera_profiles": {
+        "apply_from_a12": False,
         "DAY": {
             "ae_level": 0,
             "agc": 1,
@@ -220,6 +226,9 @@ ENV_OVERRIDES = [
     ("TELEGRAM_PREVIEW_WIDTH", "telegram_preview_width", _parse_int),
     ("TELEGRAM_PREVIEW_HEIGHT", "telegram_preview_height", _parse_int),
     # Camera
+    ("CAMERA_ID", "camera_id", str),
+    ("CAMERA_NAME", "camera_name", str),
+    ("CAMERA_LABEL", "telegram.camera_label", str),
     ("ESP32_IP", "camera_url", lambda v: f"http://{v}"),
     ("ESP32_HTTP_USER", "camera_http_user", str),
     ("ESP32_HTTP_PASS", "camera_http_pass", str),
@@ -241,6 +250,8 @@ ENV_OVERRIDES = [
     ("MQTT_PORT", "mqtt.port", _parse_int),
     ("MQTT_USERNAME", "mqtt.username", str),
     ("MQTT_PASSWORD", "mqtt.password", str),
+    ("MQTT_BASE_TOPIC", "mqtt.base_topic", str),
+    ("MQTT_DISCOVERY_NODE", "mqtt.discovery_node", str),
     # Audio
     ("AUDIO_ENABLED", "audio_enabled", _parse_bool),
     ("AUDIO_BUFFER_SECONDS", "audio.buffer_seconds", _parse_int),
@@ -266,6 +277,7 @@ ENV_OVERRIDES = [
     ("EVENT_SCORE_LOCAL_RECORD_THRESHOLD", "event_scoring.local_record_threshold", _parse_int),
     ("MEDIA_RETENTION_DAYS", "media_retention_days", _parse_float),
     ("MEDIA_CLEANUP_INTERVAL_SECONDS", "media_cleanup_interval_seconds", _parse_int),
+    ("NOTIFICATION_QUEUE_MAXSIZE", "notification_queue_maxsize", _parse_int),
     # Home Assistant
     ("HOME_ASSISTANT_URL", "home_assistant_url", str),
     ("HOME_ASSISTANT_TOKEN", "home_assistant_token", str),
@@ -280,6 +292,7 @@ ENV_OVERRIDES = [
     ("STREAM_IDLE_POLL_SECONDS", "stream_idle_poll_seconds", _parse_float),
     ("STREAM_IDLE_DECODE_FPS", "stream_idle_decode_fps", _parse_int),
     ("STREAM_ACTIVE_DECODE_FPS", "stream_active_decode_fps", _parse_int),
+    ("A12_APPLY_CAMERA_PROFILES", "camera_profiles.apply_from_a12", _parse_bool),
 ]
 
 

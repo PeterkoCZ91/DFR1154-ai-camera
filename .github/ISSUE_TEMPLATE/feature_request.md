@@ -25,6 +25,10 @@ A clear and concise description of what you want to happen.
 
 A clear and concise description of any alternative solutions or features you've considered.
 
+## Privacy check
+
+- [ ] This request does not include tokens, passwords, private IP addresses, face data, or private camera screenshots
+
 ## Additional context
 
 Add any other context, mockups, or references about the feature request here.

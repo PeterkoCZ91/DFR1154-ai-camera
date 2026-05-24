@@ -123,6 +123,9 @@ Use **Enhanced** for a fixed installation with a server/Pi running 24/7 — UNCE
 
 ## Quick Start
 
+> [!TIP]
+> **New to ESP32 flashing?** Follow the step-by-step guide in [`docs/FIRST_FLASH.md`](docs/FIRST_FLASH.md) — it covers PlatformIO install, port detection, boot-mode tricks, OTA updates, and common error fixes.
+
 **~15 minutes from clone to a working camera.**
 
 ```bash
@@ -191,20 +194,22 @@ Once connected, open the **web dashboard** at `http://<device-ip>/`. HTTP Basic 
 
 ```bash
 # One-time setup (creates data dir, downloads YOLO model, copies config template)
-bash a12_system/tools/setup.sh
+a12_system/tools/setup.sh
 
 # Edit config — set your camera IP, MQTT broker, Telegram token
 nano /opt/a12-data/config.env
 
-# Enroll faces (stand in front of the camera for ~40 seconds)
+# Check local requirements before starting
+a12_system/tools/a12 doctor
+
+# Build image, start, and watch logs
+a12_system/tools/a12 build
+a12_system/tools/a12 up
+a12_system/tools/a12 logs 80
+
+# Optional: enroll faces (stand in front of the camera for ~40 seconds)
 python3 a12_system/tools/enroll_faces.py \
   --name "Alice" --capture --camera http://<device-ip> --count 23
-
-# Build image and start
-docker compose -f a12_system/docker-compose.yml up -d --build
-
-# Watch logs
-docker compose -f a12_system/docker-compose.yml logs -f a12
 ```
 
 > [!NOTE]
@@ -212,6 +217,9 @@ docker compose -f a12_system/docker-compose.yml logs -f a12
 
 > [!NOTE]
 > When using A12, disable ESP32 Telegram to avoid duplicate alerts and free heap: comment out `#define INCLUDE_TELEGRAM` in `firmware/config.h` before flashing. See [Two Deployment Modes](#two-deployment-modes).
+
+> [!IMPORTANT]
+> **Public repository hygiene:** keep runtime config and private deployment data out of git. Do not commit `.env`, `config.env`, Telegram tokens, MQTT credentials, Home Assistant tokens, Wi-Fi credentials, logs, databases, face encodings, private screenshots, or model weights. Use placeholders such as `<camera-ip>` in issues and documentation. See [SECURITY.md](SECURITY.md) and [SUPPORT.md](SUPPORT.md).
 
 ---
 
@@ -1127,30 +1135,38 @@ The device will enter AP mode for fresh configuration.
 
 ## A12 CLI
 
-The `a12_system/tools/a12` script is a convenience wrapper around `docker compose`. Copy or symlink it to your `$PATH`:
+The `a12_system/tools/a12` script is the recommended local entry point for A12 Docker operation. You can run it directly from the repository, or symlink it to your `$PATH` later.
 
 ```bash
-chmod +x a12_system/tools/a12
-sudo ln -s "$(pwd)/a12_system/tools/a12" /usr/local/bin/a12
+cd a12_system
+./tools/a12 setup
+./tools/a12 doctor
+./tools/a12 build
+./tools/a12 up
+./tools/a12 logs 80
 ```
 
 | Command | Description |
 |---------|-------------|
-| `a12 status` | Container status + live CPU/RAM stats |
+| `a12 doctor` | Check Docker, config, model, camera `/health`, stream port 81, MQTT, Telegram config, container state, and git hygiene |
+| `a12 setup` | Create the runtime data dir, config template, model file, and screenshots folders |
+| `a12 config` | Print sanitized runtime paths and key config values |
+| `a12 test-camera` | Check ESP32 `/health` and MJPEG stream reachability |
+| `a12 status` | Container status + CPU/RAM snapshot |
 | `a12 logs [N]` | Stream last N lines of container logs (default 50), follows |
 | `a12 restart` | Restart the A12 service |
-| `a12 build` | Rebuild the Docker image |
-| `a12 up` | Start the compose stack in detached mode |
-| `a12 down` | Stop and remove the compose stack |
+| `a12 build` / `a12 rebuild` | Rebuild the Docker image |
+| `a12 up` / `a12 start` | Start the compose stack in detached mode |
+| `a12 down` / `a12 stop` | Stop and remove the compose stack |
 | `a12 events [N]` | Query last N events from `events.db` (default 20) |
 | `a12 tail` | Follow `a12.log` on the host |
 | `a12 enroll [args]` | Run `enroll_faces.py` for face whitelist enrollment |
 | `a12 help` | Show this command list |
 
-**Environment:** The script uses `A12_DATA_DIR` (default `/opt/a12-data`) for the data volume path. Override via env:
+**Environment:** The script uses `A12_DATA_DIR` (default `/opt/a12-data`) for the data volume path. For multiple cameras, also set unique `A12_COMPOSE_PROJECT`, `A12_CONTAINER`, `CAMERA_ID`, `MQTT_BASE_TOPIC`, and `ESP32_MQTT_DEVICE` values:
 
 ```bash
-A12_DATA_DIR=/home/user/a12-data a12 up
+A12_DATA_DIR=/home/user/a12-gate A12_COMPOSE_PROJECT=a12_gate A12_CONTAINER=a12-gate a12 up
 ```
 
 ---

@@ -11,10 +11,13 @@ import requests
 
 
 class Camera:
-    def __init__(self, config: dict, stream_port: int = 81, audio_port: int = 82):
+    def __init__(self, config: dict, stream_port: int | None = None, audio_port: int | None = None):
         self.config = config
-        self.stream_port = stream_port
-        self.audio_port = audio_port
+        self.camera_id = str(config.get("camera_id", "esp32_cam")).strip() or "esp32_cam"
+        self.camera_name = str(config.get("camera_name", self.camera_id)).strip() or self.camera_id
+        self.log_prefix = f"[{self.camera_id}:{self.camera_name}]"
+        self.stream_port = int(stream_port or config.get("stream_port", 81))
+        self.audio_port = int(audio_port or config.get("audio_port", 82))
 
         self.session = requests.Session()
         user = config.get("camera_http_user", "admin")
@@ -22,31 +25,29 @@ class Camera:
         if user:
             self.session.auth = (user, pwd)
 
-        # Parse base URL
-        base_url = config["camera_url"]
+        base_url = config["camera_url"].rstrip("/")
         if "://" in base_url:
-            protocol, address = base_url.split("://")
+            protocol, address = base_url.split("://", 1)
             host = address.split(":")[0]
         else:
             protocol = "http"
             host = base_url.split(":")[0]
+            base_url = f"{protocol}://{host}"
 
-        self.stream_base_url = f"{protocol}://{host}:{stream_port}"
-        self.audio_base_url = f"{protocol}://{host}:{audio_port}"
+        self.stream_base_url = f"{protocol}://{host}:{self.stream_port}"
+        self.audio_base_url = f"{protocol}://{host}:{self.audio_port}"
 
-        # Endpoints
         self.stream_url = f"{self.stream_base_url}/detection-stream"
         self.audio_stream_url = f"{self.audio_base_url}/audio.wav"
 
-        # Control endpoints (port 80)
-        self.status_url = f"{config['camera_url']}/health"
-        self.settings_url = f"{config['camera_url']}/settings"
-        self.ir_control_url = f"{config['camera_url']}/ir-control"
-        self.ir_status_url = f"{config['camera_url']}/ir-status"
+        self.status_url = f"{base_url}/health"
+        self.settings_url = f"{base_url}/settings"
+        self.ir_control_url = f"{base_url}/ir-control"
+        self.ir_status_url = f"{base_url}/ir-status"
 
     def get_stream(self) -> requests.Response | None:
         """Connect to MJPEG stream with back-off retries."""
-        logging.info(f"Connecting to {self.stream_url}...")
+        logging.info(f"{self.log_prefix} Connecting to {self.stream_url}...")
         retries = 0
         max_retries = 3
         base_delay = 2
@@ -55,19 +56,19 @@ class Camera:
             try:
                 response = self.session.get(self.stream_url, stream=True, timeout=(5, 15))
                 if response.status_code != 200:
-                    logging.error(f"Bad status: {response.status_code}")
+                    logging.error(f"{self.log_prefix} Bad stream status: {response.status_code}")
                     response.close()
                     time.sleep(base_delay)
                     retries += 1
                     continue
-                logging.info("Stream connected!")
+                logging.info(f"{self.log_prefix} Stream connected")
                 return response
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-                logging.warning(f"Connection failed: {e}")
+                logging.warning(f"{self.log_prefix} Connection failed: {e}")
                 time.sleep(base_delay)
                 retries += 1
             except Exception as e:
-                logging.error(f"Unexpected error: {e}")
+                logging.error(f"{self.log_prefix} Unexpected stream error: {e}")
                 return None
         return None
 
@@ -88,20 +89,20 @@ class Camera:
             if response.status_code == 200:
                 return response.json()
         except Exception as e:
-            logging.debug(f"Health check failed: {e}")
+            logging.debug(f"{self.log_prefix} Health check failed: {e}")
         return None
 
     def set_camera_settings(self, settings: dict, retries: int = 3) -> bool:
         """Configure camera settings via POST."""
         for attempt in range(retries):
             try:
-                logging.info(f"Applying settings (attempt {attempt + 1})...")
+                logging.info(f"{self.log_prefix} Applying settings (attempt {attempt + 1})...")
                 response = self.session.post(self.settings_url, json=settings, timeout=5)
                 if response.status_code == 200:
-                    logging.info("Settings applied")
+                    logging.info(f"{self.log_prefix} Settings applied")
                     return True
             except Exception as e:
-                logging.warning(f"Settings failed: {e}")
+                logging.warning(f"{self.log_prefix} Settings failed: {e}")
                 time.sleep(1)
         return False
 
@@ -112,7 +113,7 @@ class Camera:
             response = self.session.post(self.ir_control_url, json=payload, timeout=3)
             return response.status_code == 200
         except Exception as e:
-            logging.error(f"IR Set Error: {e}")
+            logging.error(f"{self.log_prefix} IR set error: {e}")
         return False
 
     def get_ir_status(self) -> dict | None:
@@ -133,12 +134,29 @@ class Camera:
         def reader_thread():
             buffer = b""
             last_decode_time = 0.0
-            logging.info("Reader thread started")
+            decode_errors = 0
+            last_decode_error_log = 0.0
+
+            def note_decode_error(reason: str) -> None:
+                nonlocal decode_errors, last_decode_error_log
+                decode_errors += 1
+                now = time.time()
+                if now - last_decode_error_log >= 60:
+                    logging.warning(
+                        f"{self.log_prefix} MJPEG decode errors: {decode_errors} "
+                        f"(last={reason})"
+                    )
+                    last_decode_error_log = now
+
+            logging.info(f"{self.log_prefix} Reader thread started")
             try:
                 for chunk in response.iter_content(chunk_size=4096):
                     if stop_event.is_set():
                         break
                     buffer += chunk
+                    if len(buffer) > 2_000_000:
+                        logging.warning(f"{self.log_prefix} MJPEG buffer overflow; dropping stale bytes")
+                        buffer = buffer[-200_000:]
 
                     a = buffer.find(b"\xff\xd8")
                     b = buffer.find(b"\xff\xd9")
@@ -160,16 +178,18 @@ class Camera:
                             frame = cv2.imdecode(
                                 np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR
                             )
-                            if frame is not None and not frame_queue.full():
+                            if frame is None:
+                                note_decode_error("imdecode returned None")
+                            elif not frame_queue.full():
                                 frame_queue.put(frame)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            note_decode_error(str(e))
             except Exception as e:
-                logging.error(f"Stream error: {e}")
+                logging.error(f"{self.log_prefix} Stream error: {e}")
             finally:
                 stop_event.set()
                 response.close()
-                logging.info("Reader thread stopped")
+                logging.info(f"{self.log_prefix} Reader thread stopped")
 
         t = threading.Thread(target=reader_thread, daemon=True)
         t.start()
@@ -179,7 +199,7 @@ class Camera:
         try:
             while not stop_event.is_set():
                 if time.time() - last_frame_time > 20:
-                    logging.warning("Stream frozen (20s timeout). Reconnecting...")
+                    logging.warning(f"{self.log_prefix} Stream frozen (20s timeout). Reconnecting...")
                     break
 
                 try:
