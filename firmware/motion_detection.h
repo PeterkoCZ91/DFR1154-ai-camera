@@ -13,8 +13,9 @@
 #define MOTION_TRIGGER_PCT        5.0f   // % of grid blocks needed to trigger
 #define MOTION_UPPER_PCT          50.0f  // % above which = global light change, reject
 #define MOTION_CONFIRM_FRAMES     3      // consecutive frames required to confirm
-#define MOTION_EMA_ALPHA_DAY      0.95f  // EMA background blend factor (day)
+#define MOTION_EMA_ALPHA_DAY      0.95f  // EMA background blend factor (day, non-motion blocks)
 #define MOTION_EMA_ALPHA_NIGHT    0.98f  // EMA background blend factor (night, slower)
+#define MOTION_EMA_ALPHA_MOTION   0.998f // very slow update for motion blocks (prevents stale bg)
 #define MOTION_EMA_TRAINING       20     // frames to train background before triggering
 #define MOTION_NIGHT_BRIGHTNESS   10     // avg block brightness below this = night
 #define MOTION_BLOCK_SIZE         4      // 4×4 px per block

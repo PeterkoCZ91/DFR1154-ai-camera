@@ -5,49 +5,324 @@
 
 set -euo pipefail
 
-# Resolve a12_system/ directory relative to this script's location
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 A12_SYSTEM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_DIR="$(cd "${A12_SYSTEM_DIR}/.." && pwd)"
 A12_DATA_DIR="${A12_DATA_DIR:-/opt/a12-data}"
-COMPOSE_PROJECT="a12_system_v2"
-CONTAINER="a12-system-v2"
+COMPOSE_PROJECT="${A12_COMPOSE_PROJECT:-a12_system_v2}"
+CONTAINER="${A12_CONTAINER:-a12-system-v2}"
+COMPOSE_FILE="${A12_COMPOSE_FILE:-${A12_SYSTEM_DIR}/docker-compose.yml}"
+CONFIG_ENV="${A12_DATA_DIR}/config.env"
+
+export A12_DATA_DIR
 
 cmd="${1:-help}"
 
-case "$cmd" in
-  status)
-    docker compose -p "${COMPOSE_PROJECT}" ps
-    echo ""
-    docker stats "${CONTAINER}" --no-stream
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+ok() { printf "%bOK%b   %s\n" "${GREEN}" "${NC}" "$1"; }
+warn() { printf "%bWARN%b %s\n" "${YELLOW}" "${NC}" "$1"; }
+fail() { printf "%bFAIL%b %s\n" "${RED}" "${NC}" "$1"; }
+info() { printf "%bINFO%b %s\n" "${BLUE}" "${NC}" "$1"; }
+
+compose() {
+  docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" "$@"
+}
+
+load_config_env() {
+  if [[ -f "${CONFIG_ENV}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${CONFIG_ENV}"
+    set +a
+  fi
+}
+
+camera_base_url() {
+  local ip="${ESP32_IP:-}"
+  if [[ -n "${CAMERA_URL:-}" ]]; then
+    printf "%s" "${CAMERA_URL%/}"
+  elif [[ "${ip}" == http://* || "${ip}" == https://* ]]; then
+    printf "%s" "${ip%/}"
+  elif [[ -n "${ip}" ]]; then
+    printf "http://%s" "${ip}"
+  else
+    printf ""
+  fi
+}
+
+camera_host() {
+  local base="$1"
+  base="${base#http://}"
+  base="${base#https://}"
+  printf "%s" "${base%%:*}"
+}
+
+check_tcp() {
+  local host="$1"
+  local port="$2"
+  timeout 3 bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1
+}
+
+model_host_path() {
+  local weights="${YOLO_WEIGHTS:-yolo11n.onnx}"
+  if [[ "${weights}" == /data/* ]]; then
+    printf "%s/%s" "${A12_DATA_DIR}" "${weights#/data/}"
+  elif [[ "${weights}" == /* ]]; then
+    printf "%s" "${weights}"
+  else
+    printf "%s/%s" "${A12_DATA_DIR}" "${weights}"
+  fi
+}
+
+cmd_status() {
+  compose ps
+  echo ""
+  docker stats "${CONTAINER}" --no-stream || true
+}
+
+cmd_logs() {
+  local n="${1:-50}"
+  docker logs --tail="${n}" -f "${CONTAINER}"
+}
+
+cmd_events() {
+  local n="${1:-20}"
+  local db="${A12_DATA_DIR}/events.db"
+  if [[ ! -f "${db}" ]]; then
+    fail "Cannot open ${db}"
+    exit 1
+  fi
+  sqlite3 -header -column "${db}" \
+    "SELECT id, datetime, type, label, value, media_path FROM events ORDER BY id DESC LIMIT ${n};"
+}
+
+cmd_config() {
+  load_config_env || true
+  local base
+  base="$(camera_base_url)"
+  echo "A12 configuration"
+  echo "-----------------"
+  echo "Compose file:     ${COMPOSE_FILE}"
+  echo "Compose project:  ${COMPOSE_PROJECT}"
+  echo "Container:        ${CONTAINER}"
+  echo "A12_DATA_DIR:     ${A12_DATA_DIR}"
+  echo "config.env:       ${CONFIG_ENV}"
+  echo "Camera ID:        ${CAMERA_ID:-esp32_cam}"
+  echo "Camera name:      ${CAMERA_NAME:-ESP32 AI Camera}"
+  echo "Camera label:     ${CAMERA_LABEL:-${CAMERA_NAME:-ESP32 AI Camera}}"
+  echo "Camera URL:       ${base:-not set}"
+  echo "MQTT broker:      ${MQTT_BROKER:-not set}:${MQTT_PORT:-1883}"
+  echo "MQTT base topic:  ${MQTT_BASE_TOPIC:-esp32_camera}"
+  echo "YOLO weights:     $(model_host_path)"
+}
+
+cmd_test_camera() {
+  load_config_env || true
+  local base host user pass
+  base="$(camera_base_url)"
+  if [[ -z "${base}" ]]; then
+    fail "ESP32_IP is not set in ${CONFIG_ENV}"
+    exit 1
+  fi
+  host="$(camera_host "${base}")"
+  user="${ESP32_HTTP_USER:-admin}"
+  pass="${ESP32_HTTP_PASS:-admin}"
+
+  echo "A12 camera test"
+  echo "---------------"
+  info "Camera URL: ${base}"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    fail "curl is not installed"
+    exit 1
+  fi
+
+  if curl -fsS --max-time 4 -u "${user}:${pass}" "${base}/health" >/dev/null; then
+    ok "camera /health reachable"
+  else
+    fail "camera /health failed: ${base}/health"
+  fi
+
+  if check_tcp "${host}" 81; then
+    ok "stream port 81 reachable"
+  else
+    fail "stream port 81 unreachable on ${host}"
+  fi
+
+  if curl -fsS --max-time 4 -u "${user}:${pass}" -I "http://${host}:81/detection-stream" >/dev/null 2>&1; then
+    ok "MJPEG /detection-stream responds"
+  else
+    warn "MJPEG HEAD check failed; TCP port 81 may still be enough for streaming"
+  fi
+}
+
+cmd_doctor() {
+  local failures=0
+  load_config_env || true
+
+  echo "A12 doctor"
+  echo "----------"
+
+  if command -v docker >/dev/null 2>&1; then
+    ok "docker found: $(docker --version | sed 's/,.*//')"
+  else
+    fail "docker not found"
+    failures=$((failures + 1))
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    ok "docker compose plugin found"
+  else
+    fail "docker compose plugin not found"
+    failures=$((failures + 1))
+  fi
+
+  if [[ -f "${COMPOSE_FILE}" ]]; then
+    ok "compose file found: ${COMPOSE_FILE}"
+  else
+    fail "compose file missing: ${COMPOSE_FILE}"
+    failures=$((failures + 1))
+  fi
+
+  if [[ -d "${A12_DATA_DIR}" ]]; then
+    ok "A12_DATA_DIR exists: ${A12_DATA_DIR}"
+  else
+    fail "A12_DATA_DIR missing: ${A12_DATA_DIR}"
+    failures=$((failures + 1))
+  fi
+
+  if [[ -f "${CONFIG_ENV}" ]]; then
+    ok "config.env found"
+  else
+    fail "config.env missing: ${CONFIG_ENV}"
+    failures=$((failures + 1))
+  fi
+
+  local model
+  model="$(model_host_path)"
+  if [[ -f "${model}" ]]; then
+    ok "YOLO model found: ${model}"
+  else
+    fail "YOLO model missing: ${model}"
+    failures=$((failures + 1))
+  fi
+
+  local base host user pass
+  base="$(camera_base_url)"
+  if [[ -n "${base}" ]]; then
+    host="$(camera_host "${base}")"
+    user="${ESP32_HTTP_USER:-admin}"
+    pass="${ESP32_HTTP_PASS:-admin}"
+    if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 4 -u "${user}:${pass}" "${base}/health" >/dev/null; then
+      ok "camera /health reachable: ${base}/health"
+    else
+      fail "camera /health unreachable: ${base}/health"
+      failures=$((failures + 1))
+    fi
+    if check_tcp "${host}" 81; then
+      ok "stream port 81 reachable"
+    else
+      fail "stream port 81 unreachable on ${host}"
+      failures=$((failures + 1))
+    fi
+  else
+    fail "ESP32_IP is not configured"
+    failures=$((failures + 1))
+  fi
+
+  if [[ -n "${MQTT_BROKER:-}" ]]; then
+    if check_tcp "${MQTT_BROKER}" "${MQTT_PORT:-1883}"; then
+      ok "MQTT broker reachable: ${MQTT_BROKER}:${MQTT_PORT:-1883}"
+    else
+      fail "MQTT broker unreachable: ${MQTT_BROKER}:${MQTT_PORT:-1883}"
+      failures=$((failures + 1))
+    fi
+  else
+    warn "MQTT_BROKER not set"
+  fi
+
+  if [[ "${TELEGRAM_ENABLED:-false}" =~ ^([Tt]rue|1|yes|on)$ || -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${TELEGRAM_CHAT_ID:-}" ]]; then
+    if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
+      ok "Telegram config present"
+    else
+      fail "Telegram enabled/incomplete: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
+      failures=$((failures + 1))
+    fi
+  else
+    warn "Telegram disabled"
+  fi
+
+  if docker ps --format '{{.Names}}' | grep -qx "${CONTAINER}"; then
+    ok "container running: ${CONTAINER}"
+  else
+    warn "container is not running: ${CONTAINER}"
+  fi
+
+  if git -C "${REPO_DIR}" status --short -- config.env .env '*.db' '*.log' '*.onnx' '*.pkl' 2>/dev/null | grep -q .; then
+    warn "git sees runtime/secrets/model files; verify nothing forbidden is staged"
+  else
+    ok "git hygiene check: no obvious runtime artifacts visible"
+  fi
+
+  echo ""
+  if [[ "${failures}" -eq 0 ]]; then
+    ok "doctor completed without hard failures"
+  else
+    fail "doctor found ${failures} hard issue(s)"
+    exit 1
+  fi
+}
+
+case "${cmd}" in
+  status|ps)
+    cmd_status
     ;;
 
   logs)
-    N="${2:-50}"
-    docker logs --tail="${N}" -f "${CONTAINER}"
+    shift || true
+    cmd_logs "${1:-50}"
     ;;
 
   restart)
-    docker compose -p "${COMPOSE_PROJECT}" restart a12
+    compose restart a12
     ;;
 
-  build)
-    docker compose -p "${COMPOSE_PROJECT}" build
+  build|rebuild)
+    compose build a12
     ;;
 
-  up)
-    docker compose -p "${COMPOSE_PROJECT}" up -d
+  up|start)
+    compose up -d a12
     ;;
 
-  down)
-    docker compose -p "${COMPOSE_PROJECT}" down
+  down|stop)
+    compose down
+    ;;
+
+  doctor)
+    cmd_doctor
+    ;;
+
+  test-camera)
+    cmd_test_camera
+    ;;
+
+  config)
+    cmd_config
+    ;;
+
+  setup)
+    A12_DATA_DIR="${A12_DATA_DIR}" bash "${A12_SYSTEM_DIR}/tools/setup.sh"
     ;;
 
   events)
-    N="${2:-20}"
-    DB="${A12_DATA_DIR}/events.db"
-    sqlite3 "${DB}" \
-      "SELECT id, timestamp, type, label, score FROM events ORDER BY id DESC LIMIT ${N};" \
-      2>/dev/null || { echo "Cannot open ${DB}"; exit 1; }
+    shift || true
+    cmd_events "${1:-20}"
     ;;
 
   tail)
@@ -60,20 +335,38 @@ case "$cmd" in
     ;;
 
   help|--help|-h)
-    cat <<'EOF'
+    cat <<EOF
 Usage: a12 <command> [args]
 
+Environment:
+  A12_DATA_DIR          Runtime data dir (default: /opt/a12-data)
+  A12_COMPOSE_PROJECT  Compose project name (default: a12_system_v2)
+  A12_CONTAINER        Container name (default: a12-system-v2)
+
 Commands:
-  status          Show container status and live resource stats
-  logs [N]        Stream last N lines of container logs (default: 50)
-  restart         Restart the a12 service inside the compose project
-  build           Build (or rebuild) the Docker image
-  up              Start the compose stack in detached mode
-  down            Stop and remove the compose stack
-  events [N]      Query last N events from events.db (default: 20)
-  tail            Follow the a12.log file
-  enroll [args]   Run enroll_faces.py with the given arguments
-  help            Show this help text
+  doctor           Check Docker, config, model, camera, stream, MQTT, Telegram
+  setup            Create data dir, config.env, model, and screenshots folder
+  config           Show sanitized effective paths and key runtime values
+  test-camera      Check ESP32 /health and stream port 81
+  status | ps      Show container status and live resource stats
+  logs [N]         Stream last N lines of container logs (default: 50)
+  tail             Follow the /data a12.log file
+  events [N]       Query last N events from events.db (default: 20)
+  build            Build the Docker image
+  rebuild          Alias for build
+  up | start       Start the a12 service in detached mode
+  restart          Restart the a12 service
+  down | stop      Stop and remove the compose stack
+  enroll [args]    Run enroll_faces.py with the given arguments
+  help             Show this help text
+
+Typical flow:
+  a12 setup
+  nano \$A12_DATA_DIR/config.env
+  a12 doctor
+  a12 build
+  a12 up
+  a12 logs 80
 EOF
     ;;
 

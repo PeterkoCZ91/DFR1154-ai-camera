@@ -224,8 +224,10 @@ bool MotionDetector::compareBlocks() {
         if (diff > threshold && relDiff > MOTION_REL_THRESHOLD) {
             diffMask[i] = 1;
             activeBlocks++;
+            // Slowly drift motion blocks toward current frame so gradual illumination
+            // changes (clouds, sunset) don't accumulate into permanent false triggers.
+            bgModel[i] = bgModel[i] * MOTION_EMA_ALPHA_MOTION + (float)blockGrid[i] * (1.0f - MOTION_EMA_ALPHA_MOTION);
         } else {
-            // Selective background update: only update stable (non-motion) blocks.
             bgModel[i] = bgModel[i] * alpha + (float)blockGrid[i] * (1.0f - alpha);
         }
     }

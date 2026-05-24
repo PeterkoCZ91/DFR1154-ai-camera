@@ -39,29 +39,31 @@ Key files: `firmware/camera_server.cpp`, `firmware/config.h`, `firmware/board_co
 cd a12_system
 
 # First-time setup (creates data dir, copies config)
-bash tools/setup.sh
+./tools/a12 setup
 
-# Install dependencies
-pip install -r requirements.txt
+# Edit runtime config outside git
+nano /opt/a12-data/config.env
 
-# Run config tests
+# Run diagnostics and tests
+./tools/a12 doctor
 python3 test_config.py
 
-# Start via Docker (recommended)
-docker compose -p a12_system_v2 build
-docker compose -p a12_system_v2 up -d
-
-# Or use the CLI wrapper
-bash a12 status
-bash a12 logs
+# Start via Docker wrapper
+./tools/a12 build
+./tools/a12 up
+./tools/a12 logs 80
 ```
+
+## Public Repository Hygiene
+
+Before opening an issue or PR, sanitize logs and examples. Use placeholders such as `<camera-ip>`, `<mqtt-ip>`, `<telegram-token>`, and `<redacted>`. Runtime files belong outside git; see `.gitignore`, `a12_system/.gitignore`, and `SECURITY.md`.
 
 ## Pull Request Guidelines
 
 1. Fork → feature branch (`git checkout -b fix/stream-reconnect`)
 2. Keep changes focused — one fix or feature per PR
 3. Firmware: run `pio run` and confirm it compiles cleanly
-4. A12: run `python3 a12_system/test_config.py` before submitting
+4. A12: run `python3 a12_system/test_config.py` and review `cd a12_system && ./tools/a12 doctor` before submitting
 5. Update `CHANGELOG.md` under the relevant section
 6. Open PR with a clear description of what and why
 
@@ -75,7 +77,8 @@ bash a12 logs
 
 ## What to Avoid
 
-- Don't commit `config.env`, tokens, passwords, face encodings, or model weights
+- Don't commit `config.env`, `.env`, tokens, passwords, Wi-Fi credentials, Home Assistant tokens, MQTT credentials, Telegram bot tokens, face encodings, logs, databases, private camera screenshots, or model weights
+- Don't paste private IP addresses or secrets into public issues, PRs, screenshots, or documentation examples
 - Don't add cloud dependencies — this project is intentionally self-hosted
 - Don't break the Standalone mode when changing A12 mode features
 

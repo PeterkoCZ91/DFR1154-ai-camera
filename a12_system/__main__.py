@@ -56,14 +56,19 @@ def _startup_message(config: dict, detector: Detector) -> str:
     resource_limit = os.environ.get("A12_RESOURCE_LIMIT", "host defaults")
     mode = config.get("security", {}).get("mode", "MONITOR")
     known_faces = len(getattr(detector, "known_face_names", []))
+    camera_id = config.get("camera_id", "esp32_cam")
+    camera_name = config.get("camera_name", camera_id)
     camera_url = config.get("camera_url", "unknown")
+    mqtt_base_topic = config.get("mqtt", {}).get("base_topic", "esp32_camera")
     data_dir = os.environ.get("A12_DATA_DIR", SCRIPT_DIR)
 
     return (
         "A12 System v2 started\n"
         f"Runtime: {runtime}\n"
         f"Mode: {mode}\n"
-        f"Camera: {camera_url}\n"
+        f"Camera: {camera_name} ({camera_id})\n"
+        f"Camera URL: {camera_url}\n"
+        f"MQTT base topic: {mqtt_base_topic}\n"
         f"Known faces: {known_faces}\n"
         f"Limits: {resource_limit}\n"
         f"Data: {data_dir}"
@@ -110,6 +115,11 @@ class Application:
 
         # Initialize components
         config = self.runtime_config.get_all()
+        camera_id = str(config.get("camera_id", "esp32_cam")).strip() or "esp32_cam"
+        camera_name = str(config.get("camera_name", camera_id)).strip() or camera_id
+        camera_label = str(config.get("telegram", {}).get("camera_label", camera_name)).strip()
+        log_prefix = f"[{camera_id}:{camera_name}]"
+        logging.info(f"{log_prefix} Camera identity loaded")
         _user = config.get("camera_http_user", "admin")
         _pass = config.get("camera_http_pass", "admin")
         if _user:
@@ -160,12 +170,16 @@ class Application:
                     # without YOLO confirmation. ESP32 motion gates YOLO only; physical
                     # PIR/HA sensors remain the sole source for unconditional clip saves.
                     window = float(self.runtime_config.get("external_trigger_yolo_window_seconds", 15.0))
+                    was_active = now < float(shared_state.get("external_yolo_until", 0.0))
                     shared_state["external_yolo_until"] = max(
                         float(shared_state.get("external_yolo_until", 0.0)), now + window
                     )
                     shared_state["external_yolo_source"] = "esp32_motion"
-                    force_yolo_event.set()
-                    logging.info("ESP32 motion: ON")
+                    if not was_active:
+                        force_yolo_event.set()
+                        logging.info("ESP32 motion: ON")
+                    else:
+                        logging.debug("ESP32 motion: ON (window active)")
 
             elif event_type == "esp32_person_uncertain":
                 confidence = payload.get("confidence", 0.0)
@@ -201,17 +215,17 @@ class Application:
 
         # Audio monitor
         def audio_callback(rms, msg):
-            logging.info(msg)
-            notifier.send_telegram(msg)
+            logging.info(f"{log_prefix} {msg}")
+            notifier.send_telegram(f"{camera_label}: {msg}" if camera_label else msg)
             self.mqtt_client.publish("audio/alert", "ON")
             self.db.log_event("audio", "LOUD_NOISE", rms)
 
         if self.runtime_config.get("audio_enabled", False):
             self.audio_monitor = AudioMonitor(config, callback=audio_callback)
             self.audio_monitor.start()
-            logging.info("Audio monitor started")
+            logging.info(f"{log_prefix} Audio monitor started")
         else:
-            logging.info("Audio monitor disabled")
+            logging.info(f"{log_prefix} Audio monitor disabled")
 
         # HA monitor
         def ha_sensor_callback(entity_id, sensor_name, old_state, new_state, attributes):
@@ -234,9 +248,9 @@ class Application:
         if self.runtime_config.get("home_assistant_token"):
             self.ha_monitor = HAMonitor(config, callback=ha_sensor_callback)
             self.ha_monitor.start()
-            logging.info("HA Monitor started")
+            logging.info(f"{log_prefix} HA Monitor started")
         else:
-            logging.info("HA Monitor disabled (no token)")
+            logging.info(f"{log_prefix} HA Monitor disabled (no token)")
 
         # Detection pipeline
         self.pipeline = DetectionPipeline(

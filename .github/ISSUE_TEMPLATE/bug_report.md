@@ -29,11 +29,18 @@ A clear and concise description of what you expected to happen.
 - **A12 companion enabled:** Yes / No
 - **Home Assistant integration:** Yes / No
 - **Host OS (for A12 Docker):** Ubuntu / Debian / other
+- **A12 check output:** `./tools/a12 doctor` summary, sanitized
+
+## Privacy check
+
+- [ ] I removed tokens, passwords, Wi-Fi credentials, Home Assistant tokens, MQTT credentials, and Telegram bot tokens
+- [ ] I replaced private IP addresses with placeholders such as `<camera-ip>` and `<mqtt-ip>`
+- [ ] I did not attach `config.env`, `.env`, databases, face encodings, model files, or private camera screenshots
 
 ## Logs
 
 ```
-Paste relevant serial output, Docker logs, or browser console errors here.
+Paste only relevant sanitized serial output, A12 logs, Docker logs, or browser console errors here.
 ```
 
 ## Additional context
