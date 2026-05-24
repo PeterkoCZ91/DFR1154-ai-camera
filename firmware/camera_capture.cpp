@@ -258,7 +258,7 @@ void captureTask(void* p) {
                     // AND lux sensor sees ambient light the lens should also see.
                     // If lux is near zero it's just a dark room — not a covered camera.
                     int mscore = motionDetector.getMotionScore();
-                    if (bright < 6 && mscore < 3 && lux > 2.0f) dark_count++;
+                    if (bright < 6 && mscore < 3 && lux > TAMPER_MIN_LUX) dark_count++;
                     else dark_count = 0;
 
                     bool tamper = false;

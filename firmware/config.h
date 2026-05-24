@@ -42,6 +42,14 @@
 // bot command latency increases to ~15s avg which is acceptable.
 #define TELEGRAM_POLL_INTERVAL_MS 30000
 
+// --- TAMPER DETECTION ---
+// Minimum lux reading required to consider camera_covered tamper.
+// Camera dark + no motion is only flagged as tamper when the lux sensor
+// sees ambient light (i.e. the lens should be seeing it too).
+// In a genuinely dark room lux stays near zero → no false alert.
+// Raise if your environment has strong ambient light even at night (street lamps etc.)
+#define TAMPER_MIN_LUX 2.0f
+
 // Configuration Struct
 struct Config {
   // WiFi & Network
