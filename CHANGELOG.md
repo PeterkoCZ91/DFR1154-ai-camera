@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.12.44] - 2026-05-27
+
+### Added (A12 — Groq vision face recognition + Nuki unlock)
+
+- **Groq vision face recognition (`groq_vision.py`).** Drop-in replacement for local dlib face recognition. Uses LLaMA 4 Scout (free Groq API) to compare a live camera frame against JPEG reference photos stored in `known_faces/<name>/`. No model training required — add a person by dropping 2–3 photos in a folder.
+  - `confidence ≥ 0.90` → known person: Telegram suppressed, Nuki unlock triggered automatically
+  - `confidence 0.65–0.89` → uncertain: Telegram sent with name hint for manual confirmation
+  - `confidence < 0.65` → unknown person: full Telegram alert
+  - API calls rate-limited to 1 per 30 s to stay within Groq free tier (1000 req/min)
+
+- **Nuki Smart Lock auto-unlock via Home Assistant.** When a known person is confirmed at high confidence, A12 calls `lock.unlock` on the configured HA entity (`NUKI_LOCK_ENTITY_ID`). Every unlock is logged locally with a photo in the event database.
+
+- **Known-person motion suppression.** After a known person is identified, PIR-triggered motion Telegram notifications are suppressed for 60 s — no duplicate alerts when the same person triggers the PIR sensor multiple times in one pass.
+
+### Fixed (A12 — detection stability)
+
+- **PIR false-positive reduction.** Raised PIR-triggered YOLO thresholds: `YOLO_PIR_NOTIFY_CONFIDENCE_THRESHOLD` 0.45 → 0.60, `YOLO_PIR_PERSON_CONFIRMATIONS` 1 → 2. Lighting changes (clouds, passing cars) no longer trigger person alerts.
+- **Memory spike fix.** `CLIP_POST_SECONDS` 15 → 30, `ADAPTIVE_CLIP_MAX_POST_SECONDS` 60 → 30, `AUDIO_BUFFER_SECONDS` 22 → 10. Prevents OOM on scenes with frequent PIR triggers (e.g., staircase-mounted sensors).
+- **Stream read timeout** raised 15 s → 30 s to handle temporary WiFi latency without reconnect.
+- **Sabotage detection timeout** raised 30 s → 60 s to reduce false tamper alerts during stream recovery.
+
+### Fixed (Firmware)
+
+- Removed stray `esp_task_wdt_reset()` calls from HTTP handlers and OTA handler. httpd tasks are not subscribed to the WDT; calling reset from them had no effect and cluttered the code.
+- Reverted tamper detection lux-gating (v3.12.43 attempt) — caused a crash loop on first boot after OTA flash when the lux sensor read 0.0 before the first measurement cycle completed.
+
+---
+
 ## [3.12.43] - 2026-05-23
 
 ### Fixed (Firmware — settings GUI)

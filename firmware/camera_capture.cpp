@@ -255,10 +255,10 @@ void captureTask(void* p) {
                     IRConfig irCfg = getIRConfig();
 
                     // Camera covered: brightness near zero AND motion_score near zero
-                    // AND lux sensor sees ambient light the lens should also see.
-                    // If lux is near zero it's just a dark room — not a covered camera.
+                    // (covered lens = uniform black = no noise → score 0)
+                    // Genuine dark scene always has sensor noise → score > 0 even without movement
                     int mscore = motionDetector.getMotionScore();
-                    if (bright < 6 && mscore < 3 && lux > TAMPER_MIN_LUX) dark_count++;
+                    if (bright < 6 && mscore < 3) dark_count++;
                     else dark_count = 0;
 
                     bool tamper = false;

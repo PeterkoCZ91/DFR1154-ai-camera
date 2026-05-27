@@ -5,7 +5,6 @@
 #include "ws_log.h"
 #include "esp_camera.h"
 #include "esp_timer.h"
-#include "esp_task_wdt.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "ArduinoJson.h"
@@ -1168,10 +1167,7 @@ static esp_err_t generic_video_stream_handler(httpd_req_t *req, int *active_clie
              vTaskDelay(pdMS_TO_TICKS(33));
         }
 
-        // Reset WDT periodically (every 30 frames = ~1 second at 30 FPS)
-        if (frame_count % 30 == 0) {
-            esp_task_wdt_reset();
-        }
+        // (WDT reset removed: httpd tasks are not subscribed to WDT)
 
         frame_count++;
     }
@@ -1484,9 +1480,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    // Reset watchdog before potentially blocking operations
-    esp_task_wdt_reset(); // Keep WDT happy during stream processing
-    
     // Apply settings
     sensor_t * s = esp_camera_sensor_get();
     if (s == NULL) {
@@ -2586,8 +2579,6 @@ static esp_err_t sd_download_handler(httpd_req_t *req) {
             return ESP_FAIL;
         }
         sent += read;
-        // Reset WDT for large files
-        if (sent % (64 * 1024) == 0) esp_task_wdt_reset();
     }
     file.close();
 
@@ -2778,8 +2769,6 @@ static esp_err_t reg_debug_handler(httpd_req_t *req) {
 }
 
 static esp_err_t health_handler(httpd_req_t *req) {
-    esp_task_wdt_reset(); // Keep WDT happy in detection stream
-    
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     
@@ -3244,7 +3233,6 @@ static esp_err_t ota_update_handler(httpd_req_t *req) {
         // Progress every 10%
         if (written % (req->content_len / 10 + 1) < recv_len) {
             Serial.printf("OTA: %d%% (%d/%d bytes)\n", written * 100 / req->content_len, written, req->content_len);
-            esp_task_wdt_reset();
         }
     }
 

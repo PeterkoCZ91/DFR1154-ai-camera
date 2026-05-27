@@ -54,7 +54,7 @@ class Camera:
 
         while retries < max_retries:
             try:
-                response = self.session.get(self.stream_url, stream=True, timeout=(5, 15))
+                response = self.session.get(self.stream_url, stream=True, timeout=(5, 30))
                 if response.status_code != 200:
                     logging.error(f"{self.log_prefix} Bad stream status: {response.status_code}")
                     response.close()
