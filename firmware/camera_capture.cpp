@@ -255,10 +255,11 @@ void captureTask(void* p) {
                     IRConfig irCfg = getIRConfig();
 
                     // Camera covered: brightness near zero AND motion_score near zero
-                    // (covered lens = uniform black = no noise → score 0)
-                    // Genuine dark scene always has sensor noise → score > 0 even without movement
+                    // AND lux sensor sees ambient light the lens should also see.
+                    // Near-zero lux = dark room = genuine dark, not tamper.
+                    // Boot guard suppresses counting for 2 min after reboot (covers OTA dark period).
                     int mscore = motionDetector.getMotionScore();
-                    if (bright < 6 && mscore < 3) dark_count++;
+                    if (bright < 6 && mscore < 3 && lux > TAMPER_MIN_LUX && millis() > TAMPER_BOOT_GUARD_MS) dark_count++;
                     else dark_count = 0;
 
                     bool tamper = false;
