@@ -188,6 +188,9 @@ esp_err_t audioStreamHandler(httpd_req_t *req) {
         // Read from I2S Channel via shared mutex (other readers: recording, level)
         esp_err_t result = audioReadLocked(local_stream_buf, stream_buf_bytes, &bytes_read, pdMS_TO_TICKS(1000));
 
+        if (result == ESP_ERR_TIMEOUT) {
+            continue; // I2S busy (recording), retry next cycle
+        }
         if (result != ESP_OK) {
             Serial.printf("❌ I2S read error: %d\n", result);
             res = ESP_FAIL;
