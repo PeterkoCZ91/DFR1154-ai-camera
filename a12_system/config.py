@@ -131,7 +131,7 @@ DEFAULT_CONFIG = {
         "animal_detection": True,
         "require_sensor_confirmation": False,
         "sabotage_detection": False,
-        "sabotage_timeout": 30.0,
+        "sabotage_timeout": 90.0,
         "sensor_fusion_window_seconds": 10.0,
     },
     "camera_profiles": {
