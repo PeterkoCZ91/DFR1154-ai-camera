@@ -33,6 +33,9 @@ screenshots/
 camera_photos/
 artifacts/
 
+# Groq face recognition — reference photos (private, not for public repo)
+known_faces/
+
 # OS
 .DS_Store
 Thumbs.db

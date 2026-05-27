@@ -281,6 +281,8 @@ ENV_OVERRIDES = [
     # Home Assistant
     ("HOME_ASSISTANT_URL", "home_assistant_url", str),
     ("HOME_ASSISTANT_TOKEN", "home_assistant_token", str),
+    ("GROQ_API_KEY", "groq_api_key", str),
+    ("NUKI_LOCK_ENTITY_ID", "nuki_lock_entity_id", str),
     # Debug
     ("DEBUG_DETECTION", "debug_detection", _parse_bool),
     ("LOG_LEVEL", "logging.level", lambda v: v.upper()),

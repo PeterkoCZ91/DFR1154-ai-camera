@@ -6,18 +6,18 @@
 [![Python](https://img.shields.io/badge/A12_companion-Python_3.10+-blue?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Version](https://img.shields.io/badge/Version-3.12.43-blue)]()
+[![Version](https://img.shields.io/badge/Version-3.12.44-blue)]()
 
 Firmware for the **DFRobot DFR1154 AI Camera Module** (FireBeetle 2 ESP32-S3 + OV3660 3 MP + LTR-308 lux + PDM mic). A lock-free PSRAM ring buffer feeds MJPEG streaming, RTSP, AVI recording, on-device person detection (Edge Impulse FOMO + ByteTrack) concurrently from a single camera. MQTT auto-discovery for Home Assistant, Telegram bot, time-lapse, web dashboard with live log. No cloud required.
 
 The optional `a12_system/` Python companion is part of **A12**, a multi-camera surveillance system that pairs with this firmware (and future ESP-camera modules) for YOLOv11n inference, face recognition, and sensor fusion with Home Assistant / Zigbee.
 
 > [!TIP]
-> **New in v3.12.43** — Settings GUI now exposes `person_telegram_photo` toggle and idle scan interval (`person_recheck_interval`). See [CHANGELOG](CHANGELOG.md).
+> **New in v3.12.44** — A12 now supports **Groq vision face recognition** (LLaMA 4 Scout, free tier) and **automatic Nuki Smart Lock unlock** for recognized residents. No model training — drop reference photos in a folder. See [CHANGELOG](CHANGELOG.md).
 >
-> *v3.12.42* — `PD_MIN_DETECTIONS` 2→1, `IDLE_SCAN_MS` 30s→5s, `person_telegram_photo` flag independent of `motion_telegram_photo`, A12 MQTT `clean_session=True` fix. *v3.12.41* — TFLite Micro export + ESP-NN SIMD: inference ~3500 ms → ~300–500 ms (11× speedup). *v3.12.39* — UNCERTAIN detections routed via MQTT to A12 for YOLO verification. *v3.12.38* — AI fallback timeout 12 s → 5 s. *v3.12.36* — Three-state `PersonDecision` (NONE / UNCERTAIN / CONFIDENT).
+> *v3.12.43* — Settings GUI exposes `person_telegram_photo` toggle and idle scan interval. *v3.12.42* — `PD_MIN_DETECTIONS` 2→1, `IDLE_SCAN_MS` 30s→5s, A12 MQTT `clean_session=True` fix. *v3.12.41* — TFLite Micro + ESP-NN SIMD: ~300–500 ms inference (11× speedup). *v3.12.39* — UNCERTAIN detections routed via MQTT to A12 for YOLO verification.
 >
-> *v3.12.34* — Telegram TLS reuse (static `WiFiClientSecure`, no more mbedTLS fragmentation). *v3.12.32* — Telegram boot hang fix, `telegramTask` priority 1→3. *v3.12.17* — A12: exponential backoff, recovery snapshot.
+> *v3.12.34* — Telegram TLS reuse. *v3.12.32* — Telegram boot hang fix. *v3.12.17* — A12: exponential backoff, recovery snapshot.
 
 ---
 
@@ -28,7 +28,8 @@ The optional `a12_system/` Python companion is part of **A12**, a multi-camera s
 | Hardware | ESP32 only | ESP32 + server / Raspberry Pi |
 | Person detection | FOMO on-device (~300–500 ms) | FOMO gates YOLOv11n via A12 (server-side) |
 | UNCERTAIN detections | Direct Telegram (low-confidence caption) | MQTT → A12 YOLO verify → Telegram only if confirmed |
-| Face recognition | No | Yes (whitelist-based) |
+| Face recognition | No | Yes — Groq vision (LLaMA 4 Scout, free API) |
+| Auto door unlock | No | Yes — Nuki via Home Assistant on high-confidence match |
 | Telegram alerts | Yes — sent by ESP32 | Yes — sent by A12 (with face ID + AV clip) |
 | AV clips | No | Yes — MP4 with audio |
 | Home Assistant | MQTT (direct) | MQTT (direct + A12 enrichment) |
@@ -190,7 +191,7 @@ Once connected, open the **web dashboard** at `http://<device-ip>/`. HTTP Basic 
 
 ### Optional: A12 Companion (Enhanced mode)
 
-`a12_system/` adds YOLOv11n inference, face recognition, AV clip recording, and daily summaries on a Pi or x86 host running Docker.
+`a12_system/` adds YOLOv11n inference, Groq vision face recognition, AV clip recording, Nuki auto-unlock, and daily summaries on a Pi or x86 host running Docker.
 
 ```bash
 # One-time setup (creates data dir, downloads YOLO model, copies config template)
@@ -206,11 +207,33 @@ a12_system/tools/a12 doctor
 a12_system/tools/a12 build
 a12_system/tools/a12 up
 a12_system/tools/a12 logs 80
-
-# Optional: enroll faces (stand in front of the camera for ~40 seconds)
-python3 a12_system/tools/enroll_faces.py \
-  --name "Alice" --capture --camera http://<device-ip> --count 23
 ```
+
+**Face recognition + Nuki unlock (optional)**
+
+A12 uses [Groq](https://console.groq.com) (LLaMA 4 Scout, free tier) to recognize residents by comparing live camera frames against reference photos — no local model training needed.
+
+```bash
+# 1. Get a free API key at https://console.groq.com → API Keys
+#    Add to config.env:
+GROQ_API_KEY=gsk_your_key_here
+NUKI_LOCK_ENTITY_ID=lock.nuki_smart_lock   # HA entity
+
+# 2. Create a folder with 2–3 JPEG reference photos per person
+mkdir -p /opt/a12-data/known_faces/alice
+# copy or take snapshots — camera built-in /frame endpoint works great
+
+# 3. Restart A12
+a12_system/tools/a12 up
+```
+
+How A12 decides what to do with a detected person:
+
+| Groq confidence | Action |
+|---|---|
+| ≥ 90% | Telegram skipped · Nuki unlocked automatically |
+| 65–89% | Telegram sent with name hint · manual confirm |
+| < 65% | Full Telegram alert — unknown visitor |
 
 > [!NOTE]
 > A12 requires the YOLO model file (`yolo11n.onnx`, ~6 MB). `setup.sh` downloads it automatically. If you prefer manual download: `https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx`
@@ -264,9 +287,18 @@ The OV3660 sensor captures JPEG frames into a single FreeRTOS `captureTask` runn
            A12 YOLO   Telegram
           (verify)   (direct)
                 |
+             Person?
+            Yes |
                 v
-            Telegram
-            (if OK)
+         Groq vision
+        (LLaMA 4 Scout)
+       /       |        \
+    >=90%   65-89%      <65%
+      |        |          |
+      v        v          v
+   Nuki    Telegram    Telegram
+  unlock   (+ name     (unknown
+ skip TG    hint)       alert)
 ```
 
 ### Ring Buffer Protocol (CAS-Based)

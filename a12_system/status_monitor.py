@@ -68,7 +68,7 @@ class StatusMonitor(threading.Thread):
         last_frame = self.shared_state.get("last_frame", current_time)
         stream_lag = current_time - last_frame
 
-        timeout = self.runtime_config.get("security.sabotage_timeout", 30.0)
+        timeout = self.runtime_config.get("security.sabotage_timeout", 60.0)
 
         if stream_lag > timeout:
             if not self.sabotage_triggered:

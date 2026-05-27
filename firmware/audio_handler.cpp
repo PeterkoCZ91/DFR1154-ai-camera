@@ -64,7 +64,7 @@ typedef struct {
 esp_err_t sendWavHeader(httpd_req_t *req) {
     WavHeader header;
     memcpy(header.riff, "RIFF", 4);
-    header.fileSize = 0; // Unknown size for live stream
+    header.fileSize = 0xFFFFFFFF; // Indefinite live stream
     memcpy(header.wave, "WAVE", 4);
     memcpy(header.fmt, "fmt ", 4);
     header.fmtSize = 16;
@@ -75,7 +75,7 @@ esp_err_t sendWavHeader(httpd_req_t *req) {
     header.byteRate = header.sampleRate * header.numChannels * (header.bitsPerSample / 8);
     header.blockAlign = header.numChannels * (header.bitsPerSample / 8);
     memcpy(header.data, "data", 4);
-    header.dataSize = 0; // Unknown size for live stream
+    header.dataSize = 0xFFFFFFFF; // Indefinite live stream
 
     return httpd_resp_send_chunk(req, (const char*)&header, sizeof(WavHeader));
 }

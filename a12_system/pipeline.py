@@ -148,6 +148,42 @@ class DetectionPipeline:
         self._notify_thread = threading.Thread(target=self._notification_worker, daemon=True)
         self._notify_thread.start()
 
+        # Groq vision face recognition
+        self.groq_vision = None
+        groq_api_key = runtime_config.get("groq_api_key", "")
+        groq_faces_dir = os.path.join(script_dir, "known_faces")
+        if groq_api_key:
+            from .groq_vision import GroqVision
+            self.groq_vision = GroqVision(groq_api_key, groq_faces_dir)
+            logging.info(f"{self.log_prefix} Groq vision face recognition enabled")
+        else:
+            logging.info(f"{self.log_prefix} Groq vision disabled (no GROQ_API_KEY)")
+
+        # HA URL for Nuki unlock
+        self.ha_url = runtime_config.get("home_assistant_url", "")
+        self.ha_token = runtime_config.get("home_assistant_token", "")
+        self.nuki_entity_id = runtime_config.get("nuki_lock_entity_id", "lock.nuki_smart_lock")
+
+        # Suppress motion Telegram when known person was recently identified
+        self._known_person_until = 0.0
+
+    def _trigger_nuki_unlock(self, name: str):
+        if not self.ha_url or not self.ha_token:
+            logging.warning(f"{self.log_prefix} Nuki unlock skipped — no HA config")
+            return
+        try:
+            import requests as _req
+            _req.post(
+                f"{self.ha_url}/api/services/lock/unlock",
+                headers={"Authorization": f"Bearer {self.ha_token}", "Content-Type": "application/json"},
+                json={"entity_id": self.nuki_entity_id},
+                timeout=5,
+            )
+            logging.info(f"{self.log_prefix} Nuki unlock triggered for '{name}'")
+            self.notifier.send_telegram(f"Odemknuto pro {name}", bypass_cooldown=True)
+        except Exception as e:
+            logging.error(f"{self.log_prefix} Nuki unlock failed: {e}")
+
     def _telegram_message(self, message: str) -> str:
         if self.telegram_label:
             return f"{self.telegram_label}: {message}"
@@ -504,11 +540,32 @@ class DetectionPipeline:
             self.stats.record_detection(label)
             self.db.log_event("detection", label, float(confidence))
 
-            # Face recognition
+            # Face recognition — Groq vision (primary) or dlib fallback
             person_name = ""
             skip_telegram = False
+            groq_decision = None
 
-            if self.runtime_config.get("face_recognition", {}).get("enabled", False):
+            if self.groq_vision is not None:
+                gname, gconf, gdecision = self.groq_vision.identify(frame)
+                groq_decision = gdecision
+                if gdecision == "cooldown":
+                    pass  # rate limit — skip silently
+                else:
+                    self.db.log_event("face", gname or "unknown", gconf)
+                    self.mqtt_client.publish("face", gname or "unknown")
+                    logging.info(f"{self.log_prefix} Groq face: {gname} ({gconf:.2f}) → {gdecision}")
+
+                if gdecision == "auto":
+                    person_name = gname
+                    skip_telegram = True
+                    self._known_person_until = time.time() + 60.0
+                    logging.info(f"{self.log_prefix} Known person '{gname}' — Telegram skipped, unlock queued")
+                    self._trigger_nuki_unlock(gname)
+                elif gdecision == "confirm":
+                    person_name = gname
+                    # notifier will send Telegram with unlock button — handled in notify call below
+
+            elif self.runtime_config.get("face_recognition", {}).get("enabled", False):
                 is_known, name = self.detector.identify_person(frame)
                 person_name = name
                 self.stats.record_face_attempt(is_known, name)
@@ -589,13 +646,14 @@ class DetectionPipeline:
         self.last_pir_sensor_activity_recorded = sensor_activity
         self.shared_state["last_event_activity"] = current_time
 
+        known_person_active = current_time < self._known_person_until
         logging.info("PIR trigger queued recording without YOLO confirmation")
         self._queue_notification(
             label,
             timestamp,
             "",
             label_folder,
-            send_telegram=self.pir_recording_send_telegram,
+            send_telegram=self.pir_recording_send_telegram and not known_person_active,
             bypass_telegram_cooldown=self.pir_recording_bypass_cooldown,
             event_score=None,
         )
