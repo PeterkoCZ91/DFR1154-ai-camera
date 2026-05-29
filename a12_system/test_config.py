@@ -119,6 +119,31 @@ def test_camera_profiles():
     print("[OK] Camera profiles: DAY/DUSK/NIGHT with correct values")
 
 
+def test_pir_yolo_gate_defaults():
+    """Verify PIR YOLO gate is present and defaults to False (backward-compat)."""
+    pir = DEFAULT_CONFIG["pir_recording"]
+    assert "require_yolo_for_telegram" in pir, "Missing pir_recording.require_yolo_for_telegram"
+    assert pir["require_yolo_for_telegram"] is False, "Must default to False for backward-compat"
+    print("[OK] pir_recording.require_yolo_for_telegram defaults to False")
+
+
+def test_pir_yolo_gate_env_override():
+    """Verify PIR_RECORDING_REQUIRE_YOLO_FOR_TELEGRAM env var is wired up."""
+    import tempfile
+    old = os.environ.get("PIR_RECORDING_REQUIRE_YOLO_FOR_TELEGRAM")
+    try:
+        os.environ["PIR_RECORDING_REQUIRE_YOLO_FOR_TELEGRAM"] = "true"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = load_config(tmpdir)
+        assert config["pir_recording"]["require_yolo_for_telegram"] is True
+    finally:
+        if old is None:
+            os.environ.pop("PIR_RECORDING_REQUIRE_YOLO_FOR_TELEGRAM", None)
+        else:
+            os.environ["PIR_RECORDING_REQUIRE_YOLO_FOR_TELEGRAM"] = old
+    print("[OK] PIR_RECORDING_REQUIRE_YOLO_FOR_TELEGRAM env override works")
+
+
 def test_camera_instance_env_overrides():
     """Verify one codebase can run as distinct camera instances."""
     import tempfile
@@ -177,6 +202,8 @@ if __name__ == "__main__":
     test_no_duplicate_flat_keys()
     test_security_config()
     test_camera_profiles()
+    test_pir_yolo_gate_defaults()
+    test_pir_yolo_gate_env_override()
     test_camera_instance_env_overrides()
     test_load_config_no_crash()
     print("\n=== All tests passed ===")

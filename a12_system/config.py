@@ -95,6 +95,7 @@ DEFAULT_CONFIG = {
         "send_telegram": True,
         "bypass_cooldown": True,
         "cooldown_seconds": 30,
+        "require_yolo_for_telegram": False,
     },
     "adaptive_clip": {
         "enabled": True,
@@ -270,6 +271,7 @@ ENV_OVERRIDES = [
     ("PIR_RECORDING_SEND_TELEGRAM", "pir_recording.send_telegram", _parse_bool),
     ("PIR_RECORDING_BYPASS_COOLDOWN", "pir_recording.bypass_cooldown", _parse_bool),
     ("PIR_RECORDING_COOLDOWN_SECONDS", "pir_recording.cooldown_seconds", _parse_int),
+    ("PIR_RECORDING_REQUIRE_YOLO_FOR_TELEGRAM", "pir_recording.require_yolo_for_telegram", _parse_bool),
     ("ADAPTIVE_CLIP_ENABLED", "adaptive_clip.enabled", _parse_bool),
     ("ADAPTIVE_CLIP_IDLE_SECONDS", "adaptive_clip.idle_seconds", _parse_int),
     ("ADAPTIVE_CLIP_MAX_POST_SECONDS", "adaptive_clip.max_post_seconds", _parse_int),
