@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased] - 2026-05-29
+
+### Fixed (A12 — night false-positive reduction)
+
+- **PIR YOLO gate (`pir_recording.require_yolo_for_telegram`).** New boolean flag (default `false`). When `true`, a PIR sensor trigger always saves a local MP4 clip but withholds the Telegram notification until YOLO confirms a person within the existing `external_yolo_until` window. Eliminates false "Motion detected" Telegram spam caused by an external PIR-activated street light turning on and triggering a brief brightness change in the camera frame. Configurable via `PIR_RECORDING_REQUIRE_YOLO_FOR_TELEGRAM=true` env var.
+
+- **Brightness watchdog (`brightness_watchdog_threshold`, `brightness_watchdog_strikes`).** Detects AEC freeze on OV3660 (UXGA mode) where the sensor locks near-zero exposure and produces permanently dark frames. After N consecutive heartbeat periods (default 2 × 30 s) below the brightness threshold (default 20), the watchdog resets AEC/AGC to sane starting values and sends a Telegram notification. Wired via `camera_reset_fn` callback in `Application`.
+
+### Fixed (Firmware — tamper detection)
+
+- **`TAMPER_MIN_LUX` raised 2.0 → 8.0.** Location has 3–5 lux ambient at night. The previous threshold of 2.0 barely filtered anything, causing AEC overcompensation after a neighbouring PIR street light flash (3–5 lux) to produce false "⚠️ Tamper alert: camera_covered" alerts. At 8.0 the gate only trips when genuine ambient light is present and the lens is simultaneously dark.
+
+---
+
 ## [3.12.44] - 2026-05-27
 
 ### Added (A12 — Groq vision face recognition + Nuki unlock)
