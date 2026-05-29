@@ -9,6 +9,7 @@ from collections import deque
 from datetime import datetime
 
 import cv2
+import numpy as np
 
 
 class DetectionPipeline:
@@ -28,6 +29,7 @@ class DetectionPipeline:
         shared_state: dict,
         status_monitor,
         script_dir: str,
+        camera_reset_fn=None,
     ):
         self.runtime_config = runtime_config
         self.detector = detector
@@ -127,6 +129,9 @@ class DetectionPipeline:
         self.pir_recording_bypass_cooldown = bool(
             runtime_config.get("pir_recording.bypass_cooldown", True)
         )
+        self.pir_recording_require_yolo = bool(
+            runtime_config.get("pir_recording.require_yolo_for_telegram", False)
+        )
         self.pir_recording_cooldown = max(
             0, int(runtime_config.get("pir_recording.cooldown_seconds", 30))
         )
@@ -166,6 +171,13 @@ class DetectionPipeline:
 
         # Suppress motion Telegram when known person was recently identified
         self._known_person_until = 0.0
+
+        # Brightness watchdog — detects AEC freeze (OV3660 UXGA issue)
+        self._camera_reset_fn = camera_reset_fn
+        self._dark_frame_threshold = int(runtime_config.get("brightness_watchdog_threshold", 20))
+        self._dark_consecutive_required = int(runtime_config.get("brightness_watchdog_strikes", 2))
+        self._dark_consecutive_count = 0
+        self._last_exposure_reset = 0.0
 
     def _trigger_nuki_unlock(self, name: str):
         if not self.ha_url or not self.ha_token:
@@ -237,6 +249,31 @@ class DetectionPipeline:
             self.mqtt_client.publish("camera/status/notification_queue", str(self.notification_queue.qsize()))
             self.last_heartbeat = current_time
             self.frame_count = 0
+
+            # Brightness watchdog: detect AEC freeze (OV3660 gets stuck at near-zero exposure)
+            if self._camera_reset_fn:
+                small = cv2.resize(frame, (160, 120))
+                brightness = float(np.mean(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)))
+                self.shared_state["last_frame_brightness"] = brightness
+                if brightness < self._dark_frame_threshold:
+                    self._dark_consecutive_count += 1
+                    logging.warning(
+                        f"{self.log_prefix} Dark frame detected (brightness={brightness:.1f},"
+                        f" strike {self._dark_consecutive_count}/{self._dark_consecutive_required})"
+                    )
+                    if (
+                        self._dark_consecutive_count >= self._dark_consecutive_required
+                        and current_time - self._last_exposure_reset > 300
+                    ):
+                        logging.warning(f"{self.log_prefix} AEC freeze suspected — resetting exposure")
+                        self._dark_consecutive_count = 0
+                        self._last_exposure_reset = current_time
+                        try:
+                            self._camera_reset_fn()
+                        except Exception as _e:
+                            logging.error(f"{self.log_prefix} Exposure reset failed: {_e}")
+                else:
+                    self._dark_consecutive_count = 0
 
         # Motion detection
         # Primary: OpenCV frame differencing (disabled when motion.threshold=0)
@@ -648,12 +685,20 @@ class DetectionPipeline:
 
         known_person_active = current_time < self._known_person_until
         logging.info("PIR trigger queued recording without YOLO confirmation")
+        # When require_yolo_for_telegram is True, suppress Telegram from the PIR path.
+        # The existing external_yolo_until window is already open; if YOLO confirms a person,
+        # _handle_person_detections will send Telegram through its own path.
+        pir_send_telegram = (
+            self.pir_recording_send_telegram
+            and not known_person_active
+            and not self.pir_recording_require_yolo
+        )
         self._queue_notification(
             label,
             timestamp,
             "",
             label_folder,
-            send_telegram=self.pir_recording_send_telegram and not known_person_active,
+            send_telegram=pir_send_telegram,
             bypass_telegram_cooldown=self.pir_recording_bypass_cooldown,
             event_score=None,
         )
