@@ -252,6 +252,18 @@ class Application:
         else:
             logging.info(f"{log_prefix} HA Monitor disabled (no token)")
 
+        # Exposure reset callback — triggered by brightness watchdog when AEC freezes
+        exposure_reset_settings = {
+            "aec": 1, "ae_level": 0, "aec_value": 800, "agc": 1, "gainceiling": 4,
+        }
+
+        def _camera_exposure_reset():
+            camera.set_camera_settings(exposure_reset_settings)
+            notifier.send_telegram(
+                f"{camera_label}: Camera exposure auto-reset (AEC freeze detected)",
+                bypass_cooldown=True,
+            )
+
         # Detection pipeline
         self.pipeline = DetectionPipeline(
             runtime_config=self.runtime_config,
@@ -266,6 +278,7 @@ class Application:
             shared_state=shared_state,
             status_monitor=self.status_monitor,
             script_dir=DATA_DIR,
+            camera_reset_fn=_camera_exposure_reset,
         )
 
         # Initial camera config
