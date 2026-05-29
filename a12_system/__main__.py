@@ -254,7 +254,7 @@ class Application:
 
         # Exposure reset callback — triggered by brightness watchdog when AEC freezes
         exposure_reset_settings = {
-            "aec": 1, "ae_level": 0, "aec_value": 800, "agc": 1, "gainceiling": 4,
+            "aec": 1, "ae_level": 0, "agc": 1, "gainceiling": 4,
         }
 
         def _camera_exposure_reset():
