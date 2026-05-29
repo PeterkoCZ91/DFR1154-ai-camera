@@ -45,7 +45,7 @@
 // --- TAMPER DETECTION ---
 // Minimum lux required to flag camera_covered. Near-zero lux = dark room = not tamper.
 // Raise if your environment has strong ambient light at night (street lamps etc.)
-#define TAMPER_MIN_LUX        2.0f
+#define TAMPER_MIN_LUX        8.0f
 // Suppress tamper counting for this many ms after boot — covers OTA reboot dark period.
 #define TAMPER_BOOT_GUARD_MS  120000UL
 
