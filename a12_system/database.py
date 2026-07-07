@@ -85,6 +85,28 @@ class EventDB:
                 logging.error(f"Failed to get events: {e}")
                 return []
 
+    def get_event_counts_since(self, since_timestamp: float) -> dict[tuple[str, str], int]:
+        """Return event counts grouped by type and label since a Unix timestamp."""
+        with self.lock:
+            try:
+                c = self.conn.cursor()
+                c.execute(
+                    """
+                    SELECT type, label, COUNT(*)
+                    FROM events
+                    WHERE timestamp >= ?
+                    GROUP BY type, label
+                    """,
+                    (since_timestamp,),
+                )
+                return {
+                    (str(event_type), str(label)): int(count)
+                    for event_type, label, count in c.fetchall()
+                }
+            except Exception as e:
+                logging.error(f"Failed to get event counts: {e}")
+                return {}
+
     def close(self) -> None:
         """Close the database connection."""
         with self.lock:

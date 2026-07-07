@@ -5,8 +5,11 @@ import math
 import struct
 import threading
 import time
+from urllib.parse import urlsplit
 
 import requests
+
+from .mdns_resolver import resolve_host
 
 
 class AudioMonitor:
@@ -20,8 +23,11 @@ class AudioMonitor:
         # Network
         self.session = requests.Session()
         self.audio_port = config.get("audio_port", 82)
-        host = config["camera_url"].split("://")[-1].split(":")[0]
-        self.stream_url = f"http://{host}:{self.audio_port}/audio.wav"
+        parsed = urlsplit(config["camera_url"] if "://" in config["camera_url"] else f"http://{config['camera_url']}")
+        self._protocol = parsed.scheme or "http"
+        self._configured_host = parsed.hostname or config["camera_url"].split("://")[-1].split(":")[0]
+        self.stream_url = ""
+        self._refresh_stream_url(force=True)
 
         # Settings (dBFS)
         audio_cfg = config.get("audio", {})
@@ -50,6 +56,11 @@ class AudioMonitor:
         self.buffer_size = 16000 * buffer_seconds * 2
         self.audio_buffer = bytearray()
 
+
+    def _refresh_stream_url(self, *, force: bool = False) -> None:
+        host = resolve_host(self._configured_host, force=force)
+        self.stream_url = f"{self._protocol}://{host}:{self.audio_port}/audio.wav"
+
     def start(self) -> None:
         if self.running:
             return
@@ -73,9 +84,13 @@ class AudioMonitor:
     def _monitor_loop(self) -> None:
         chunk_size = 1024
 
+        force_resolve = False
+
         while self.running:
             response = None
             try:
+                self._refresh_stream_url(force=force_resolve)
+                force_resolve = False
                 logging.debug(f"Connecting to {self.stream_url}")
                 response = self.session.get(self.stream_url, stream=True, timeout=5)
 
@@ -117,6 +132,7 @@ class AudioMonitor:
                     self._process_chunk(chunk)
 
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                force_resolve = True
                 time.sleep(5)
             except Exception as e:
                 logging.error(f"Audio monitor error: {e}")

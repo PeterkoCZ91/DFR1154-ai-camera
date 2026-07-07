@@ -19,7 +19,8 @@ def test_defaults():
         "camera_id", "camera_name", "camera_url", "yolo", "motion", "telegram", "mqtt", "audio",
         "security", "camera_profiles", "logging", "face_recognition",
         "gif", "clip_pre_seconds", "clip_post_seconds", "ir_control",
-        "camera_init_settings", "external_trigger_yolo_window_seconds",
+        "camera_init_settings", "camera_exposure_reset_settings",
+        "external_trigger_yolo_window_seconds",
         "external_trigger_yolo_interval_seconds", "media_retention_days",
         "media_cleanup_interval_seconds", "notification_queue_maxsize", "adaptive_clip", "event_scoring",
     ]
@@ -76,6 +77,7 @@ def test_media_cleanup_defaults():
 def test_yolo_defaults():
     """Verify YOLO defaults point to v11, not v4."""
     assert DEFAULT_CONFIG["yolo"]["weights"] == "yolo11n.onnx", "YOLO should default to v11"
+    assert DEFAULT_CONFIG["yolo"]["classes"] == ["person", "dog"]
     assert DEFAULT_CONFIG["yolo"]["confidence_threshold"] == 0.55
     assert DEFAULT_CONFIG["yolo"]["notify_confidence_threshold"] == 0.55
     assert DEFAULT_CONFIG["yolo"]["person_confirmations"] == 2
@@ -117,6 +119,18 @@ def test_camera_profiles():
     assert profiles["DAY"]["brightness"] == 0
     assert profiles["DUSK"]["brightness"] == 3
     print("[OK] Camera profiles: DAY/DUSK/NIGHT with correct values")
+
+
+def test_camera_exposure_reset_defaults():
+    """Verify AEC freeze reset uses a high-exposure recovery profile."""
+    reset = DEFAULT_CONFIG["camera_exposure_reset_settings"]
+    assert reset["aec"] == 1
+    assert reset["aec2"] == 1
+    assert reset["ae_level"] == 5
+    assert reset["agc"] == 1
+    assert reset["gainceiling"] == 6
+    assert reset["brightness"] == 3
+    print("[OK] Camera exposure reset defaults: high-exposure recovery profile")
 
 
 def test_pir_yolo_gate_defaults():
@@ -202,6 +216,7 @@ if __name__ == "__main__":
     test_no_duplicate_flat_keys()
     test_security_config()
     test_camera_profiles()
+    test_camera_exposure_reset_defaults()
     test_pir_yolo_gate_defaults()
     test_pir_yolo_gate_env_override()
     test_camera_instance_env_overrides()

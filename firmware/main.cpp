@@ -1,6 +1,7 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include "esp_wifi.h"  // For esp_wifi_set_ps()
+#include "esp_system.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>  // For Telegram photo upload (HTTPS multipart)
 #include "esp_timer.h"
@@ -83,7 +84,7 @@ int initZone8_9 = -1;  // 0x568c expected 0xEE
 
 // Global health instances
 WiFiHealth wifi_health = {0, 0, 0, false, "unknown"}; // char[16] init
-SystemStats sys_stats = {0, 0, 0};
+SystemStats sys_stats = {0, 0, 0, 0, 0, 0, 0};
 
 // WiFi reconnect exponential backoff
 static int reconnect_delay_ms = 10000;  // Start with 10s (was fixed at 10s before)
@@ -322,13 +323,79 @@ const char* getWiFiQuality(int rssi) {
     return "critical";
 }
 
+const char* getResetReasonName(uint32_t reason) {
+    switch ((esp_reset_reason_t)reason) {
+        case ESP_RST_UNKNOWN:   return "UNKNOWN";
+        case ESP_RST_POWERON:   return "POWERON";
+        case ESP_RST_EXT:       return "EXT";
+        case ESP_RST_SW:        return "SW";
+        case ESP_RST_PANIC:     return "PANIC";
+        case ESP_RST_INT_WDT:   return "INT_WDT";
+        case ESP_RST_TASK_WDT:  return "TASK_WDT";
+        case ESP_RST_WDT:       return "WDT";
+        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT";
+        case ESP_RST_SDIO:      return "SDIO";
+#ifdef ESP_RST_USB
+        case ESP_RST_USB:       return "USB";
+#endif
+#ifdef ESP_RST_JTAG
+        case ESP_RST_JTAG:      return "JTAG";
+#endif
+#ifdef ESP_RST_EFUSE
+        case ESP_RST_EFUSE:     return "EFUSE";
+#endif
+#ifdef ESP_RST_PWR_GLITCH
+        case ESP_RST_PWR_GLITCH:return "PWR_GLITCH";
+#endif
+#ifdef ESP_RST_CPU_LOCKUP
+        case ESP_RST_CPU_LOCKUP:return "CPU_LOCKUP";
+#endif
+        default:                return "OTHER";
+    }
+}
+
 // Helper: Load System Stats
+static constexpr uint32_t SYSTEM_STATS_MAGIC = 0xA12C2601;
+static constexpr uint32_t SYSTEM_STATS_VERSION = 2;
+
+struct PersistedSystemStats {
+    uint32_t magic;
+    uint32_t version;
+    SystemStats stats;
+};
+
+struct LegacySystemStatsV1 {
+    uint32_t total_restarts;
+    uint32_t last_restart_reason;
+    unsigned long longest_uptime;
+};
+
 SystemStats loadSystemStats() {
-    SystemStats stats = {0, 0, 0};
+    SystemStats stats = {0, 0, 0, 0, 0, 0, 0};
     if (LittleFS.exists("/system_stats.bin")) {
         File file = LittleFS.open("/system_stats.bin", "r");
         if (file) {
-            file.read((uint8_t*)&stats, sizeof(SystemStats));
+            size_t size = file.size();
+            if (size == sizeof(PersistedSystemStats)) {
+                PersistedSystemStats persisted = {};
+                if (file.read((uint8_t*)&persisted, sizeof(persisted)) == sizeof(persisted) &&
+                    persisted.magic == SYSTEM_STATS_MAGIC &&
+                    persisted.version == SYSTEM_STATS_VERSION) {
+                    stats = persisted.stats;
+                }
+            } else if (size == sizeof(SystemStats)) {
+                file.read((uint8_t*)&stats, sizeof(SystemStats));
+            } else if (size == sizeof(LegacySystemStatsV1)) {
+                LegacySystemStatsV1 legacy = {};
+                if (file.read((uint8_t*)&legacy, sizeof(legacy)) == sizeof(legacy)) {
+                    stats.total_restarts = legacy.total_restarts;
+                    stats.last_restart_reason = legacy.last_restart_reason;
+                    stats.longest_uptime = legacy.longest_uptime;
+                }
+            } else {
+                Serial.printf("⚠️ Unknown system_stats.bin size (%u), resetting stats\n", (unsigned)size);
+            }
             file.close();
         }
     }
@@ -339,9 +406,112 @@ SystemStats loadSystemStats() {
 void saveSystemStats(SystemStats stats) {
     File file = LittleFS.open("/system_stats.bin", "w");
     if (file) {
-        file.write((uint8_t*)&stats, sizeof(SystemStats));
+        PersistedSystemStats persisted = {
+            SYSTEM_STATS_MAGIC,
+            SYSTEM_STATS_VERSION,
+            stats
+        };
+        file.write((uint8_t*)&persisted, sizeof(persisted));
         file.close();
     }
+}
+
+// --- Boot-timestamp ring buffer (restart-rate detection) ---
+// The cumulative counters in SystemStats can only say "N POWERON restarts ever".
+// A burst of restarts in a short window is the real signature of a degraded power
+// supply, so we also persist the wall-clock time of the last N boots and derive a
+// rate from them. Survives power loss (stored in LittleFS, not RTC memory which a
+// POWERON clears). Timestamps are recorded lazily from loop() once NTP has synced,
+// because at boot there is no valid wall-clock time yet.
+static constexpr uint32_t BOOT_HISTORY_MAGIC = 0xB0074157;
+static constexpr uint32_t BOOT_HISTORY_VERSION = 1;
+static constexpr uint8_t BOOT_HISTORY_CAP = 16;
+static constexpr time_t BOOT_TIME_SANITY = 1700000000; // 2023-11-14; reject pre-NTP junk
+
+struct BootRecord {
+    uint32_t epoch;   // unix time recorded shortly after boot (0 = unknown)
+    uint8_t  reason;  // esp_reset_reason_t of that boot
+    uint8_t  _pad[3];
+};
+
+struct BootHistory {
+    uint32_t   magic;
+    uint32_t   version;
+    uint8_t    count;                     // valid records (<= CAP)
+    uint8_t    head;                      // next write slot (ring)
+    uint8_t    _pad[2];
+    BootRecord records[BOOT_HISTORY_CAP];
+};
+
+BootHistory boot_history = {};
+static bool boot_recorded = false;
+
+static BootHistory loadBootHistory() {
+    BootHistory h = {};
+    h.magic = BOOT_HISTORY_MAGIC;
+    h.version = BOOT_HISTORY_VERSION;
+    if (LittleFS.exists("/boot_history.bin")) {
+        File f = LittleFS.open("/boot_history.bin", "r");
+        if (f) {
+            if (f.size() == sizeof(BootHistory)) {
+                BootHistory tmp = {};
+                if (f.read((uint8_t*)&tmp, sizeof(tmp)) == sizeof(tmp) &&
+                    tmp.magic == BOOT_HISTORY_MAGIC &&
+                    tmp.version == BOOT_HISTORY_VERSION &&
+                    tmp.count <= BOOT_HISTORY_CAP && tmp.head < BOOT_HISTORY_CAP) {
+                    h = tmp;
+                }
+            }
+            f.close();
+        }
+    }
+    return h;
+}
+
+static void saveBootHistory() {
+    File f = LittleFS.open("/boot_history.bin", "w");
+    if (f) {
+        f.write((uint8_t*)&boot_history, sizeof(boot_history));
+        f.close();
+    }
+}
+
+// Count recorded boots whose timestamp falls within the last `window_seconds`.
+// Returns 0 when wall-clock time isn't available yet (caller treats as "unknown").
+uint8_t getRestartsInWindow(uint32_t window_seconds) {
+    struct tm ti;
+    if (!getLocalTime(&ti, 0)) return 0;   // NTP not synced
+    time_t now = time(NULL);
+    if (now < BOOT_TIME_SANITY) return 0;
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < boot_history.count && i < BOOT_HISTORY_CAP; i++) {
+        uint32_t e = boot_history.records[i].epoch;
+        if (e != 0 && (uint32_t)now >= e && ((uint32_t)now - e) <= window_seconds) n++;
+    }
+    return n;
+}
+
+bool bootTimeRecorded() { return boot_recorded; }
+
+// Record this boot's timestamp once NTP time is available. Idempotent per boot.
+static void maybeRecordBoot() {
+    if (boot_recorded) return;
+    struct tm ti;
+    if (!getLocalTime(&ti, 0)) return;     // keep waiting for NTP
+    time_t now = time(NULL);
+    if (now < BOOT_TIME_SANITY) return;    // implausible time, keep waiting
+
+    uint8_t idx = boot_history.head % BOOT_HISTORY_CAP;
+    boot_history.records[idx].epoch = (uint32_t)now;
+    boot_history.records[idx].reason = (uint8_t)sys_stats.last_restart_reason;
+    boot_history.head = (uint8_t)((boot_history.head + 1) % BOOT_HISTORY_CAP);
+    if (boot_history.count < BOOT_HISTORY_CAP) boot_history.count++;
+    saveBootHistory();
+    boot_recorded = true;
+
+    Serial.printf("📊 Boot recorded @ %lu (reason=%s). Restarts last 1h=%u, 24h=%u\n",
+                  (unsigned long)now, getResetReasonName(sys_stats.last_restart_reason),
+                  getRestartsInWindow(3600), getRestartsInWindow(86400));
 }
 
 // Helper: Check Camera Health
@@ -1810,14 +1980,37 @@ void setup() {
     Serial.println("LittleFS mounted successfully");
   }
 
-  initEventLog();
-
   // Load System Stats
   sys_stats = loadSystemStats();
   sys_stats.total_restarts++;
   sys_stats.last_restart_reason = esp_reset_reason();
+  switch ((esp_reset_reason_t)sys_stats.last_restart_reason) {
+    case ESP_RST_POWERON:   sys_stats.poweron_restarts++; break;
+    case ESP_RST_BROWNOUT:  sys_stats.brownout_restarts++; break;
+    case ESP_RST_WDT:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:  sys_stats.wdt_restarts++; break;
+    default:                sys_stats.other_restarts++; break;
+  }
   saveSystemStats(sys_stats);
   Serial.printf("📊 Total restarts: %u\n", sys_stats.total_restarts);
+  Serial.printf("📊 Last reset reason: %s (%u)\n",
+                getResetReasonName(sys_stats.last_restart_reason),
+                sys_stats.last_restart_reason);
+  Serial.printf("📊 Power resets: poweron=%u brownout=%u wdt=%u other=%u\n",
+                sys_stats.poweron_restarts, sys_stats.brownout_restarts,
+                sys_stats.wdt_restarts, sys_stats.other_restarts);
+
+  char bootDetail[EVENT_DETAIL_LEN];
+  snprintf(bootDetail, sizeof(bootDetail), "reason=%s(%u),n=%u",
+           getResetReasonName(sys_stats.last_restart_reason),
+           sys_stats.last_restart_reason,
+           sys_stats.total_restarts);
+  initEventLog(bootDetail);
+
+  // Load boot-timestamp history for restart-rate detection. This boot's own
+  // timestamp is appended later (from loop()) once NTP has synced.
+  boot_history = loadBootHistory();
 
   // Load configuration (non-credential settings from config.json)
   loadConfig();
@@ -2016,6 +2209,16 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     if (MDNS.begin(config.device_name.c_str())) {
       Serial.printf("✅ mDNS started: %s.local\n", config.device_name.c_str());
+      MDNS.addService("http", "tcp", 80);
+      MDNS.addService("http", "tcp", 81);
+#ifdef INCLUDE_AUDIO
+      MDNS.addService("http", "tcp", 82);
+#endif
+#ifndef LITE_MODE_NO_RUNTIME_TASKS
+      // Only advertise RTSP when the server is actually started (LITE_MODE skips it,
+      // see camera_server.cpp) — otherwise clients discover a dead service and hang.
+      MDNS.addService("rtsp", "tcp", 554);
+#endif
     } else {
       Serial.println("⚠️ mDNS init failed");
     }
@@ -2126,6 +2329,14 @@ void loop() {
                         millis() / 3600000);
       }
       #endif
+  }
+
+  // Record this boot's timestamp once NTP is available (restart-rate detection).
+  // Retries every 5 s until it succeeds, then stops (idempotent per boot).
+  static unsigned long lastBootRecTry = 0;
+  if (!boot_recorded && millis() - lastBootRecTry > 5000) {
+      lastBootRecTry = millis();
+      maybeRecordBoot();
   }
 
   // Heap Trace Dump (hourly in debug mode)

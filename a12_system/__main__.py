@@ -253,12 +253,22 @@ class Application:
             logging.info(f"{log_prefix} HA Monitor disabled (no token)")
 
         # Exposure reset callback — triggered by brightness watchdog when AEC freezes
-        exposure_reset_settings = {
-            "aec": 1, "ae_level": 0, "agc": 1, "gainceiling": 4,
+        exposure_reset_settings = self.runtime_config.get("camera_exposure_reset_settings") or {
+            "aec": 1,
+            "aec2": 1,
+            "ae_level": 5,
+            "agc": 1,
+            "gainceiling": 6,
+            "brightness": 3,
+            "contrast": 1,
+            "denoise": 4,
         }
 
-        def _camera_exposure_reset():
+        def _camera_exposure_reset_silent():
             camera.set_camera_settings(exposure_reset_settings)
+
+        def _camera_exposure_reset():
+            _camera_exposure_reset_silent()
             notifier.send_telegram(
                 f"{camera_label}: Camera exposure auto-reset (AEC freeze detected)",
                 bypass_cooldown=True,
@@ -278,7 +288,7 @@ class Application:
             shared_state=shared_state,
             status_monitor=self.status_monitor,
             script_dir=DATA_DIR,
-            camera_reset_fn=_camera_exposure_reset,
+            camera_reset_fn=_camera_exposure_reset_silent,
         )
 
         # Initial camera config
@@ -337,6 +347,10 @@ class Application:
                         notifier.send_telegram("ESP32 is back online!", bypass_cooldown=True)
                         stuck_notified = False
                         shared_state["send_recovery_snapshot"] = True
+
+                    # Kick AEC after reconnect so OV3660 doesn't freeze at near-zero exposure.
+                    # 5s delay lets the stream settle before issuing settings.
+                    threading.Timer(5.0, _camera_exposure_reset_silent).start()
 
                     consecutive_failures = 0
                     camera.process_stream(

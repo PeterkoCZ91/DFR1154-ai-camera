@@ -16,9 +16,13 @@
 
 // --- COMPILE-TIME FEATURE TOGGLES ---
 // Comment out to disable feature and save RAM/flash
-// INCLUDE_TELEGRAM disabled in A12 mode — A12 handles all Telegram notifications.
-// Enabling it with a 30s poll interval causes ~0.88 KB/min heap drift → restart after ~68 min.
-// #define INCLUDE_TELEGRAM      // Telegram notifications (text, photo, AVI document)
+// INCLUDE_TELEGRAM is ENABLED via -DINCLUDE_TELEGRAM in platformio.ini build_flags
+// (kept there as the single source of truth so it applies to every translation unit).
+// The old ~0.88 KB/min heap drift that caused a ~68 min restart loop was FIXED in
+// v3.12.34 (TLS CPU prio + WiFiClientSecure defragmentation + queue guards;
+// max_alloc_heap stable ~43 KB, multi-day uptime confirmed). Do NOT re-comment the
+// build flag without updating this note — config and build must not disagree.
+// #define INCLUDE_TELEGRAM      // Telegram notifications — defined via platformio.ini
 #define INCLUDE_MQTT          // MQTT + Home Assistant discovery
 #define INCLUDE_AUDIO         // I2S/PDM microphone + audio streaming
 #define INCLUDE_PERSON_DETECT // Edge Impulse YOLO-Pro Pico person detection

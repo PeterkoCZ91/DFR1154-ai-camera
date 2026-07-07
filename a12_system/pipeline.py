@@ -174,8 +174,8 @@ class DetectionPipeline:
 
         # Brightness watchdog — detects AEC freeze (OV3660 UXGA issue)
         self._camera_reset_fn = camera_reset_fn
-        self._dark_frame_threshold = int(runtime_config.get("brightness_watchdog_threshold", 20))
-        self._dark_consecutive_required = int(runtime_config.get("brightness_watchdog_strikes", 2))
+        self._dark_frame_threshold = int(runtime_config.get("brightness_watchdog_threshold", 30))
+        self._dark_consecutive_required = int(runtime_config.get("brightness_watchdog_strikes", 1))
         self._dark_consecutive_count = 0
         self._last_exposure_reset = 0.0
 

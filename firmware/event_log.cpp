@@ -92,10 +92,10 @@ static void loadFromFile() {
     f.close();
 }
 
-void initEventLog() {
+void initEventLog(const char* boot_detail) {
     memset(ring, 0, sizeof(ring));
     loadFromFile();
-    logEvent(EVT_BOOT);
+    logEvent(EVT_BOOT, boot_detail);
 }
 
 void logEvent(EventType type, const char* detail) {

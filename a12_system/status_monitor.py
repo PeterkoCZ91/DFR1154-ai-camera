@@ -1,11 +1,14 @@
 """Background status monitor: heartbeat, sabotage detection, day/night profiles."""
 
 import logging
+import os
 import threading
 import time
 from datetime import date, datetime
 
 import requests
+
+from .mdns_resolver import resolve_camera_url
 
 
 class StatusMonitor(threading.Thread):
@@ -53,13 +56,22 @@ class StatusMonitor(threading.Thread):
         self._profile_apply_disabled_logged = False
 
         # Daily summary
-        self._last_daily_date: date | None = None
-        self._last_summary_detections: dict = {}
-
+        data_dir = os.environ.get("A12_DATA_DIR") or os.environ.get("A12_CONFIG_DIR")
+        self._daily_summary_state_path = (
+            os.path.join(data_dir, "daily_summary_date.txt") if data_dir else None
+        )
+        self._last_daily_date: date | None = self._load_daily_summary_date()
         # Resource monitoring
         self.resource_check_interval = 60
         self.last_resource_check = 0
         self._resource_alert_sent = False
+
+        # Health restart tracking. Firmware power_health is based on lifetime counters,
+        # so alert only when the counter increases or uptime is freshly short.
+        self._last_total_restarts: int | None = None
+
+    def _camera_url(self, *, force: bool = False) -> str:
+        return resolve_camera_url(self.runtime_config.get("camera_url"), force=force)
 
     def _run_watchdog(self, current_time: float) -> None:
         """Heartbeat and stream watchdog."""
@@ -177,7 +189,7 @@ class StatusMonitor(threading.Thread):
         settings = profiles.get(target_profile)
         if settings:
             try:
-                camera_url = self.runtime_config.get("camera_url")
+                camera_url = self._camera_url()
                 resp = self.http_session.post(
                     f"{camera_url}/settings", json=settings, timeout=5
                 )
@@ -193,7 +205,7 @@ class StatusMonitor(threading.Thread):
 
     def _poll_status(self) -> None:
         try:
-            camera_url = self.runtime_config.get("camera_url")
+            camera_url = self._camera_url()
 
             if self.runtime_config.get("ir_control", {}).get("enabled", False):
                 try:
@@ -237,7 +249,7 @@ class StatusMonitor(threading.Thread):
 
     def _check_health(self) -> None:
         try:
-            camera_url = self.runtime_config.get("camera_url")
+            camera_url = self._camera_url()
             resp = self.http_session.get(f"{camera_url}/health", timeout=5)
             if resp.status_code == 200:
                 health = resp.json()
@@ -250,6 +262,34 @@ class StatusMonitor(threading.Thread):
                     msg = f"ESP32 Health Warning: {health.get('issues', 'unknown')}"
                     self.notifier.send_telegram(msg)
                     logging.warning(msg)
+
+                total_restarts = int(health.get("total_restarts", 0) or 0)
+                uptime_seconds = int(health.get("uptime_seconds", 0) or 0)
+                restarts_increased = (
+                    self._last_total_restarts is not None
+                    and total_restarts > self._last_total_restarts
+                )
+                self._last_total_restarts = total_restarts
+
+                if health.get("power_health") == "suspect":
+                    if restarts_increased or uptime_seconds < 3600:
+                        msg = (
+                            "ESP32 Power Warning: "
+                            f"reason={health.get('last_restart_reason_name', 'unknown')} "
+                            f"total_restarts={total_restarts} "
+                            f"poweron={health.get('power_restarts_poweron', 0)} "
+                            f"brownout={health.get('power_restarts_brownout', 0)} "
+                            f"uptime={uptime_seconds}s"
+                        )
+                        self.notifier.send_telegram(msg, bypass_cooldown=True)
+                        logging.warning(msg)
+                    else:
+                        logging.info(
+                            "Suppressing historical ESP32 power_health=suspect "
+                            "(total_restarts=%s, uptime=%ss)",
+                            total_restarts,
+                            uptime_seconds,
+                        )
         except Exception as e:
             logging.error(f"Health check failed: {e}")
 
@@ -308,38 +348,80 @@ class StatusMonitor(threading.Thread):
         except Exception as e:
             logging.debug(f"Resource check error: {e}")
 
+    def _load_daily_summary_date(self) -> date | None:
+        if not self._daily_summary_state_path:
+            return None
+        try:
+            with open(self._daily_summary_state_path, "r", encoding="utf-8") as handle:
+                value = handle.read().strip()
+            return date.fromisoformat(value) if value else None
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            logging.debug(f"Failed to load daily summary state: {e}")
+            return None
+
+    def _save_daily_summary_date(self, sent_date: date) -> None:
+        if not self._daily_summary_state_path:
+            return
+        try:
+            with open(self._daily_summary_state_path, "w", encoding="utf-8") as handle:
+                handle.write(sent_date.isoformat())
+        except Exception as e:
+            logging.debug(f"Failed to save daily summary state: {e}")
+
     def _check_daily_summary(self) -> None:
         """Send daily stats summary at 8:00 AM (once per calendar day)."""
         now = datetime.now()
         today = date.today()
         if now.hour >= 8 and self._last_daily_date != today:
-            self._last_daily_date = today
             self._send_daily_summary()
+            self._last_daily_date = today
+            self._save_daily_summary_date(today)
 
     def _send_daily_summary(self) -> None:
         if not self.stats:
             return
         summary = self.stats.get_summary()
-        det = summary.get("detections", {})
-        fr = summary.get("face_recognition", {})
         uptime = summary.get("session", {}).get("uptime_formatted", "?")
 
-        # Delta since last summary (shows 24h activity, not all-time total)
-        delta = {k: det.get(k, 0) - self._last_summary_detections.get(k, 0) for k in det}
-        self._last_summary_detections = dict(det)
+        counts = {}
+        if self.db and hasattr(self.db, "get_event_counts_since"):
+            counts = self.db.get_event_counts_since(time.time() - 86400)
 
-        det_lines = "\n".join(
-            f"  {k}: {v}x" for k, v in sorted(delta.items(), key=lambda x: -x[1]) if v > 0
+        def count_type(event_type: str) -> int:
+            return sum(value for (typ, _label), value in counts.items() if typ == event_type)
+
+        summary_items = [
+            ("PIR/HA spuštění", count_type("ha_sensor")),
+            ("Lokální klipy", counts.get(("detection", "motion"), 0)),
+            ("Potvrzená osoba", counts.get(("detection", "person"), 0)),
+            ("Pes", counts.get(("detection", "dog"), 0)),
+            ("Audio alerty", counts.get(("audio", "LOUD_NOISE"), 0)),
+        ]
+        event_lines = "\n".join(
+            f"  {label}: {value}x" for label, value in summary_items if value > 0
         ) or "  (žádné)"
 
         msg = (
             "A12 denní přehled\n"
             f"Uptime: {uptime}\n"
-            f"Detekce (24h):\n{det_lines}"
+            f"Události (24h):\n{event_lines}"
         )
         face_enabled = self.runtime_config.get("face_recognition.enabled", False)
-        if face_enabled and fr.get("attempts", 0) > 0:
-            msg += f"\nObličeje: {fr.get('recognized', 0)} known / {fr.get('unknown', 0)} unknown"
+        if face_enabled:
+            known_faces = sum(
+                value
+                for (typ, label), value in counts.items()
+                if typ == "face" and label not in {"unknown", "Unknown", "No face", "Error", "Invalid frame"}
+            )
+            unknown_faces = sum(
+                value
+                for (typ, label), value in counts.items()
+                if typ == "face" and label in {"unknown", "Unknown"}
+            )
+            if known_faces or unknown_faces:
+                msg += f"\nObličeje (24h): {known_faces} known / {unknown_faces} unknown"
         self.notifier.send_telegram(msg, bypass_cooldown=True)
         logging.info("Daily summary sent")
 

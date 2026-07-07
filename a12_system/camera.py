@@ -1,6 +1,7 @@
 """ESP32 MJPEG stream handler with Keep-Alive and frame processing."""
 
 import logging
+from urllib.parse import urlsplit
 import queue
 import threading
 import time
@@ -8,6 +9,8 @@ import time
 import cv2
 import numpy as np
 import requests
+
+from .mdns_resolver import resolve_host, url_with_host
 
 
 class Camera:
@@ -26,16 +29,26 @@ class Camera:
             self.session.auth = (user, pwd)
 
         base_url = config["camera_url"].rstrip("/")
-        if "://" in base_url:
-            protocol, address = base_url.split("://", 1)
-            host = address.split(":")[0]
-        else:
-            protocol = "http"
-            host = base_url.split(":")[0]
-            base_url = f"{protocol}://{host}"
+        if "://" not in base_url:
+            base_url = f"http://{base_url}"
 
-        self.stream_base_url = f"{protocol}://{host}:{self.stream_port}"
-        self.audio_base_url = f"{protocol}://{host}:{self.audio_port}"
+        parsed = urlsplit(base_url)
+        self._protocol = parsed.scheme or "http"
+        self._configured_host = parsed.hostname or base_url.split("://", 1)[-1].split(":", 1)[0]
+        self._base_url = base_url
+        self._resolved_host: str | None = None
+        self._refresh_urls(force=True)
+
+    def _refresh_urls(self, *, force: bool = False) -> None:
+        host = resolve_host(self._configured_host, force=force)
+        if host != self._resolved_host:
+            self._resolved_host = host
+            if host != self._configured_host:
+                logging.info(f"{self.log_prefix} Camera host {self._configured_host} resolved to {host}")
+
+        base_url = url_with_host(self._base_url, host)
+        self.stream_base_url = f"{self._protocol}://{host}:{self.stream_port}"
+        self.audio_base_url = f"{self._protocol}://{host}:{self.audio_port}"
 
         self.stream_url = f"{self.stream_base_url}/detection-stream"
         self.audio_stream_url = f"{self.audio_base_url}/audio.wav"
@@ -47,6 +60,7 @@ class Camera:
 
     def get_stream(self) -> requests.Response | None:
         """Connect to MJPEG stream with back-off retries."""
+        self._refresh_urls(force=True)
         logging.info(f"{self.log_prefix} Connecting to {self.stream_url}...")
         retries = 0
         max_retries = 3
@@ -54,6 +68,7 @@ class Camera:
 
         while retries < max_retries:
             try:
+                self._refresh_urls(force=retries > 0)
                 response = self.session.get(self.stream_url, stream=True, timeout=(5, 30))
                 if response.status_code != 200:
                     logging.error(f"{self.log_prefix} Bad stream status: {response.status_code}")
@@ -75,6 +90,7 @@ class Camera:
     def get_rssi(self) -> int | None:
         """Fetch RSSI (fast, non-blocking)."""
         try:
+            self._refresh_urls()
             response = self.session.get(self.status_url, timeout=2)
             if response.status_code == 200:
                 return response.json().get("wifi_rssi")
@@ -85,6 +101,7 @@ class Camera:
     def get_health(self) -> dict | None:
         """Fetch health status."""
         try:
+            self._refresh_urls()
             response = self.session.get(self.status_url, timeout=3)
             if response.status_code == 200:
                 return response.json()
@@ -96,6 +113,7 @@ class Camera:
         """Configure camera settings via POST."""
         for attempt in range(retries):
             try:
+                self._refresh_urls(force=attempt > 0)
                 logging.info(f"{self.log_prefix} Applying settings (attempt {attempt + 1})...")
                 response = self.session.post(self.settings_url, json=settings, timeout=5)
                 if response.status_code == 200:
@@ -110,6 +128,7 @@ class Camera:
         """Control IR LED."""
         payload = {"auto_mode": auto_mode, "manual_state": manual_state}
         try:
+            self._refresh_urls()
             response = self.session.post(self.ir_control_url, json=payload, timeout=3)
             return response.status_code == 200
         except Exception as e:
@@ -119,6 +138,7 @@ class Camera:
     def get_ir_status(self) -> dict | None:
         """Get IR status."""
         try:
+            self._refresh_urls()
             response = self.session.get(self.ir_status_url, timeout=2)
             if response.status_code == 200:
                 return response.json()
@@ -128,14 +148,68 @@ class Camera:
 
     def process_stream(self, response: requests.Response, callback, target_fps_getter=None) -> None:
         """Read frames from MJPEG stream and call callback for each frame."""
+        raw_queue: queue.Queue[bytes] = queue.Queue(maxsize=3)
         frame_queue: queue.Queue = queue.Queue(maxsize=1)
         stop_event = threading.Event()
 
-        def reader_thread():
+        def put_drop_oldest(target_queue: queue.Queue, item) -> None:
+            try:
+                target_queue.put_nowait(item)
+                return
+            except queue.Full:
+                pass
+            try:
+                target_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                target_queue.put_nowait(item)
+            except queue.Full:
+                pass
+
+        def drain_thread():
             buffer = b""
+            frame_count = 0
+
+            logging.info(f"{self.log_prefix} Stream drain thread started")
+            try:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if stop_event.is_set():
+                        break
+                    if not chunk:
+                        continue
+                    buffer += chunk
+                    if len(buffer) > 2_000_000:
+                        logging.warning(f"{self.log_prefix} MJPEG buffer overflow; dropping stale bytes")
+                        buffer = buffer[-200_000:]
+
+                    while True:
+                        a = buffer.find(b"\xff\xd8")
+                        b = buffer.find(b"\xff\xd9", a + 2 if a != -1 else 0)
+                        if a == -1 or b == -1:
+                            if a > 0:
+                                buffer = buffer[a:]
+                            break
+
+                        jpg = buffer[a : b + 2]
+                        buffer = buffer[b + 2 :]
+                        frame_count += 1
+                        put_drop_oldest(raw_queue, jpg)
+            except Exception as e:
+                logging.error(f"{self.log_prefix} Stream drain error: {e}")
+            finally:
+                stop_event.set()
+                response.close()
+                logging.info(
+                    f"{self.log_prefix} Stream drain thread stopped "
+                    f"(raw_frames={frame_count})"
+                )
+
+        def decode_thread():
             last_decode_time = 0.0
             decode_errors = 0
             last_decode_error_log = 0.0
+            decoded_frames = 0
 
             def note_decode_error(reason: str) -> None:
                 nonlocal decode_errors, last_decode_error_log
@@ -148,51 +222,42 @@ class Camera:
                     )
                     last_decode_error_log = now
 
-            logging.info(f"{self.log_prefix} Reader thread started")
-            try:
-                for chunk in response.iter_content(chunk_size=4096):
-                    if stop_event.is_set():
-                        break
-                    buffer += chunk
-                    if len(buffer) > 2_000_000:
-                        logging.warning(f"{self.log_prefix} MJPEG buffer overflow; dropping stale bytes")
-                        buffer = buffer[-200_000:]
+            logging.info(f"{self.log_prefix} Decode thread started")
+            while not stop_event.is_set():
+                try:
+                    jpg = raw_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
 
-                    a = buffer.find(b"\xff\xd8")
-                    b = buffer.find(b"\xff\xd9")
+                try:
+                    target_fps = 0
+                    if target_fps_getter:
+                        target_fps = max(0, int(target_fps_getter()))
+                    if target_fps > 0:
+                        now = time.time()
+                        if now - last_decode_time < 1.0 / target_fps:
+                            continue
+                        last_decode_time = now
 
-                    if a != -1 and b != -1:
-                        jpg = buffer[a : b + 2]
-                        buffer = buffer[b + 2 :]
+                    frame = cv2.imdecode(
+                        np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR
+                    )
+                    if frame is None:
+                        note_decode_error("imdecode returned None")
+                    else:
+                        decoded_frames += 1
+                        put_drop_oldest(frame_queue, frame)
+                except Exception as e:
+                    note_decode_error(str(e))
+            logging.info(
+                f"{self.log_prefix} Decode thread stopped "
+                f"(decoded_frames={decoded_frames}, decode_errors={decode_errors})"
+            )
 
-                        try:
-                            target_fps = 0
-                            if target_fps_getter:
-                                target_fps = max(0, int(target_fps_getter()))
-                            if target_fps > 0:
-                                now = time.time()
-                                if now - last_decode_time < 1.0 / target_fps:
-                                    continue
-                                last_decode_time = now
-
-                            frame = cv2.imdecode(
-                                np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR
-                            )
-                            if frame is None:
-                                note_decode_error("imdecode returned None")
-                            elif not frame_queue.full():
-                                frame_queue.put(frame)
-                        except Exception as e:
-                            note_decode_error(str(e))
-            except Exception as e:
-                logging.error(f"{self.log_prefix} Stream error: {e}")
-            finally:
-                stop_event.set()
-                response.close()
-                logging.info(f"{self.log_prefix} Reader thread stopped")
-
-        t = threading.Thread(target=reader_thread, daemon=True)
-        t.start()
+        drain = threading.Thread(target=drain_thread, daemon=True)
+        decoder = threading.Thread(target=decode_thread, daemon=True)
+        drain.start()
+        decoder.start()
 
         last_frame_time = time.time()
 
@@ -207,11 +272,12 @@ class Camera:
                     last_frame_time = time.time()
                     callback(frame)
                 except queue.Empty:
-                    if not t.is_alive():
+                    if not drain.is_alive() or not decoder.is_alive():
                         break
                     continue
         except KeyboardInterrupt:
             pass
         finally:
             stop_event.set()
-            t.join(timeout=2)
+            drain.join(timeout=2)
+            decoder.join(timeout=2)
