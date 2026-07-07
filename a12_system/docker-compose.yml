@@ -19,7 +19,7 @@ services:
       A12_CONFIG_DIR: /data
       A12_DATA_DIR: /data
       A12_RUNTIME: docker
-      A12_RESOURCE_LIMIT: "1 CPU / 1.5 GB RAM"
+      A12_RESOURCE_LIMIT: "1 CPU / 1 GB RAM"
       A12_CV_THREADS: "1"
       LOG_LEVEL: INFO
       TZ: Europe/Prague

@@ -1361,6 +1361,10 @@ Running in production since November 2025. Multiple camera nodes in residential 
 
 ## Security & Privacy
 
+> **Full data-privacy guide:** [`docs/DATA_PRIVACY.md`](docs/DATA_PRIVACY.md) — what data is
+> processed, what can leave your LAN (and how to turn it off), biometric/face handling,
+> retention, and how the repo keeps PII out of commits.
+
 <details>
 <summary><strong>Data handling</strong></summary>
 

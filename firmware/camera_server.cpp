@@ -5,6 +5,7 @@
 #include "ws_log.h"
 #include "esp_camera.h"
 #include "esp_timer.h"
+#include "esp_system.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "ArduinoJson.h"
@@ -23,6 +24,7 @@
 #include "SPI.h"
 #include "FS.h"
 #include <lwip/sockets.h> // Pro setsockopt (SO_SNDTIMEO)
+#include <string.h>       // strcmp, strncpy
 #include "ESP32-RTSPServer.h"
 #include "camera_capture.h"
 #include "mbedtls/base64.h" // For Base64 decoding (HTTP Basic Auth)
@@ -94,6 +96,38 @@ const int UDP_LOG_PORT = 5000;
 bool udp_logging_enabled = false;  // Disabled; never enable on untrusted networks
 static SemaphoreHandle_t udp_mutex = NULL; // Mutex for thread-safe logging
 static SemaphoreHandle_t settings_mutex = NULL; // Mutex for thread-safe settings access
+
+#ifndef DETECTION_STREAM_FPS
+#define DETECTION_STREAM_FPS 10
+#endif
+#ifndef DETECTION_STREAM_SEND_TIMEOUT_MS
+#define DETECTION_STREAM_SEND_TIMEOUT_MS 15000
+#endif
+#ifndef GUI_STREAM_SEND_TIMEOUT_MS
+#define GUI_STREAM_SEND_TIMEOUT_MS 500
+#endif
+#define STRINGIFY_DETAIL(x) #x
+#define STRINGIFY(x) STRINGIFY_DETAIL(x)
+
+static volatile uint32_t stream_send_fail_count = 0;
+static volatile uint32_t stream_no_frame_count = 0;
+static volatile uint32_t stream_last_drop_ms = 0;
+static int stream_last_errno = 0;
+static int stream_last_result = 0;
+static char stream_last_drop_reason[24] = "none";
+
+static void noteStreamDrop(const char* reason, esp_err_t result, int err) {
+    if (strcmp(reason, "send-fail") == 0) {
+        __atomic_fetch_add(&stream_send_fail_count, 1, __ATOMIC_SEQ_CST);
+    } else if (strcmp(reason, "no-frame") == 0) {
+        __atomic_fetch_add(&stream_no_frame_count, 1, __ATOMIC_SEQ_CST);
+    }
+    stream_last_drop_ms = millis();
+    stream_last_errno = err;
+    stream_last_result = (int)result;
+    strncpy(stream_last_drop_reason, reason, sizeof(stream_last_drop_reason) - 1);
+    stream_last_drop_reason[sizeof(stream_last_drop_reason) - 1] = '\0';
+}
 
 // Send log over UDP to Raspberry Pi with error handling
 void send_udp_log(const char* level, const char* message) {
@@ -1080,7 +1114,7 @@ static esp_err_t generic_video_stream_handler(httpd_req_t *req, int *active_clie
     res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
     if (limit_fps) {
         set_cors_headers(req);
-        httpd_resp_set_hdr(req, "X-Framerate", "30");
+        httpd_resp_set_hdr(req, "X-Framerate", STRINGIFY(DETECTION_STREAM_FPS));
     } else {
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     }
@@ -1092,8 +1126,15 @@ static esp_err_t generic_video_stream_handler(httpd_req_t *req, int *active_clie
         return res;
     }
 
-    // Set socket send timeout
-    setStreamSocketTimeout(req, 500);
+    // Set socket send timeout.
+    // The detection-stream consumer (A12) decodes at ~2 FPS and legitimately
+    // stalls its reader thread for >1s during YOLO inference / GC, which lets
+    // the small ESP32 TCP send buffer fill while we keep pushing frames. A 500ms
+    // SO_SNDTIMEO then trips on those normal stalls and force-closes the stream
+    // (~once a minute). Give rate-limited (detection) streams a generous timeout
+    // so transient consumer stalls don't kill the connection; keep the GUI stream
+    // (browser, drains fast) tight so dead tabs are reaped quickly.
+    setStreamSocketTimeout(req, limit_fps ? DETECTION_STREAM_SEND_TIMEOUT_MS : GUI_STREAM_SEND_TIMEOUT_MS);
 
     // Zero-Copy Ring Buffer Implementation
     // No local buffer allocation needed!
@@ -1130,6 +1171,8 @@ static esp_err_t generic_video_stream_handler(httpd_req_t *req, int *active_clie
 
         if (!new_frame) {
             Serial.println("⚠️ MJPEG: No frame from capture task");
+            noteStreamDrop("no-frame", ESP_FAIL, 0);
+            wsLog("STREAMDROP %s reason=no-frame(2s) frames=%lu", stream_name, frame_count);
             res = ESP_FAIL;
             break;
         }
@@ -1152,6 +1195,8 @@ static esp_err_t generic_video_stream_handler(httpd_req_t *req, int *active_clie
 
         if(res != ESP_OK) {
             Serial.println("Stream send failed (timeout or disconnect)");
+            noteStreamDrop("send-fail", res, errno);
+            wsLog("STREAMDROP %s reason=send-fail frames=%lu errno=%d res=%d", stream_name, frame_count, errno, (int)res);
             // FIXED: Force close socket on error to prevent socket leak
             // Half-open sockets can accumulate after timeouts, exhausting available sockets
             int sockfd = httpd_req_to_sockfd(req);
@@ -1162,10 +1207,16 @@ static esp_err_t generic_video_stream_handler(httpd_req_t *req, int *active_clie
         }
         
         if (limit_fps) {
-            // Precise timing handled by capture task, but we can yield here
-            // vTaskDelay(pdMS_TO_TICKS(1));
-            // Actually, for detection stream we might want to limit rate if client is slow
-             vTaskDelay(pdMS_TO_TICKS(33));
+            // Detection-stream rate cap. The A12 consumer decodes at most 10 FPS
+            // (stream_active_decode_fps; 2 FPS idle), and the camera + WiFi tops
+            // out around ~15 FPS of UXGA JPEG to a single client. Pushing 30 FPS
+            // chronically backed up the TCP send buffer beyond what WiFi could
+            // drain, so sends timed out (errno=EWOULDBLOCK) and the stream was
+            // force-closed ~30×/hour. Cap at ~10 FPS: matches the consumer's max
+            // useful rate, stays well below the throughput ceiling so the send
+            // buffer drains, and does not reduce motion-clip FPS (A12 never
+            // decodes faster than this anyway).
+            vTaskDelay(pdMS_TO_TICKS(1000 / DETECTION_STREAM_FPS));
         }
 
         // (WDT reset removed: httpd tasks are not subscribed to WDT)
@@ -2773,8 +2824,11 @@ static esp_err_t health_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     
-    // FIXED: Use StaticJsonDocument to avoid heap fragmentation
-    StaticJsonDocument<1024> doc;
+    // StaticJsonDocument (stack) avoids heap fragmentation. Handler runs on the 20 KB
+    // control-server task, so a 2 KB doc is safe. Sized with generous margin: ~34 members
+    // incl. the nested stream_health object — ArduinoJson truncates SILENTLY on overflow,
+    // which would hand A12 invalid JSON, so we over-provision rather than run it tight.
+    StaticJsonDocument<2048> doc;
     
     // Uptime
     unsigned long uptimeSeconds = millis() / 1000;
@@ -2802,6 +2856,49 @@ static esp_err_t health_handler(httpd_req_t *req) {
     // System Stats
     doc["total_restarts"] = sys_stats.total_restarts;
     doc["last_restart_reason"] = sys_stats.last_restart_reason;
+    doc["last_restart_reason_name"] = getResetReasonName(sys_stats.last_restart_reason);
+    doc["power_restarts_poweron"] = sys_stats.poweron_restarts;
+    doc["power_restarts_brownout"] = sys_stats.brownout_restarts;
+    doc["power_restarts_wdt"] = sys_stats.wdt_restarts;
+    doc["power_restarts_other"] = sys_stats.other_restarts;
+    bool lifetime_power_suspect = (sys_stats.poweron_restarts + sys_stats.brownout_restarts) >= 2 ||
+                                  sys_stats.last_restart_reason == ESP_RST_BROWNOUT;
+
+    // Restart-rate from the boot-timestamp ring buffer (see main.cpp). 0 means either
+    // no restarts in the window OR wall-clock time not yet synced — use bootTimeRecorded()
+    // to tell them apart.
+    uint8_t restarts_1h = getRestartsInWindow(3600);
+    uint8_t restarts_24h = getRestartsInWindow(86400);
+    doc["restarts_1h"] = restarts_1h;
+    doc["restarts_24h"] = restarts_24h;
+    doc["restart_time_synced"] = bootTimeRecorded();
+
+    // "Current" power suspicion. Primary signal is a burst of restarts within an hour
+    // (>=3) — the real signature of a failing supply (a bad adapter can cause 20+ POWERON
+    // resets in minutes). Falls back, while NTP is unsynced and no rate is available yet,
+    // to a recent (<10 min uptime) power-related boot. POWERON is included because on this
+    // board degraded supply shows up as a cold-boot POWERON (VBUS lost), not a brownout —
+    // this unit has 103 POWERON vs 1 brownout, so a BROWNOUT-only check would miss it.
+    bool rate_power_suspect = restarts_1h >= 3;
+    bool recent_power_boot = (sys_stats.last_restart_reason == ESP_RST_BROWNOUT ||
+                              sys_stats.last_restart_reason == ESP_RST_POWERON) &&
+                             uptimeSeconds < 600;
+    bool current_power_suspect = rate_power_suspect || (!bootTimeRecorded() && recent_power_boot);
+    doc["power_health"] = current_power_suspect ? "suspect" : "ok";
+    doc["power_health_lifetime"] = lifetime_power_suspect ? "suspect" : "ok";
+
+    // Stream diagnostics
+    JsonObject stream = doc.createNestedObject("stream_health");
+    stream["detection_fps_cap"] = DETECTION_STREAM_FPS;
+    stream["detection_send_timeout_ms"] = DETECTION_STREAM_SEND_TIMEOUT_MS;
+    stream["active_stream_clients"] = __atomic_load_n(&active_stream_clients, __ATOMIC_SEQ_CST);
+    stream["active_detection_clients"] = __atomic_load_n(&active_detection_clients, __ATOMIC_SEQ_CST);
+    stream["send_fail_count"] = __atomic_load_n(&stream_send_fail_count, __ATOMIC_SEQ_CST);
+    stream["no_frame_count"] = __atomic_load_n(&stream_no_frame_count, __ATOMIC_SEQ_CST);
+    stream["last_drop_reason"] = stream_last_drop_reason;
+    stream["last_drop_ms"] = stream_last_drop_ms;
+    stream["last_errno"] = stream_last_errno;
+    stream["last_result"] = stream_last_result;
     
     // Overall health status
     bool healthy = true;

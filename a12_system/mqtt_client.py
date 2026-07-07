@@ -2,8 +2,11 @@
 
 import json
 import logging
+import time
 
 import requests
+
+from .mdns_resolver import resolve_camera_url
 
 try:
     import paho.mqtt.client as mqtt
@@ -27,6 +30,7 @@ class MQTTClient:
         self.discovery_node = self._slug(mqtt_config.get("discovery_node", default_node), default_node)
         self.esp32_motion_topic = ""
         self.esp32_uncertain_topic = ""
+        self._last_connect_fail_log = 0.0
 
         if not mqtt_config.get("enabled", False) or not MQTT_AVAILABLE:
             return
@@ -48,9 +52,11 @@ class MQTTClient:
             self.client.on_connect = self._on_connect
             self.client.on_message = self._on_message
             self.client.on_disconnect = self._on_disconnect
+            self.client.on_connect_fail = self._on_connect_fail
+            self.client.reconnect_delay_set(min_delay=5, max_delay=60)
 
-            logging.info(f"{self.log_prefix} Connecting to MQTT broker {broker}...")
-            self.client.connect(broker, port, 60)
+            logging.info(f"{self.log_prefix} Connecting to MQTT broker {broker}:{port}...")
+            self.client.connect_async(broker, port, 60)
             self.client.loop_start()
         except Exception as e:
             logging.error(f"{self.log_prefix} MQTT init failed: {e}")
@@ -70,6 +76,12 @@ class MQTTClient:
         if self.camera_id == "esp32_cam":
             return default_name
         return f"{self.camera_label} {default_name}"
+
+    def _on_connect_fail(self, client, userdata):
+        now = time.time()
+        if now - self._last_connect_fail_log >= 60:
+            self._last_connect_fail_log = now
+            logging.warning(f"{self.log_prefix} MQTT broker unavailable; retrying in background")
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code == 0:
@@ -103,7 +115,7 @@ class MQTTClient:
             topic = msg.topic
             payload = msg.payload.decode()
             base_topic = self.config["mqtt"]["base_topic"]
-            camera_url = self.config["camera_url"]
+            camera_url = resolve_camera_url(self.config["camera_url"], force=True)
 
             logging.debug(f"{self.log_prefix} MQTT message: {topic} = {payload}")
 

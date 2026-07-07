@@ -3,6 +3,8 @@
 This project is intended for self-hosted local-network camera and automation setups.
 Do not expose the ESP32 camera dashboard, MJPEG streams, RTSP endpoint, MQTT broker, Home Assistant token, Telegram bot token, or A12 runtime data directory directly to the public internet.
 
+For what data the system handles, what can leave your LAN, and how to run it fully offline, see [docs/DATA_PRIVACY.md](docs/DATA_PRIVACY.md).
+
 ## Reporting a Vulnerability
 
 Please do not open a public issue that contains credentials, private IP addresses, Telegram tokens, MQTT passwords, Home Assistant tokens, Wi-Fi credentials, face encodings, database dumps, or camera screenshots from a private location.

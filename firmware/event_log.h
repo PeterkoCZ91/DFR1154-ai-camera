@@ -29,7 +29,7 @@ struct EventEntry {
     char detail[EVENT_DETAIL_LEN];
 };
 
-void initEventLog();
+void initEventLog(const char* boot_detail = "");
 void logEvent(EventType type, const char* detail = "");
 String getEventsJSON();
 const char* eventTypeName(EventType type);
