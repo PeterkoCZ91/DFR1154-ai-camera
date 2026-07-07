@@ -6,16 +6,16 @@
 [![Python](https://img.shields.io/badge/A12_companion-Python_3.10+-blue?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Version](https://img.shields.io/badge/Version-3.12.44-blue)]()
+[![Version](https://img.shields.io/badge/Version-3.12.48-blue)]()
 
 Firmware for the **DFRobot DFR1154 AI Camera Module** (FireBeetle 2 ESP32-S3 + OV3660 3 MP + LTR-308 lux + PDM mic). A lock-free PSRAM ring buffer feeds MJPEG streaming, RTSP, AVI recording, on-device person detection (Edge Impulse FOMO + ByteTrack) concurrently from a single camera. MQTT auto-discovery for Home Assistant, Telegram bot, time-lapse, web dashboard with live log. No cloud required.
 
 The optional `a12_system/` Python companion is part of **A12**, a multi-camera surveillance system that pairs with this firmware (and future ESP-camera modules) for YOLOv11n inference, face recognition, and sensor fusion with Home Assistant / Zigbee.
 
 > [!TIP]
-> **New in v3.12.44** — A12 now supports **Groq vision face recognition** (LLaMA 4 Scout, free tier) and **automatic Nuki Smart Lock unlock** for recognized residents. No model training — drop reference photos in a folder. See [CHANGELOG](CHANGELOG.md).
+> **New in v3.12.48** — **Restart-rate detection** (boot-timestamp ring buffer; `/health` exposes `restarts_1h`/`restarts_24h` + self-clearing, POWERON-aware `power_health`), **mDNS hostname resolver** (reach the camera by name, not a drifting DHCP IP), **stream reader split** into drain + decode threads (no more send-buffer stalls), and a new [data-privacy guide](docs/DATA_PRIVACY.md). See [CHANGELOG](CHANGELOG.md).
 >
-> *v3.12.43* — Settings GUI exposes `person_telegram_photo` toggle and idle scan interval. *v3.12.42* — `PD_MIN_DETECTIONS` 2→1, `IDLE_SCAN_MS` 30s→5s, A12 MQTT `clean_session=True` fix. *v3.12.41* — TFLite Micro + ESP-NN SIMD: ~300–500 ms inference (11× speedup). *v3.12.39* — UNCERTAIN detections routed via MQTT to A12 for YOLO verification.
+> *v3.12.44* — A12 Groq vision face recognition (LLaMA 4 Scout) and automatic Nuki Smart Lock unlock for recognized residents. *v3.12.43* — Settings GUI exposes `person_telegram_photo` toggle and idle scan interval. *v3.12.42* — `PD_MIN_DETECTIONS` 2→1, `IDLE_SCAN_MS` 30s→5s, A12 MQTT `clean_session=True` fix. *v3.12.41* — TFLite Micro + ESP-NN SIMD: ~300–500 ms inference (11× speedup). *v3.12.39* — UNCERTAIN detections routed via MQTT to A12 for YOLO verification.
 >
 > *v3.12.34* — Telegram TLS reuse. *v3.12.32* — Telegram boot hang fix. *v3.12.17* — A12: exponential backoff, recovery snapshot.
 
@@ -606,8 +606,8 @@ A **CZ/EN language toggle** (top-right corner) switches all labels and button te
 
 **Via A12 config.env** (Enhanced mode):
 ```env
-TELEGRAM_BOT_TOKEN=123456789:ABC-DEF...
-TELEGRAM_CHAT_ID=987654321
+TELEGRAM_BOT_TOKEN=<your-bot-token-from-@BotFather>
+TELEGRAM_CHAT_ID=<your-chat-id>
 ```
 
 | Command | Description |
