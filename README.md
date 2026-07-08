@@ -238,6 +238,38 @@ How A12 decides what to do with a detected person:
 > [!NOTE]
 > A12 requires the YOLO model file (`yolo11n.onnx`, ~6 MB). `setup.sh` downloads it automatically. If you prefer manual download: `https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx`
 
+**Shared YOLO scorer (optional, opt-in)**
+
+A12 can use a shared HTTP scorer instead of running YOLO in-process. This keeps the
+local `cv2.dnn` model as the default and fallback, but lets multiple cameras share one
+stronger model on another host:
+
+```env
+YOLO_BACKEND=http
+YOLO_SCORER_URL=http://SCORER_HOST:8766/score
+```
+
+The scorer contract is:
+
+```http
+POST http://SCORER_HOST:8766/score
+Content-Type: image/jpeg
+```
+
+```json
+{
+  "person": 0.87,
+  "animal": 0.0,
+  "classes": {"person": 0.87, "dog": 0.41}
+}
+```
+
+A12 reads `classes`, filters it through `YOLO_CLASSES`, applies
+`YOLO_CONFIDENCE_THRESHOLD`, and returns the same `(label, confidence)` detections to the
+pipeline. If the scorer is unavailable, A12 falls back to the local model if it loaded.
+Recalibrate thresholds before production use with a different shared model; scores from a
+larger model are not directly comparable to `yolo11n`.
+
 > [!NOTE]
 > When using A12, disable ESP32 Telegram to avoid duplicate alerts and free heap: comment out `#define INCLUDE_TELEGRAM` in `firmware/config.h` before flashing. See [Two Deployment Modes](#two-deployment-modes).
 

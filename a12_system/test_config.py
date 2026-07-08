@@ -77,6 +77,8 @@ def test_media_cleanup_defaults():
 def test_yolo_defaults():
     """Verify YOLO defaults point to v11, not v4."""
     assert DEFAULT_CONFIG["yolo"]["weights"] == "yolo11n.onnx", "YOLO should default to v11"
+    assert DEFAULT_CONFIG["yolo"]["backend"] == "local"
+    assert DEFAULT_CONFIG["yolo"]["scorer_url"] == ""
     assert DEFAULT_CONFIG["yolo"]["classes"] == ["person", "dog"]
     assert DEFAULT_CONFIG["yolo"]["confidence_threshold"] == 0.55
     assert DEFAULT_CONFIG["yolo"]["notify_confidence_threshold"] == 0.55
@@ -84,6 +86,30 @@ def test_yolo_defaults():
     assert DEFAULT_CONFIG["yolo"]["pir_notify_confidence_threshold"] == 0.45
     assert DEFAULT_CONFIG["yolo"]["pir_person_confirmations"] == 1
     print("[OK] YOLO defaults: camera confirmations=2, PIR confirmations=1")
+
+
+def test_yolo_http_backend_env_override():
+    """Verify remote scorer backend is opt-in through env vars."""
+    import tempfile
+
+    env = {
+        "YOLO_BACKEND": "http",
+        "YOLO_SCORER_URL": "http://scorer.example:8766/score",
+    }
+    old = {key: os.environ.get(key) for key in env}
+    try:
+        os.environ.update(env)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = load_config(tmpdir)
+        assert config["yolo"]["backend"] == "http"
+        assert config["yolo"]["scorer_url"] == "http://scorer.example:8766/score"
+    finally:
+        for key, value in old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    print("[OK] YOLO_BACKEND/YOLO_SCORER_URL env overrides work")
 
 
 def test_no_duplicate_flat_keys():

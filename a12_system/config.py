@@ -16,6 +16,8 @@ DEFAULT_CONFIG = {
     "camera_http_pass": "admin",
     "yolo": {
         "enabled": True,
+        "backend": "local",
+        "scorer_url": "",
         "weights": "yolo11n.onnx",
         "names": "coco.names",
         "classes": ["person", "dog"],
@@ -247,6 +249,8 @@ ENV_OVERRIDES = [
     ("ESP32_HTTP_PASS", "camera_http_pass", str),
     ("ESP32_MQTT_DEVICE", "esp32_mqtt_device", str),
     # YOLO
+    ("YOLO_BACKEND", "yolo.backend", str),
+    ("YOLO_SCORER_URL", "yolo.scorer_url", str),
     ("YOLO_WEIGHTS", "yolo.weights", str),
     ("YOLO_CONFIDENCE_THRESHOLD", "yolo.confidence_threshold", _parse_float),
     ("YOLO_NOTIFY_CONFIDENCE_THRESHOLD", "yolo.notify_confidence_threshold", _parse_float),
