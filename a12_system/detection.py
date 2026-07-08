@@ -9,6 +9,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from . import scorer_client
+
 face_recognition = None
 FACE_RECOGNITION_AVAILABLE = False
 
@@ -143,6 +145,44 @@ class Detector:
 
     def _detect_objects_impl(self, frame: np.ndarray) -> list[tuple[str, float]]:
         """Run YOLO inference and return list of (label, confidence)."""
+        yolo_cfg = self.config["yolo"]
+        if yolo_cfg.get("backend", "local") == "http" and yolo_cfg.get("scorer_url"):
+            detections = self._detect_objects_http(frame)
+            if detections is not None:
+                return detections
+            logging.warning("Remote YOLO scorer unavailable; falling back to local model")
+        return self._detect_objects_local(frame)
+
+    def _detect_objects_http(self, frame: np.ndarray) -> list[tuple[str, float]] | None:
+        """Use the shared scorer service; None means caller should fall back locally."""
+        ok, encoded = cv2.imencode(".jpg", frame)
+        if not ok:
+            logging.warning("Failed to encode frame for remote YOLO scorer")
+            return None
+        result = scorer_client.score_image(
+            self.config["yolo"]["scorer_url"],
+            encoded.tobytes(),
+            timeout=10,
+        )
+        if result is None:
+            return None
+        classes = result.get("classes") if isinstance(result, dict) else None
+        if not isinstance(classes, dict):
+            return []
+        threshold = self.config["yolo"]["confidence_threshold"]
+        allowed_classes = self.config["yolo"].get("classes", ["person", "bird"])
+        detections = []
+        for label in allowed_classes:
+            try:
+                confidence = float(classes.get(label, 0.0))
+            except (TypeError, ValueError):
+                continue
+            if confidence >= threshold:
+                detections.append((label, confidence))
+        return detections
+
+    def _detect_objects_local(self, frame: np.ndarray) -> list[tuple[str, float]]:
+        """Run local cv2.dnn YOLO inference and return list of (label, confidence)."""
         if not self.net:
             return []
 
