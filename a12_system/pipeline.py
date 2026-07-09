@@ -12,6 +12,22 @@ import cv2
 import numpy as np
 
 
+def classify_frame_health(
+    brightness: float, std: float, dark_threshold: float, flat_std_threshold: float
+) -> str | None:
+    """Classify a frame as "dark" (AEC freeze), "flat" (hung sensor), or None (healthy).
+
+    Near-zero standard deviation means the sensor streams a uniform frame
+    regardless of scene content; exposure resets don't recover that state,
+    it usually needs a power cycle.
+    """
+    if brightness < dark_threshold:
+        return "dark"
+    if std < flat_std_threshold:
+        return "flat"
+    return None
+
+
 class DetectionPipeline:
     """Orchestrates motion detection, YOLO inference, sensor fusion, and notifications."""
 
@@ -176,8 +192,10 @@ class DetectionPipeline:
         self._camera_reset_fn = camera_reset_fn
         self._dark_frame_threshold = int(runtime_config.get("brightness_watchdog_threshold", 30))
         self._dark_consecutive_required = int(runtime_config.get("brightness_watchdog_strikes", 1))
+        self._flat_frame_std_threshold = float(runtime_config.get("flat_frame_std_threshold", 1.0))
         self._dark_consecutive_count = 0
         self._last_exposure_reset = 0.0
+        self._frozen_frame_alerted = False
 
     def _trigger_nuki_unlock(self, name: str):
         if not self.ha_url or not self.ha_token:
@@ -250,15 +268,21 @@ class DetectionPipeline:
             self.last_heartbeat = current_time
             self.frame_count = 0
 
-            # Brightness watchdog: detect AEC freeze (OV3660 gets stuck at near-zero exposure)
+            # Brightness watchdog: detect AEC freeze (near-zero exposure) and
+            # hung sensor (uniform flat frame, OV3660 occasionally wedges after reboot)
             if self._camera_reset_fn:
-                small = cv2.resize(frame, (160, 120))
-                brightness = float(np.mean(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)))
+                gray = cv2.cvtColor(cv2.resize(frame, (160, 120)), cv2.COLOR_BGR2GRAY)
+                brightness = float(np.mean(gray))
+                flatness = float(np.std(gray))
                 self.shared_state["last_frame_brightness"] = brightness
-                if brightness < self._dark_frame_threshold:
+                frame_fault = classify_frame_health(
+                    brightness, flatness, self._dark_frame_threshold, self._flat_frame_std_threshold
+                )
+                if frame_fault:
                     self._dark_consecutive_count += 1
                     logging.warning(
-                        f"{self.log_prefix} Dark frame detected (brightness={brightness:.1f},"
+                        f"{self.log_prefix} {frame_fault.capitalize()} frame detected"
+                        f" (brightness={brightness:.1f}, std={flatness:.1f},"
                         f" strike {self._dark_consecutive_count}/{self._dark_consecutive_required})"
                     )
                     if (
@@ -268,12 +292,23 @@ class DetectionPipeline:
                         logging.warning(f"{self.log_prefix} AEC freeze suspected — resetting exposure")
                         self._dark_consecutive_count = 0
                         self._last_exposure_reset = current_time
+                        if frame_fault == "flat" and not self._frozen_frame_alerted:
+                            self._frozen_frame_alerted = True
+                            self.notifier.send_telegram(
+                                self._telegram_message(
+                                    "Camera is streaming flat gray frames (sensor hang)."
+                                    " Exposure reset attempted; if this persists,"
+                                    " power-cycle the camera."
+                                ),
+                                bypass_cooldown=True,
+                            )
                         try:
                             self._camera_reset_fn()
                         except Exception as _e:
                             logging.error(f"{self.log_prefix} Exposure reset failed: {_e}")
                 else:
                     self._dark_consecutive_count = 0
+                    self._frozen_frame_alerted = False
 
         # Motion detection
         # Primary: OpenCV frame differencing (disabled when motion.threshold=0)
