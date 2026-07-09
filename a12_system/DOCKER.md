@@ -1,5 +1,7 @@
 # A12 System v2 Docker
 
+This A12 companion is paired with the Tapo monitor repo at [tapo-monitoring](https://github.com/PeterkoCZ91/tapo-monitoring). That repo owns the Pi-side daemon, shared scorer, and public-release scan notes; this directory owns the ESP32 firmware-side A12 integration and Docker runtime.
+
 Run from the `a12_system` directory:
 
 ```bash
@@ -74,7 +76,7 @@ Set unique values in each `config.env`:
 CAMERA_ID=gate
 CAMERA_NAME="Gate Camera"
 CAMERA_LABEL="Gate"
-ESP32_IP=192.168.1.101
+ESP32_IP=192.0.2.101
 MQTT_BASE_TOPIC=esp32_camera_gate
 ESP32_MQTT_DEVICE=ESP32-Camera-Gate
 
@@ -82,7 +84,7 @@ ESP32_MQTT_DEVICE=ESP32-Camera-Gate
 CAMERA_ID=yard
 CAMERA_NAME="Yard Camera"
 CAMERA_LABEL="Yard"
-ESP32_IP=192.168.1.102
+ESP32_IP=192.0.2.102
 MQTT_BASE_TOPIC=esp32_camera_yard
 ESP32_MQTT_DEVICE=ESP32-Camera-Yard
 ```

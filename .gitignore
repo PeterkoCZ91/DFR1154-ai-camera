@@ -49,3 +49,6 @@ LOCAL_*.md
 # Local debug/crash reports (contain device IPs, session-specific data)
 *_crash_report.md
 telegram_crash_report.md
+
+# Local agent planning context
+docs/superpowers/

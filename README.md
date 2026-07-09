@@ -216,7 +216,7 @@ A12 uses [Groq](https://console.groq.com) (LLaMA 4 Scout, free tier) to recogniz
 ```bash
 # 1. Get a free API key at https://console.groq.com → API Keys
 #    Add to config.env:
-GROQ_API_KEY=gsk_your_key_here
+GROQ_API_KEY=<GROQ_API_KEY>
 NUKI_LOCK_ENTITY_ID=lock.nuki_smart_lock   # HA entity
 
 # 2. Create a folder with 2–3 JPEG reference photos per person
@@ -242,7 +242,12 @@ How A12 decides what to do with a detected person:
 
 A12 can use a shared HTTP scorer instead of running YOLO in-process. This keeps the
 local `cv2.dnn` model as the default and fallback, but lets multiple cameras share one
-stronger model on another host:
+stronger model on another host.
+
+The paired Tapo monitor repo is [tapo-monitoring](https://github.com/PeterkoCZ91/tapo-monitoring). It owns the Pi-side daemon,
+shared scorer service, runtime topology, and public-release scan docs; this firmware repo
+stops at the camera / A12 companion boundary.
+
 
 ```env
 YOLO_BACKEND=http
