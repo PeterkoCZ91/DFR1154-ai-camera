@@ -116,6 +116,7 @@ DEFAULT_CONFIG = {
     },
     "brightness_watchdog_threshold": 30,
     "brightness_watchdog_strikes": 1,
+    "flat_frame_std_threshold": 1.0,
     "camera_exposure_reset_settings": {
         "aec": 1,
         "aec2": 1,
