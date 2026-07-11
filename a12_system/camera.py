@@ -14,6 +14,11 @@ from .mdns_resolver import resolve_host, url_with_host
 
 
 class Camera:
+    # Last raw JPEG delivered by the stream — forensic evidence for flat-frame
+    # episodes (a second stream client starves, so this is the only way to see
+    # the actual bytes A12 received).
+    last_raw_jpg: bytes | None = None
+
     def __init__(self, config: dict, stream_port: int | None = None, audio_port: int | None = None):
         self.config = config
         self.camera_id = str(config.get("camera_id", "esp32_cam")).strip() or "esp32_cam"
@@ -54,12 +59,52 @@ class Camera:
         self.audio_stream_url = f"{self.audio_base_url}/audio.wav"
 
         self.status_url = f"{base_url}/health"
+        self.reboot_url = f"{base_url}/reboot"
         self.settings_url = f"{base_url}/settings"
         self.ir_control_url = f"{base_url}/ir-control"
         self.ir_status_url = f"{base_url}/ir-status"
 
+    def reset_session(self) -> None:
+        """Discard the pooled HTTP session and start a clean one.
+
+        The 2026-07-10 hung-gray episode survived every in-process reconnect that
+        reused this session's connection pool; only a fresh process (fresh session)
+        recovered. Rebuilding the session removes any stale pooled-connection state
+        as a reconnect variable.
+        """
+        old = self.session
+        self.session = requests.Session()
+        self.session.auth = old.auth
+        try:
+            old.close()
+        except Exception as e:
+            logging.debug(f"{self.log_prefix} Old session close failed: {e}")
+
+    def reboot(self) -> bool:
+        """Ask the camera to soft-reboot over the LAN (POST /reboot).
+
+        A soft ESP.restart clears the OV3660 hung-sensor (uniform gray) state
+        without a physical power-cycle (verified 2026-07-11). The camera drops
+        offline for ~15-25s; the stream reconnect loop reconnects to the fresh boot.
+        """
+        try:
+            self._refresh_urls()
+            resp = self.session.post(self.reboot_url, timeout=5)
+            ok = resp.status_code == 200
+            logging.warning(
+                f"{self.log_prefix} Camera reboot requested via {self.reboot_url} "
+                f"(HTTP {resp.status_code})"
+            )
+            return ok
+        except Exception as e:
+            # A reboot that closes the connection mid-response can surface as an
+            # exception even though the device is rebooting — treat as best-effort.
+            logging.warning(f"{self.log_prefix} Camera reboot request error: {e}")
+            return False
+
     def get_stream(self) -> requests.Response | None:
         """Connect to MJPEG stream with back-off retries."""
+        self.reset_session()
         self._refresh_urls(force=True)
         logging.info(f"{self.log_prefix} Connecting to {self.stream_url}...")
         retries = 0
@@ -146,7 +191,10 @@ class Camera:
             pass
         return None
 
-    def process_stream(self, response: requests.Response, callback, target_fps_getter=None) -> None:
+    def process_stream(
+        self, response: requests.Response, callback, target_fps_getter=None,
+        reconnect_requested=None,
+    ) -> None:
         """Read frames from MJPEG stream and call callback for each frame."""
         raw_queue: queue.Queue[bytes] = queue.Queue(maxsize=3)
         frame_queue: queue.Queue = queue.Queue(maxsize=1)
@@ -246,6 +294,7 @@ class Camera:
                         note_decode_error("imdecode returned None")
                     else:
                         decoded_frames += 1
+                        self.last_raw_jpg = jpg
                         put_drop_oldest(frame_queue, frame)
                 except Exception as e:
                     note_decode_error(str(e))
@@ -263,6 +312,12 @@ class Camera:
 
         try:
             while not stop_event.is_set():
+                if reconnect_requested is not None and reconnect_requested():
+                    logging.warning(
+                        f"{self.log_prefix} Forced stream reconnect "
+                        f"(flat-frame watchdog). Rebuilding connection."
+                    )
+                    break
                 if time.time() - last_frame_time > 20:
                     logging.warning(f"{self.log_prefix} Stream frozen (20s timeout). Reconnecting...")
                     break

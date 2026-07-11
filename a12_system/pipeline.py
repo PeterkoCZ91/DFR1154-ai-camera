@@ -11,6 +11,8 @@ from datetime import datetime
 import cv2
 import numpy as np
 
+from .flat_episode import FlatEpisodeState
+
 
 def classify_frame_health(
     brightness: float, std: float, dark_threshold: float, flat_std_threshold: float
@@ -26,6 +28,43 @@ def classify_frame_health(
     if std < flat_std_threshold:
         return "flat"
     return None
+
+
+def flat_recovery_action(
+    consecutive_flat: int,
+    reconnect_strikes: int,
+    forced_reconnects: int,
+    reboots: int,
+    reconnect_before_reboot: int,
+    max_reboots: int,
+    now: float,
+    last_action: float,
+    cooldown: float,
+) -> str:
+    """Decide how to recover from a sustained run of uniform (hung-stream) frames.
+
+    A hung stream keeps delivering decodable but uniform JPEGs, so the 20s freeze
+    timeout never trips and exposure resets (SCCB writes) do not recover it.
+    Escalation ladder, each step rate-limited by ``cooldown``:
+
+    - ``"none"``      — below the strike threshold or within the cooldown.
+    - ``"reconnect"`` — tear down and rebuild the stream connection (clears the
+      A12-side stale-connection failure mode).
+    - ``"reboot"``    — ``reconnect_before_reboot`` reconnects didn't help, so the
+      camera itself is wedged: reboot it over the LAN (a soft ESP.restart clears
+      the OV3660 hung-sensor state — verified 2026-07-11).
+    - ``"giveup"``    — even ``max_reboots`` camera reboots didn't recover; likely
+      dead hardware. Stop acting and let the caller alert once.
+    """
+    if consecutive_flat < reconnect_strikes:
+        return "none"
+    if (now - last_action) < cooldown:
+        return "none"
+    if forced_reconnects < reconnect_before_reboot:
+        return "reconnect"
+    if reboots < max_reboots:
+        return "reboot"
+    return "giveup"
 
 
 class DetectionPipeline:
@@ -195,7 +234,30 @@ class DetectionPipeline:
         self._flat_frame_std_threshold = float(runtime_config.get("flat_frame_std_threshold", 1.0))
         self._dark_consecutive_count = 0
         self._last_exposure_reset = 0.0
-        self._frozen_frame_alerted = False
+        # Flat-frame escalation: exposure resets do not recover a hung stream that
+        # keeps delivering uniform JPEGs. Ladder: forced stream reconnects first
+        # (A12-side stale connection), then reboot the camera over LAN (camera-side
+        # OV3660 wedge — a soft ESP.restart clears it), then give up + alert.
+        # The reboot budget and give-up latch live in flat_state (persisted), NOT
+        # here: a crash-looping A12 must not re-arm 5 fresh reboots per process.
+        self._flat_reconnect_strikes = int(runtime_config.get("flat_frame_reconnect_strikes", 5))
+        self._flat_action_cooldown = float(runtime_config.get("flat_frame_reconnect_cooldown", 120))
+        self._flat_reconnect_before_reboot = int(runtime_config.get("flat_frame_reboot_after", 3))
+        self._flat_max_reboots = int(runtime_config.get("flat_frame_max_reboots", 5))
+        # Ladder reset needs a sustained run of textured frames, not a single
+        # healthy heartbeat: a sensor flapping around the std threshold must not
+        # regain its reboot budget (endless reboot loop) or re-fire the
+        # recovered message on every flat->healthy transition.
+        self._flat_healthy_required = int(runtime_config.get("flat_frame_healthy_required", 10))
+        self._flat_consecutive_count = 0
+        self._flat_forced_reconnects = 0
+        self._flat_nonflat_count = 0
+        self._last_flat_action = 0.0
+        # Cross-restart notification dampening: the ladder cycles ~every 10 min while
+        # the camera itself is wedged; without persistence each process restart would
+        # re-send every message (287 Telegram msgs on the night of 2026-07-10).
+        self.flat_state = FlatEpisodeState(os.path.join(script_dir, "flat_episode_state.json"))
+        self._flat_notify_interval = float(runtime_config.get("flat_frame_notify_interval", 3600))
 
     def _trigger_nuki_unlock(self, name: str):
         if not self.ha_url or not self.ha_token:
@@ -231,6 +293,26 @@ class DetectionPipeline:
             )
         except Exception as e:
             logging.warning(f"{self.log_prefix} Recovery snapshot failed: {e}")
+
+    def _flat_ladder_note_nonflat(self, current_time: float) -> None:
+        """Register a textured (non-flat) heartbeat frame with the flat ladder.
+
+        Only a sustained run of them (``flat_frame_healthy_required``) ends the
+        episode and re-arms the reboot budget: one healthy heartbeat between
+        wedges must not reset the budget (endless reboot loop, giveup never
+        reached) or emit a "recovered" message per flap. The recovered message
+        is additionally rate-limited as a backstop for slow flapping.
+        """
+        self._flat_nonflat_count += 1
+        if self._flat_nonflat_count < self._flat_healthy_required:
+            return
+        if self.flat_state.clear() and self.flat_state.should_notify(
+            "recovered", current_time, self._flat_notify_interval
+        ):
+            self.notifier.send_telegram(
+                self._telegram_message("Stream recovered — frames are healthy again."),
+                bypass_cooldown=True,
+            )
 
     def process_frame(self, frame) -> None:
         """Main per-frame processing callback."""
@@ -285,6 +367,90 @@ class DetectionPipeline:
                         f" (brightness={brightness:.1f}, std={flatness:.1f},"
                         f" strike {self._dark_consecutive_count}/{self._dark_consecutive_required})"
                     )
+                    # Persistent uniform frames mean a hung stream (exposure reset alone
+                    # never recovers this). Judge by flatness alone, not the fault label:
+                    # a uniform BLACK frame classifies as "dark", yet it is the same hang.
+                    if flatness < self._flat_frame_std_threshold:
+                        self._flat_consecutive_count += 1
+                        self._flat_nonflat_count = 0
+                        # The episode starts when the ladder is about to act, not
+                        # on the first flat heartbeat: a 1-4 strike blip must not
+                        # open an episode (and later emit a "recovered" message
+                        # for a problem that was never announced).
+                        if self._flat_consecutive_count == self._flat_reconnect_strikes:
+                            self.flat_state.mark_active()
+                        reboots_used = self.flat_state.reboot_count()
+                        action = flat_recovery_action(
+                            self._flat_consecutive_count,
+                            self._flat_reconnect_strikes,
+                            self._flat_forced_reconnects,
+                            reboots_used,
+                            self._flat_reconnect_before_reboot,
+                            self._flat_max_reboots,
+                            current_time,
+                            self._last_flat_action,
+                            self._flat_action_cooldown,
+                        )
+                        if action == "reconnect":
+                            logging.warning(
+                                f"{self.log_prefix} Uniform frames persisted "
+                                f"({self._flat_consecutive_count} strikes) — forcing stream reconnect "
+                                f"({self._flat_forced_reconnects + 1}/{self._flat_reconnect_before_reboot})"
+                            )
+                            # No Telegram here: the ladder cycles while the camera is
+                            # wedged and per-reconnect messages flood the chat (143×
+                            # overnight); the rate-limited episode alert is enough.
+                            self.shared_state["force_stream_reconnect"] = True
+                            self._last_flat_action = current_time
+                            self._flat_consecutive_count = 0
+                            self._flat_forced_reconnects += 1
+                        elif action == "reboot":
+                            # A soft ESP.restart clears the OV3660 wedge (verified
+                            # 2026-07-11). __main__ owns the Camera and issues the reboot;
+                            # also tear down the stream so we reconnect to the fresh boot.
+                            reboots_used = self.flat_state.record_reboot()
+                            logging.critical(
+                                f"{self.log_prefix} Uniform frames survived "
+                                f"{self._flat_forced_reconnects} reconnects — rebooting camera "
+                                f"over LAN ({reboots_used}/{self._flat_max_reboots})"
+                            )
+                            self.shared_state["reboot_camera"] = True
+                            self.shared_state["force_stream_reconnect"] = True
+                            self._last_flat_action = current_time
+                            self._flat_consecutive_count = 0
+                            if self.flat_state.should_notify(
+                                "camera_reboot", current_time, self._flat_notify_interval
+                            ):
+                                self.notifier.send_telegram(
+                                    self._telegram_message(
+                                        "Camera stuck on uniform frames — rebooting it over"
+                                        " the LAN to recover. (rate-limited alert)"
+                                    ),
+                                    bypass_cooldown=True,
+                                )
+                        elif action == "giveup" and self.flat_state.set_gaveup():
+                            # set_gaveup latches persistently: an A12 restart must
+                            # not repeat this alert for the same episode.
+                            logging.critical(
+                                f"{self.log_prefix} Uniform frames survived "
+                                f"{reboots_used} camera reboots — giving up, "
+                                "camera likely needs a physical power-cycle"
+                            )
+                            self.notifier.send_telegram(
+                                self._telegram_message(
+                                    "Camera still streaming flat frames after "
+                                    f"{reboots_used} reboots — likely a hardware fault,"
+                                    " needs a physical power-cycle."
+                                ),
+                                bypass_cooldown=True,
+                            )
+                    else:
+                        # Dark but textured: the sensor is demonstrably alive (a
+                        # wedged OV3660 emits uniform frames), so this counts
+                        # toward ending the episode even on a dark night.
+                        self._flat_consecutive_count = 0
+                        self._flat_forced_reconnects = 0
+                        self._flat_ladder_note_nonflat(current_time)
                     if (
                         self._dark_consecutive_count >= self._dark_consecutive_required
                         and current_time - self._last_exposure_reset > 300
@@ -292,13 +458,14 @@ class DetectionPipeline:
                         logging.warning(f"{self.log_prefix} AEC freeze suspected — resetting exposure")
                         self._dark_consecutive_count = 0
                         self._last_exposure_reset = current_time
-                        if frame_fault == "flat" and not self._frozen_frame_alerted:
-                            self._frozen_frame_alerted = True
+                        if frame_fault == "flat" and self.flat_state.should_notify(
+                            "flat_alert", current_time, self._flat_notify_interval
+                        ):
                             self.notifier.send_telegram(
                                 self._telegram_message(
-                                    "Camera is streaming flat gray frames (sensor hang)."
-                                    " Exposure reset attempted; if this persists,"
-                                    " power-cycle the camera."
+                                    "Camera is streaming flat gray frames (hung stream)."
+                                    " Exposure reset attempted; automatic stream"
+                                    " reconnects will follow if it persists."
                                 ),
                                 bypass_cooldown=True,
                             )
@@ -308,7 +475,9 @@ class DetectionPipeline:
                             logging.error(f"{self.log_prefix} Exposure reset failed: {_e}")
                 else:
                     self._dark_consecutive_count = 0
-                    self._frozen_frame_alerted = False
+                    self._flat_consecutive_count = 0
+                    self._flat_forced_reconnects = 0
+                    self._flat_ladder_note_nonflat(current_time)
 
         # Motion detection
         # Primary: OpenCV frame differencing (disabled when motion.threshold=0)

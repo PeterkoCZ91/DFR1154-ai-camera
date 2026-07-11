@@ -1388,6 +1388,25 @@ static esp_err_t status_handler(httpd_req_t *req) {
     return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
 }
 
+// Handler: Soft reboot (POST /reboot)
+// Lets A12 recover a wedged OV3660 over the LAN. A soft ESP.restart() clears the
+// hung-sensor state (uniform gray frames, std~0) without a physical power-cycle —
+// verified 2026-07-11. Auth-guarded so only the configured client can trigger it.
+static esp_err_t reboot_handler(httpd_req_t *req) {
+    if (check_basic_auth(req) != ESP_OK) return ESP_OK;
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"Rebooting\"}");
+
+    Serial.println("🔄 /reboot requested — restarting in 500ms");
+    logEvent(EVT_UNKNOWN, "reboot_cmd");
+    vTaskDelay(pdMS_TO_TICKS(500));  // let the HTTP response flush
+    ESP.restart();
+    return ESP_OK;  // unreachable
+}
+
 // Handler: Settings HTML page
 static esp_err_t settings_page_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/html");
@@ -2879,7 +2898,10 @@ static esp_err_t health_handler(httpd_req_t *req) {
     // to a recent (<10 min uptime) power-related boot. POWERON is included because on this
     // board degraded supply shows up as a cold-boot POWERON (VBUS lost), not a brownout —
     // this unit has 103 POWERON vs 1 brownout, so a BROWNOUT-only check would miss it.
-    bool rate_power_suspect = restarts_1h >= 3;
+    // Exclude commanded soft restarts (OTA, POST /reboot from A12's recovery
+    // ladder) — 3+ intentional reboots in an hour are not a failing supply and
+    // must not flip power_health to "suspect" (StatusMonitor alerts on that).
+    bool rate_power_suspect = getRestartsInWindow(3600, /*exclude_sw=*/true) >= 3;
     bool recent_power_boot = (sys_stats.last_restart_reason == ESP_RST_BROWNOUT ||
                               sys_stats.last_restart_reason == ESP_RST_POWERON) &&
                              uptimeSeconds < 600;
@@ -3434,10 +3456,13 @@ void startCameraServer() {
     httpd_config_t http_config = HTTPD_DEFAULT_CONFIG();
     http_config.server_port = 80;
     http_config.ctrl_port = 32768;
-    http_config.max_open_sockets = 3;         // REDUCED to save sockets (was 7)
+    // The GUI, websocket log and A12 status polling share this server. Three
+    // sockets exhausts it under ordinary use while the independent video stream
+    // on port 81 keeps running, making the GUI appear dead.
+    http_config.max_open_sockets = 7;
     http_config.lru_purge_enable = true;      // Auto-close oldest socket when limit reached
     http_config.stack_size = 20480;           // FIXED: Increased from 16KB to 20KB to prevent stack overflow
-    http_config.max_uri_handlers = 70;        // 66 handlers used (20 GET + 6 POST + 4 CRUD + wsLog) + headroom
+    http_config.max_uri_handlers = 74;        // 68 used (incl. POST /reboot) + headroom
     http_config.recv_wait_timeout = 2;        // Free stalled connections after 2s (default 5s)
     http_config.send_wait_timeout = 2;        // Free stalled connections after 2s (default 5s)
 
@@ -3526,6 +3551,7 @@ void startCameraServer() {
 
         // --- Record ---
         registerPostEndpoint(camera_httpd, "/record", record_handler);
+        registerPostEndpoint(camera_httpd, "/reboot", reboot_handler);
 
         // --- Captive portal (AP mode) ---
         registerGetEndpoint(camera_httpd, "/setup", captive_portal_handler);

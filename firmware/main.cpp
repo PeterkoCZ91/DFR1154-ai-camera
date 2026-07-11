@@ -478,13 +478,17 @@ static void saveBootHistory() {
 
 // Count recorded boots whose timestamp falls within the last `window_seconds`.
 // Returns 0 when wall-clock time isn't available yet (caller treats as "unknown").
-uint8_t getRestartsInWindow(uint32_t window_seconds) {
+// `exclude_sw` skips ESP_RST_SW boots: commanded soft restarts (OTA, POST /reboot
+// from A12's flat-frame recovery ladder) must not masquerade as a failing supply
+// in the power-health rate detector.
+uint8_t getRestartsInWindow(uint32_t window_seconds, bool exclude_sw) {
     struct tm ti;
     if (!getLocalTime(&ti, 0)) return 0;   // NTP not synced
     time_t now = time(NULL);
     if (now < BOOT_TIME_SANITY) return 0;
     uint8_t n = 0;
     for (uint8_t i = 0; i < boot_history.count && i < BOOT_HISTORY_CAP; i++) {
+        if (exclude_sw && boot_history.records[i].reason == (uint8_t)ESP_RST_SW) continue;
         uint32_t e = boot_history.records[i].epoch;
         if (e != 0 && (uint32_t)now >= e && ((uint32_t)now - e) <= window_seconds) n++;
     }

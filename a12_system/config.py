@@ -117,6 +117,12 @@ DEFAULT_CONFIG = {
     "brightness_watchdog_threshold": 30,
     "brightness_watchdog_strikes": 1,
     "flat_frame_std_threshold": 1.0,
+    "flat_frame_reconnect_strikes": 5,
+    "flat_frame_reconnect_cooldown": 120.0,
+    "flat_frame_reboot_after": 3,
+    "flat_frame_max_reboots": 5,
+    "flat_frame_healthy_required": 10,
+    "flat_frame_notify_interval": 3600.0,
     "camera_exposure_reset_settings": {
         "aec": 1,
         "aec2": 1,
@@ -261,6 +267,14 @@ ENV_OVERRIDES = [
     ("YOLO_CLASSES", "yolo.classes", _parse_csv),
     # Motion
     ("MOTION_THRESHOLD", "motion.threshold", _parse_int),
+    # Frame-health watchdog (hung-stream recovery)
+    ("FLAT_FRAME_STD_THRESHOLD", "flat_frame_std_threshold", _parse_float),
+    ("FLAT_FRAME_RECONNECT_STRIKES", "flat_frame_reconnect_strikes", _parse_int),
+    ("FLAT_FRAME_RECONNECT_COOLDOWN", "flat_frame_reconnect_cooldown", _parse_float),
+    ("FLAT_FRAME_REBOOT_AFTER", "flat_frame_reboot_after", _parse_int),
+    ("FLAT_FRAME_MAX_REBOOTS", "flat_frame_max_reboots", _parse_int),
+    ("FLAT_FRAME_HEALTHY_REQUIRED", "flat_frame_healthy_required", _parse_int),
+    ("FLAT_FRAME_NOTIFY_INTERVAL", "flat_frame_notify_interval", _parse_float),
     # Face recognition
     ("FACE_RECOGNITION_ENABLED", "face_recognition.enabled", _parse_bool),
     # MQTT
