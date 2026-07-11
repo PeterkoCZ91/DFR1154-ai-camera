@@ -6,14 +6,16 @@
 [![Python](https://img.shields.io/badge/A12_companion-Python_3.10+-blue?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Version](https://img.shields.io/badge/Version-3.12.48-blue)]()
+[![Version](https://img.shields.io/badge/Version-3.12.49-blue)]()
 
 Firmware for the **DFRobot DFR1154 AI Camera Module** (FireBeetle 2 ESP32-S3 + OV3660 3 MP + LTR-308 lux + PDM mic). A lock-free PSRAM ring buffer feeds MJPEG streaming, RTSP, AVI recording, on-device person detection (Edge Impulse FOMO + ByteTrack) concurrently from a single camera. MQTT auto-discovery for Home Assistant, Telegram bot, time-lapse, web dashboard with live log. No cloud required.
 
 The optional `a12_system/` Python companion is part of **A12**, a multi-camera surveillance system that pairs with this firmware (and future ESP-camera modules) for YOLOv11n inference, face recognition, and sensor fusion with Home Assistant / Zigbee.
 
 > [!TIP]
-> **New in v3.12.48** — **Restart-rate detection** (boot-timestamp ring buffer; `/health` exposes `restarts_1h`/`restarts_24h` + self-clearing, POWERON-aware `power_health`), **mDNS hostname resolver** (reach the camera by name, not a drifting DHCP IP), **stream reader split** into drain + decode threads (no more send-buffer stalls), and a new [data-privacy guide](docs/DATA_PRIVACY.md). See [CHANGELOG](CHANGELOG.md).
+> **New in v3.12.49** — **Flat-gray sensor-hang auto-recovery**: a new auth-guarded `POST /reboot` endpoint plus an escalating A12 ladder (stream reconnects → LAN camera reboot → give up + alert) with a persistent reboot budget and rate-limited notifications; commanded soft reboots no longer trip the `power_health` detector. See [CHANGELOG](CHANGELOG.md).
+>
+> *v3.12.48* — Restart-rate detection (boot-timestamp ring buffer; `/health` exposes `restarts_1h`/`restarts_24h` + self-clearing, POWERON-aware `power_health`), mDNS hostname resolver, stream reader split into drain + decode threads, and a new [data-privacy guide](docs/DATA_PRIVACY.md).
 >
 > *v3.12.44* — A12 Groq vision face recognition (LLaMA 4 Scout) and automatic Nuki Smart Lock unlock for recognized residents. *v3.12.43* — Settings GUI exposes `person_telegram_photo` toggle and idle scan interval. *v3.12.42* — `PD_MIN_DETECTIONS` 2→1, `IDLE_SCAN_MS` 30s→5s, A12 MQTT `clean_session=True` fix. *v3.12.41* — TFLite Micro + ESP-NN SIMD: ~300–500 ms inference (11× speedup). *v3.12.39* — UNCERTAIN detections routed via MQTT to A12 for YOLO verification.
 >

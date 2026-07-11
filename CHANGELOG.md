@@ -6,7 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [Unreleased] - 2026-05-29
+## [Unreleased] - 2026-07-11
+
+### Added (Firmware — LAN reboot endpoint, v3.12.49)
+
+- **`POST /reboot` — auth-guarded soft restart.** Lets A12 recover a wedged OV3660 over the LAN. A hung sensor that streams uniform gray frames (std ≈ 0) survives stream reconnects and exposure resets, but a soft `ESP.restart()` clears it without a physical power-cycle (verified 2026-07-11). The handler flushes a JSON response, logs `reboot_cmd` to the event log, waits 500 ms, and restarts. Basic-auth guarded so only the configured client can trigger it.
+- **Control-server `max_open_sockets` raised 3 → 7.** The GUI, websocket log, and A12 status polling share the port-80 server; three sockets exhausts it under ordinary use while the independent video stream on port 81 keeps running, making the GUI appear dead. `max_uri_handlers` 70 → 74 for the new endpoint plus headroom.
+
+### Fixed (Firmware — power-health accuracy, v3.12.49)
+
+- **Commanded soft restarts no longer trip the power detector.** `getRestartsInWindow()` can now exclude `ESP_RST_SW` boots, and `power_health`'s rate check uses that mode — 3+ intentional reboots in an hour (OTA, `POST /reboot` from A12's recovery ladder) are not a failing supply and must not flip `power_health` to "suspect" (StatusMonitor alerts on it). `restarts_1h`/`restarts_24h` in `/health` still count every boot.
+
+### Added (A12 — flat-frame recovery ladder, v3.12.49)
+
+- **Escalating auto-recovery for hung-gray streams.** The 2026-07-08 episode showed a hung stream keeps delivering decodable but uniform JPEGs, so the 20 s freeze timeout never trips and exposure resets (SCCB writes) don't recover it. The pipeline now escalates, each step rate-limited by a cooldown (default 120 s): after N uniform frames (default 5) it **forces a stream reconnect** (clears the A12-side stale-connection failure mode); after `flat_frame_reboot_after` reconnects (default 3) it **reboots the camera over the LAN** via the new `POST /reboot`; after `flat_frame_max_reboots` reboots (default 5) it **gives up and alerts once** — the camera likely needs a physical power-cycle. Uniform *black* frames escalate too (judged by flatness, not the "dark" fault label). Configurable via `FLAT_FRAME_RECONNECT_STRIKES`, `FLAT_FRAME_RECONNECT_COOLDOWN`, `FLAT_FRAME_REBOOT_AFTER`, `FLAT_FRAME_MAX_REBOOTS`, `FLAT_FRAME_HEALTHY_REQUIRED`, `FLAT_FRAME_NOTIFY_INTERVAL` env vars.
+- **Persistent episode state (`flat_episode.py`).** Without persistence each process restart re-sends every alert and re-arms the reboot budget — the 2026-07-10 overnight episode produced 287 Telegram messages. A tiny JSON state file (survives container restarts) rate-limits per-key episode notifications (default 1 h), persists the reboot budget and the give-up latch, and keeps an in-memory mirror so rate-limiting survives a full `/data` disk. The episode ends only after a sustained run of textured frames (default 10 heartbeats — dark night frames count, a wedged sensor emits uniform ones), which re-arms the ladder and the onset alert for the next genuine hang; a scene flapping around the std threshold can neither regain its reboot budget nor re-fire the "recovered" message per transition.
+- **Forensic evidence capture.** On a forced reconnect the last raw JPEG the stream delivered is dumped to the screenshot folder (`flat_debug_raw_*.jpg`, newest 20 kept) — a second stream client starves, so this is the only way to see the actual bytes A12 received during an episode.
+
+### Fixed (A12 — stream reconnect hygiene, v3.12.49)
+
+- **Fresh HTTP session per stream connect.** The 2026-07-10 hung-gray episode survived every in-process reconnect that reused the pooled `requests.Session`; only a fresh process recovered. `get_stream()` now rebuilds the session first, removing stale pooled-connection state as a reconnect variable.
+- **Self-inflicted reboots don't spam Telegram.** A commanded camera reboot takes the ESP32 offline for ~15-25 s; the reconnect loop now treats that window as expected instead of firing the "not responding (STUCK)!" / "back online!" / recovery-snapshot trio for an outage A12 itself requested.
+- **Startup announcement is never suppressed.** Every A12 (re)start is announced (a crash-loop must stay visible on the primary monitoring channel); an ongoing flat episode is noted in the message instead of muting it.
+- 21 new tests: `test_flat_episode.py`, `test_flat_reconnect.py`, `test_stream_reconnect.py`.
 
 ### Fixed (A12 — night false-positive reduction)
 

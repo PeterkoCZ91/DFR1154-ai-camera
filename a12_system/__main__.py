@@ -19,6 +19,7 @@ from .config import load_config
 from .logging_setup import setup_logging
 from .runtime_config import RuntimeConfig
 from .camera import Camera
+from .flat_episode import prune_files
 from .detection import Detector
 from .notifier import Notifier
 from .mqtt_client import MQTTClient
@@ -297,7 +298,14 @@ class Application:
             camera.set_camera_settings(init_settings)
             time.sleep(2)
 
-        notifier.send_telegram(_startup_message(config, detector), bypass_cooldown=True)
+        # Every A12 (re)start is announced — an A12 crash-loop must stay visible
+        # on the primary monitoring channel, and a redeploy mid-episode needs its
+        # "came up" confirmation. An ongoing flat episode is noted, not used to
+        # suppress the message.
+        startup_msg = _startup_message(config, detector)
+        if self.pipeline.flat_state.episode_active():
+            startup_msg += "\nNote: flat-frame episode still active (camera may be wedged)."
+        notifier.send_telegram(startup_msg, bypass_cooldown=True)
 
         idle_decode_fps = max(1, int(self.runtime_config.get("stream_idle_decode_fps", 2)))
         active_decode_fps = max(
@@ -331,12 +339,36 @@ class Application:
             shared_state["stream_decode_fps"] = idle_decode_fps
             return idle_decode_fps
 
+        def _stream_reconnect_requested() -> bool:
+            if not shared_state.pop("force_stream_reconnect", False):
+                return False
+            # Forensics: dump the last raw JPEG the stream delivered before the
+            # teardown, so a hung-gray episode leaves evidence of the actual
+            # bytes A12 received (a second stream client starves, so this is
+            # the only way to capture them).
+            try:
+                raw = camera.last_raw_jpg
+                if raw:
+                    prune_files(self.pipeline.screenshot_folder, "flat_debug_raw_", keep=20)
+                    path = os.path.join(
+                        self.pipeline.screenshot_folder,
+                        f"flat_debug_raw_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
+                    )
+                    with open(path, "wb") as fh:
+                        fh.write(raw)
+                    logging.warning(f"Flat-frame evidence saved: {path}")
+            except Exception as e:
+                logging.warning(f"Flat-frame evidence dump failed: {e}")
+            return True
+
         # Main reconnection loop
         consecutive_failures = 0
         stuck_notified = False
+        reboot_grace_until = 0.0
         STUCK_THRESHOLD = 2
         BASE_RETRY_SLEEP = 5
         MAX_RETRY_SLEEP = 60
+        REBOOT_GRACE_SECONDS = 60.0
 
         while self.running:
             try:
@@ -348,8 +380,11 @@ class Application:
                         stuck_notified = False
                         shared_state["send_recovery_snapshot"] = True
 
-                    # Kick AEC after reconnect so OV3660 doesn't freeze at near-zero exposure.
-                    # 5s delay lets the stream settle before issuing settings.
+                    # Kick AEC shortly after every (re)connect so the OV3660 doesn't
+                    # stay frozen at near-zero exposure. The pipeline brightness
+                    # watchdog also covers this, but it is rate-limited to one reset
+                    # per 300s — up to 5 minutes of near-black frames (blind
+                    # detection) if its window was just consumed.
                     threading.Timer(5.0, _camera_exposure_reset_silent).start()
 
                     consecutive_failures = 0
@@ -357,7 +392,25 @@ class Application:
                         stream_response,
                         self.pipeline.process_frame,
                         target_fps_getter=target_decode_fps,
+                        reconnect_requested=_stream_reconnect_requested,
                     )
+
+                    if shared_state.pop("reboot_camera", False):
+                        # Camera-side OV3660 wedge: reconnects can't fix gray pixels
+                        # at the source. Reboot the camera over the LAN — a soft
+                        # ESP.restart clears it (verified 2026-07-11). The next
+                        # get_stream() reconnects to the fresh boot.
+                        camera.reboot()
+                        # The camera drops offline for ~15-25s now. That outage is
+                        # self-inflicted: don't let the loop below count it toward
+                        # STUCK alerts ("not responding!" / "back online!" spam for
+                        # a reboot we requested ourselves).
+                        reboot_grace_until = time.time() + REBOOT_GRACE_SECONDS
+                elif time.time() < reboot_grace_until:
+                    logging.info(
+                        "Stream still down after commanded camera reboot — expected, retrying"
+                    )
+                    time.sleep(BASE_RETRY_SLEEP)
                 else:
                     consecutive_failures += 1
                     retry_sleep = min(

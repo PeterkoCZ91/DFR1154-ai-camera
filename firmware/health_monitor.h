@@ -34,8 +34,10 @@ const char* getResetReasonName(uint32_t reason);
 // Restart-rate detection (boot-timestamp ring buffer persisted in LittleFS).
 // Returns how many recorded boots fall within the last `window_seconds`.
 // Returns 0 when wall-clock time is not yet available (NTP unsynced), so callers
-// must treat 0 as "unknown", not "healthy". See main.cpp for the implementation.
-uint8_t getRestartsInWindow(uint32_t window_seconds);
+// must treat 0 as "unknown", not "healthy". Pass exclude_sw=true to skip
+// commanded soft restarts (OTA, POST /reboot) — for power-health detection.
+// See main.cpp for the implementation.
+uint8_t getRestartsInWindow(uint32_t window_seconds, bool exclude_sw = false);
 bool bootTimeRecorded();
 
 #endif
