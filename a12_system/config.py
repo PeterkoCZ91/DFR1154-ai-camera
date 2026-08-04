@@ -26,12 +26,20 @@ DEFAULT_CONFIG = {
         "person_confirmations": 2,
         "pir_notify_confidence_threshold": 0.45,
         "pir_person_confirmations": 1,
+        # Keep confirmations within one short event. IoU is opt-in: a moving/PTZ
+        # camera changes image coordinates even when it keeps seeing the same person.
+        "person_confirmation_iou": 0.0,
+        "person_confirmation_max_gap_seconds": 8.0,
+        # Do not stall the frame callback for ten seconds when the shared scorer is down.
+        "remote_timeout_seconds": 2.0,
+        "remote_failure_backoff_seconds": 30.0,
         "check_interval": 5,
     },
     "motion": {
         "enabled": True,
         "threshold": 50,
         "min_contour_area": 500,
+        "min_consecutive_frames": 2,
     },
     "face_recognition": {
         "enabled": False,
@@ -264,9 +272,14 @@ ENV_OVERRIDES = [
     ("YOLO_PERSON_CONFIRMATIONS", "yolo.person_confirmations", _parse_int),
     ("YOLO_PIR_NOTIFY_CONFIDENCE_THRESHOLD", "yolo.pir_notify_confidence_threshold", _parse_float),
     ("YOLO_PIR_PERSON_CONFIRMATIONS", "yolo.pir_person_confirmations", _parse_int),
+    ("YOLO_PERSON_CONFIRMATION_IOU", "yolo.person_confirmation_iou", _parse_float),
+    ("YOLO_PERSON_CONFIRMATION_MAX_GAP_SECONDS", "yolo.person_confirmation_max_gap_seconds", _parse_float),
+    ("YOLO_REMOTE_TIMEOUT_SECONDS", "yolo.remote_timeout_seconds", _parse_float),
+    ("YOLO_REMOTE_FAILURE_BACKOFF_SECONDS", "yolo.remote_failure_backoff_seconds", _parse_float),
     ("YOLO_CLASSES", "yolo.classes", _parse_csv),
     # Motion
     ("MOTION_THRESHOLD", "motion.threshold", _parse_int),
+    ("MOTION_MIN_CONSECUTIVE_FRAMES", "motion.min_consecutive_frames", _parse_int),
     # Frame-health watchdog (hung-stream recovery)
     ("FLAT_FRAME_STD_THRESHOLD", "flat_frame_std_threshold", _parse_float),
     ("FLAT_FRAME_RECONNECT_STRIKES", "flat_frame_reconnect_strikes", _parse_int),

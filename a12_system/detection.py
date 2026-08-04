@@ -1,6 +1,7 @@
 """YOLO object detection, motion detection, and face recognition."""
 
 import logging
+import math
 import os
 import pickle
 import time
@@ -24,7 +25,10 @@ class Detector:
         self.known_face_encodings: list = []
         self.known_face_names: list[str] = []
         self.previous_frame_gray: Optional[np.ndarray] = None
+        self.motion_streak = 0
         self.is_ultralytics_v8 = False
+        self.last_person_box = None
+        self._remote_failure_until = 0.0
 
         self._init_yolo()
         self._init_face_recognition()
@@ -118,19 +122,26 @@ class Detector:
             thresh = cv2.threshold(
                 frame_diff, self.config["motion"]["threshold"], 255, cv2.THRESH_BINARY
             )[1]
+            # Remove isolated IR/compression speckles before joining real moving areas.
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, None, iterations=1)
+            thresh = cv2.dilate(thresh, None, iterations=2)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             min_area = self.config["motion"]["min_contour_area"]
             significant = [c for c in contours if cv2.contourArea(c) > min_area]
 
             if significant:
-                motion_detected = True
+                self.motion_streak += 1
+                required = max(1, int(self.config["motion"].get("min_consecutive_frames", 1)))
+                motion_detected = self.motion_streak >= required
                 if self.config.get("debug_detection", False):
                     max_area = max(cv2.contourArea(c) for c in significant)
                     logging.debug(
                         f"Motion: {len(significant)} contours, "
                         f"max_area={int(max_area)}, threshold={self.config['motion']['threshold']}"
                     )
+            else:
+                self.motion_streak = 0
 
         self.previous_frame_gray = gray
         return motion_detected
@@ -145,12 +156,23 @@ class Detector:
 
     def _detect_objects_impl(self, frame: np.ndarray) -> list[tuple[str, float]]:
         """Run YOLO inference and return list of (label, confidence)."""
+        self.last_person_box = None
         yolo_cfg = self.config["yolo"]
         if yolo_cfg.get("backend", "local") == "http" and yolo_cfg.get("scorer_url"):
+            now = time.monotonic()
+            failure_until = getattr(self, "_remote_failure_until", 0.0)
+            if now < failure_until:
+                logging.debug("Remote YOLO scorer circuit open for %.1fs", failure_until - now)
+                return self._detect_objects_local(frame)
             detections = self._detect_objects_http(frame)
             if detections is not None:
+                self._remote_failure_until = 0.0
                 return detections
-            logging.warning("Remote YOLO scorer unavailable; falling back to local model")
+            backoff = max(0.0, float(yolo_cfg.get("remote_failure_backoff_seconds", 30.0)))
+            self._remote_failure_until = now + backoff
+            logging.warning(
+                "Remote YOLO scorer unavailable; circuit open for %.1fs, falling back locally", backoff
+            )
         return self._detect_objects_local(frame)
 
     def _detect_objects_http(self, frame: np.ndarray) -> list[tuple[str, float]] | None:
@@ -162,14 +184,27 @@ class Detector:
         result = scorer_client.score_image(
             self.config["yolo"]["scorer_url"],
             encoded.tobytes(),
-            timeout=10,
+            timeout=max(0.1, float(self.config["yolo"].get("remote_timeout_seconds", 2.0))),
         )
         if result is None:
             return None
         classes = result.get("classes") if isinstance(result, dict) else None
         if not isinstance(classes, dict):
             return []
+        box = result.get("box")
+        if (
+            isinstance(box, (list, tuple))
+            and len(box) == 4
+            and all(isinstance(value, (int, float)) for value in box)
+            and box[0] < box[2]
+            and box[1] < box[3]
+        ):
+            self.last_person_box = tuple(float(value) for value in box)
         threshold = self.config["yolo"]["confidence_threshold"]
+        person_threshold = min(
+            threshold,
+            float(self.config["yolo"].get("pir_notify_confidence_threshold", threshold)),
+        )
         allowed_classes = self.config["yolo"].get("classes", ["person", "bird"])
         detections = []
         for label in allowed_classes:
@@ -177,7 +212,10 @@ class Detector:
                 confidence = float(classes.get(label, 0.0))
             except (TypeError, ValueError):
                 continue
-            if confidence >= threshold:
+            if not math.isfinite(confidence):
+                continue
+            label_threshold = person_threshold if label == "person" else threshold
+            if label_threshold <= confidence <= 1.0:
                 detections.append((label, confidence))
         return detections
 
@@ -190,6 +228,10 @@ class Detector:
         height, width = frame.shape[:2]
         class_ids, confidences, boxes = [], [], []
         threshold = self.config["yolo"]["confidence_threshold"]
+        person_threshold = min(
+            threshold,
+            float(self.config["yolo"].get("pir_notify_confidence_threshold", threshold)),
+        )
         allowed_classes = self.config["yolo"].get("classes", ["person", "bird"])
 
         # ONNX input: 640x640, RGB, 1/255 scaling
@@ -210,9 +252,10 @@ class Detector:
                 class_id = np.argmax(scores)
                 confidence = float(scores[class_id])
 
-                if confidence > threshold and class_id < len(self.coco_classes):
+                if class_id < len(self.coco_classes):
                     detected_class = self.coco_classes[class_id]
-                    if detected_class in allowed_classes:
+                    label_threshold = person_threshold if detected_class == "person" else threshold
+                    if confidence > label_threshold and detected_class in allowed_classes:
                         x_center = detection[0] * width / 640
                         y_center = detection[1] * height / 640
                         w = detection[2] * width / 640
@@ -225,7 +268,7 @@ class Detector:
         else:
             # YOLOv5 ONNX output: (1, 25200, 85)
             predictions = outs[0]
-            conf_mask = predictions[:, 4] > threshold
+            conf_mask = predictions[:, 4] > min(threshold, person_threshold)
             detections = predictions[conf_mask]
 
             for detection in detections:
@@ -233,9 +276,10 @@ class Detector:
                 class_id = np.argmax(scores)
                 confidence = scores[class_id] * detection[4]
 
-                if confidence > threshold and class_id < len(self.coco_classes):
+                if class_id < len(self.coco_classes):
                     detected_class = self.coco_classes[class_id]
-                    if detected_class in allowed_classes:
+                    label_threshold = person_threshold if detected_class == "person" else threshold
+                    if confidence > label_threshold and detected_class in allowed_classes:
                         x_center = detection[0] * width / 640
                         y_center = detection[1] * height / 640
                         w = detection[2] * width / 640
@@ -247,7 +291,7 @@ class Detector:
                         class_ids.append(class_id)
 
         # NMS
-        indexes = cv2.dnn.NMSBoxes(boxes, confidences, threshold, 0.4)
+        indexes = cv2.dnn.NMSBoxes(boxes, confidences, min(threshold, person_threshold), 0.4)
 
         inference_time = (time.time() - start_time) * 1000
         logging.debug(f"YOLO Inference: {inference_time:.0f}ms")
@@ -258,7 +302,15 @@ class Detector:
         if isinstance(indexes, tuple):
             indexes = indexes[0]
 
-        return [(self.coco_classes[class_ids[i]], confidences[i]) for i in indexes.flatten()]
+        selected = indexes.flatten()
+        person_indexes = [
+            i for i in selected if self.coco_classes[class_ids[i]] == "person"
+        ]
+        if person_indexes:
+            best = max(person_indexes, key=lambda i: confidences[i])
+            x, y, box_width, box_height = boxes[best]
+            self.last_person_box = (x, y, x + box_width, y + box_height)
+        return [(self.coco_classes[class_ids[i]], confidences[i]) for i in selected]
 
     def identify_person(self, frame: np.ndarray) -> tuple[bool, str]:
         """Identify person in frame using face recognition."""
