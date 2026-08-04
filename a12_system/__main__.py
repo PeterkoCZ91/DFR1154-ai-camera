@@ -436,6 +436,12 @@ class Application:
         self._cleanup()
 
     def _cleanup(self) -> None:
+        # Idempotent: run() calls this on the normal path and main() calls it again
+        # from its finally, so that a crash cannot skip teardown.
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
+
         logging.info("Shutting down...")
         if self.pipeline:
             self.pipeline.stop()
@@ -457,17 +463,37 @@ class Application:
 
 
 def main():
-    app = Application()
     retry = 0
     while retry < 5:
+        # A fresh Application per attempt. Reusing one instance meant run() built a
+        # new MQTTClient, StatusMonitor, AudioMonitor, HAMonitor, Statistics and
+        # EventDB on every retry while the previous set kept running: two paho
+        # threads with duplicate subscriptions (every zigbee message handled and
+        # logged twice), two status monitors sending the same sabotage alert, and
+        # stale callbacks holding a database handle that _cleanup may have closed.
+        # After five crashes there were five copies of everything.
+        app = Application()
         try:
             app.run()
             if not app.running:
                 break
+        except KeyboardInterrupt:
+            # Delivered before run() enters its main loop (the signal handler
+            # raises), it used to escape past `except Exception` and kill the
+            # process with a traceback and no cleanup — no offline status, no
+            # database close.
+            logging.info("Interrupted during startup; shutting down")
+            break
         except Exception as e:
             logging.error(f"Fatal crash: {e}")
             retry += 1
             time.sleep(10)
+        finally:
+            # Always tear the old instance down before building another one.
+            try:
+                app._cleanup()
+            except Exception as e:
+                logging.error(f"Cleanup after crash failed: {e}")
 
 
 if __name__ == "__main__":

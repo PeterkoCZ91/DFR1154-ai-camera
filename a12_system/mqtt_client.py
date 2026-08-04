@@ -31,6 +31,7 @@ class MQTTClient:
         self.esp32_motion_topic = ""
         self.esp32_uncertain_topic = ""
         self._last_connect_fail_log = 0.0
+        self._last_publish_drop_log = 0.0
 
         if not mqtt_config.get("enabled", False) or not MQTT_AVAILABLE:
             return
@@ -45,9 +46,33 @@ class MQTTClient:
             username = mqtt_config.get("username")
             password = mqtt_config.get("password")
 
-            self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, clean_session=True)
+            # paho 2.x requires the callback API version; 1.x does not know the
+            # symbol at all. Referencing it unconditionally raised AttributeError,
+            # which the except below swallowed into `client = None` — so on a host
+            # with paho 1.x installed (requirements pin >=2.0, but a bare-metal run
+            # easily has an older one) A12 came up with MQTT completely dead: no
+            # zigbee triggers, no camera hints, no discovery, no state publishing,
+            # and one ERROR line at startup as the only evidence.
+            if hasattr(mqtt, "CallbackAPIVersion"):
+                self.client = mqtt.Client(
+                    mqtt.CallbackAPIVersion.VERSION2, clean_session=True
+                )
+            else:
+                logging.warning(
+                    f"{self.log_prefix} paho-mqtt 1.x detected "
+                    f"(requirements ask for >=2.0); using the legacy callback API"
+                )
+                self.client = mqtt.Client(clean_session=True)
+
             if username and password:
                 self.client.username_pw_set(username, password)
+
+            # Last will: the broker marks us offline if the process dies without a
+            # clean shutdown. Previously `status=offline` was only published from the
+            # graceful path, so an OOM-kill or a host crash left a retained "online"
+            # in Home Assistant forever.
+            status_topic = f"{mqtt_config.get('base_topic', 'esp32_camera')}/status"
+            self.client.will_set(status_topic, "offline", qos=1, retain=True)
 
             self.client.on_connect = self._on_connect
             self.client.on_message = self._on_message
@@ -60,6 +85,7 @@ class MQTTClient:
             self.client.loop_start()
         except Exception as e:
             logging.error(f"{self.log_prefix} MQTT init failed: {e}")
+            self.client = None
 
     @staticmethod
     def _slug(value, default: str) -> str:
@@ -115,7 +141,16 @@ class MQTTClient:
             topic = msg.topic
             payload = msg.payload.decode()
             base_topic = self.config["mqtt"]["base_topic"]
-            camera_url = resolve_camera_url(self.config["camera_url"], force=True)
+            # Resolved lazily, and only on the two branches that need it.
+            # This used to run with force=True at the top of every message —
+            # including zigbee2mqtt/+ and config topics that never touch the
+            # camera. With a .local hostname that bypasses the cache and does
+            # 3 mDNS queries x 2 s timeout, blocking paho's network thread for
+            # up to 6 s per message: on a chatty broker the callbacks pile up,
+            # publishes from other threads wait, and keepalive slips into a
+            # disconnect/reconnect cycle that loses sensor triggers.
+            def camera_url_now():
+                return resolve_camera_url(self.config["camera_url"])
 
             logging.debug(f"{self.log_prefix} MQTT message: {topic} = {payload}")
 
@@ -125,7 +160,7 @@ class MQTTClient:
                 state_str = "on" if state else "off"
                 try:
                     requests.post(
-                        f"{camera_url}/ir-control",
+                        f"{camera_url_now()}/ir-control",
                         json={"auto_mode": False, "state": state_str},
                         timeout=5,
                     )
@@ -137,7 +172,7 @@ class MQTTClient:
                 auto_mode = payload.upper() == "ON"
                 try:
                     requests.post(
-                        f"{camera_url}/ir-control",
+                        f"{camera_url_now()}/ir-control",
                         json={"auto_mode": auto_mode},
                         timeout=2,
                     )
@@ -188,12 +223,26 @@ class MQTTClient:
         except Exception as e:
             logging.error(f"MQTT message error: {e}")
 
-    def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
+    # paho 1.x calls this as (client, userdata, rc); 2.x as
+    # (client, userdata, flags, reason_code, properties). *args absorbs both so the
+    # legacy fallback in __init__ does not end up with a callback that raises
+    # TypeError on every disconnect.
+    def _on_disconnect(self, client, userdata, *args):
         self.connected = False
         logging.warning(f"{self.log_prefix} MQTT disconnected")
 
     def publish(self, topic_suffix: str, payload, retain: bool = False) -> None:
         if not self.client or not self.connected:
+            # Dropped silently before: during a broker outage every person=ON,
+            # motion=ON and alarm/trigger vanished with no trace that anything had
+            # been lost. Rate-limited so a long outage does not flood the log.
+            now = time.time()
+            if now - self._last_publish_drop_log >= 60:
+                self._last_publish_drop_log = now
+                logging.warning(
+                    f"{self.log_prefix} MQTT not connected — dropping publishes "
+                    f"(most recent: {topic_suffix})"
+                )
             return
 
         full_topic = f"{self.config['mqtt']['base_topic']}/{topic_suffix}"

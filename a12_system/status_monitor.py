@@ -89,8 +89,14 @@ class StatusMonitor(threading.Thread):
                 self.mqtt_client.publish("camera/status/connection", "offline")
 
                 if self.runtime_config.get("security.mode") == "SECURITY":
+                    # bypass_cooldown: this is the highest-priority alert the system
+                    # has, and it was the only one subject to the global Telegram
+                    # cooldown — the *less* urgent MONITOR message below always
+                    # bypassed it. A routine clip sent a minute earlier silently
+                    # swallowed the sabotage alarm.
                     self.notifier.send_telegram(
-                        f"SABOTAGE! Camera signal lost ({int(stream_lag)}s)!"
+                        f"SABOTAGE! Camera signal lost ({int(stream_lag)}s)!",
+                        bypass_cooldown=True,
                     )
                     self.mqtt_client.publish("camera/alarm/trigger", "ON")
                 else:
@@ -105,7 +111,9 @@ class StatusMonitor(threading.Thread):
                 logging.info("Stream recovered (Sabotage cleared)")
                 self.mqtt_client.publish("camera/status/sabotage", "OFF")
                 self.mqtt_client.publish("camera/status/connection", "online")
-                self.notifier.send_telegram("Camera signal recovered.")
+                # Pairs with the loss alert above: suppressing the recovery message
+                # leaves an operator staring at an unresolved alarm.
+                self.notifier.send_telegram("Camera signal recovered.", bypass_cooldown=True)
                 self.sabotage_triggered = False
 
             self.mqtt_client.publish("camera/status/connection", "online")
@@ -113,29 +121,40 @@ class StatusMonitor(threading.Thread):
     def run(self) -> None:
         logging.info("Status Monitor started (Watchdog + Day/Night active)")
         while self.running:
-            current_time = time.time()
+            # One unhandled exception used to take this whole thread down, and with
+            # it the sabotage watchdog, the heartbeat, day/night profiles and the
+            # resource alerts — permanently, while the process kept running and the
+            # logs kept looking healthy. A camera that went dark after that was
+            # never reported. HAMonitor and AudioMonitor already guard their loops;
+            # this one was the exception.
+            try:
+                current_time = time.time()
 
-            if current_time - self.last_heartbeat > self.heartbeat_interval:
-                self._run_watchdog(current_time)
-                self.last_heartbeat = current_time
+                if current_time - self.last_heartbeat > self.heartbeat_interval:
+                    self._run_watchdog(current_time)
+                    self.last_heartbeat = current_time
 
-            if current_time - self.last_status > self.status_interval:
-                self._poll_status()
-                self._run_day_night_logic()
-                self.last_status = current_time
+                if current_time - self.last_status > self.status_interval:
+                    self._poll_status()
+                    self._run_day_night_logic()
+                    self.last_status = current_time
 
-            if current_time - self.last_adaptive > self.adaptive_interval:
-                self._run_adaptive_logic()
-                self._check_daily_summary()
-                self.last_adaptive = current_time
+                if current_time - self.last_adaptive > self.adaptive_interval:
+                    self._run_adaptive_logic()
+                    self._check_daily_summary()
+                    self.last_adaptive = current_time
 
-            if current_time - self.last_resource_check > self.resource_check_interval:
-                self._check_resources()
-                self.last_resource_check = current_time
+                if current_time - self.last_resource_check > self.resource_check_interval:
+                    self._check_resources()
+                    self.last_resource_check = current_time
 
-            if current_time - self.last_health > self.health_interval:
-                self._check_health()
-                self.last_health = current_time
+                if current_time - self.last_health > self.health_interval:
+                    self._check_health()
+                    self.last_health = current_time
+            except Exception as e:
+                # Timestamps were already advanced for whatever ran, so a failing
+                # sub-check cannot spin: the next iteration waits out its interval.
+                logging.exception(f"Status Monitor iteration failed: {e}")
 
             time.sleep(1)
 

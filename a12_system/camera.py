@@ -12,6 +12,39 @@ import requests
 
 from .mdns_resolver import resolve_host, url_with_host
 
+# How far back from a JPEG's SOI marker we look for the multipart part headers.
+# The camera emits Content-Type, Content-Length and a couple of X- headers, so a
+# few hundred bytes is plenty; the bound keeps a malformed stream from making us
+# rescan the whole buffer on every chunk.
+_PART_HEADER_LOOKBEHIND = 512
+
+
+def _part_content_length(buffer: bytes, soi: int) -> int | None:
+    """Content-Length declared for the JPEG part starting at `soi`, or None.
+
+    MJPEG parts carry the exact payload size. Using it — instead of scanning for
+    the next EOI marker — is what makes a truncated frame detectable: without it a
+    cut-short frame is silently glued to the following one and decodes into a
+    corrupt image that no error path catches.
+    """
+    start = max(0, soi - _PART_HEADER_LOOKBEHIND)
+    headers = buffer[start:soi]
+    key = headers.lower().rfind(b"content-length:")
+    if key == -1:
+        return None
+    line_end = headers.find(b"\r\n", key)
+    if line_end == -1:
+        return None
+    try:
+        declared = int(headers[key + len(b"content-length:") : line_end].strip())
+    except ValueError:
+        return None
+    # Sanity bound: a UXGA JPEG is a few hundred kB. Anything wilder means we
+    # misread a header and should fall back to marker scanning.
+    if declared <= 0 or declared > 2_000_000:
+        return None
+    return declared
+
 
 class Camera:
     # Last raw JPEG delivered by the stream — forensic evidence for flat-frame
@@ -218,6 +251,7 @@ class Camera:
         def drain_thread():
             buffer = b""
             frame_count = 0
+            truncated_frames = 0
 
             logging.info(f"{self.log_prefix} Stream drain thread started")
             try:
@@ -233,12 +267,39 @@ class Camera:
 
                     while True:
                         a = buffer.find(b"\xff\xd8")
-                        b = buffer.find(b"\xff\xd9", a + 2 if a != -1 else 0)
-                        if a == -1 or b == -1:
+                        if a == -1:
+                            # No SOI in sight; keep only a tail in case one is split
+                            # across the chunk boundary.
+                            if len(buffer) > 4:
+                                buffer = buffer[-4:]
+                            break
+
+                        # Prefer the part's Content-Length over hunting for EOI.
+                        # Scanning for FFD9 alone silently concatenates a truncated
+                        # frame with the next one (the camera's socket send timeout
+                        # does cut frames short), and OpenCV happily decodes the
+                        # mangled result — which then feeds the flat/dark watchdog
+                        # and can trigger a spurious camera reboot.
+                        declared = _part_content_length(buffer, a)
+                        if declared is not None:
+                            if len(buffer) - a < declared:
+                                buffer = buffer[a:]   # wait for the rest
+                                break
+                            jpg = buffer[a : a + declared]
+                            buffer = buffer[a + declared :]
+                            if not (jpg.startswith(b"\xff\xd8") and jpg.endswith(b"\xff\xd9")):
+                                truncated_frames += 1
+                                continue          # drop it, do not hand on a partial JPEG
+                            frame_count += 1
+                            put_drop_oldest(raw_queue, jpg)
+                            continue
+
+                        # No usable Content-Length: fall back to marker scanning.
+                        b = buffer.find(b"\xff\xd9", a + 2)
+                        if b == -1:
                             if a > 0:
                                 buffer = buffer[a:]
                             break
-
                         jpg = buffer[a : b + 2]
                         buffer = buffer[b + 2 :]
                         frame_count += 1
@@ -250,7 +311,7 @@ class Camera:
                 response.close()
                 logging.info(
                     f"{self.log_prefix} Stream drain thread stopped "
-                    f"(raw_frames={frame_count})"
+                    f"(raw_frames={frame_count}, truncated={truncated_frames})"
                 )
 
         def decode_thread():
@@ -334,5 +395,17 @@ class Camera:
             pass
         finally:
             stop_event.set()
+            # Close the response BEFORE joining. The drain thread is parked inside
+            # response.iter_content() and only notices stop_event after the next
+            # chunk arrives — up to the 30 s read timeout. Until it returns, the
+            # socket stays open and the camera still counts us as a connected
+            # detection client, so the immediate reconnect below is rejected
+            # (the camera caps that route) and we blame the camera for a stall we
+            # are causing ourselves. Session.close() does not help here: it only
+            # closes pooled connections, not the one currently checked out.
+            try:
+                response.close()
+            except Exception as e:
+                logging.debug(f"{self.log_prefix} Stream response close failed: {e}")
             drain.join(timeout=2)
             decoder.join(timeout=2)
