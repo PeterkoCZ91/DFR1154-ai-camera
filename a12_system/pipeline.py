@@ -67,6 +67,23 @@ def flat_recovery_action(
     return "giveup"
 
 
+def box_iou(first, second) -> float | None:
+    """Return intersection-over-union for two xyxy boxes, or None without both."""
+    if first is None or second is None:
+        return None
+    x0 = max(first[0], second[0])
+    y0 = max(first[1], second[1])
+    x1 = min(first[2], second[2])
+    y1 = min(first[3], second[3])
+    intersection = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    if not intersection:
+        return 0.0
+    first_area = (first[2] - first[0]) * (first[3] - first[1])
+    second_area = (second[2] - second[0]) * (second[3] - second[1])
+    union = first_area + second_area - intersection
+    return intersection / union if union > 0 else 0.0
+
+
 class DetectionPipeline:
     """Orchestrates motion detection, YOLO inference, sensor fusion, and notifications."""
 
@@ -125,6 +142,21 @@ class DetectionPipeline:
         buffer_seconds = self.clip_pre_seconds + self.post_buffer_seconds + 2
         self.frame_buffer: deque = deque(maxlen=max(1, self.clip_fps * buffer_seconds))
 
+        # How far past the trigger post frames can still be recovered from the rolling
+        # deque. It holds `clip_fps * buffer_seconds` samples and is filled at clip_fps
+        # during an active window, so it retains `buffer_seconds` seconds of history —
+        # no more. adaptive_clip.max_post_seconds may ask to wait up to 60 s, but post
+        # frames are read from the *live* deque after that wait, so anything older than
+        # buffer_seconds had already been evicted: the clip came out as pre-frames
+        # (held by reference, so they survived) plus only the last ~buffer_seconds,
+        # with a silent gap of tens of seconds in the middle.
+        #
+        # Clamp the wait to what can actually be delivered: a shorter continuous clip
+        # beats a longer one with a hole. To get longer clips raise clip_post_seconds,
+        # which sizes the buffer — raising max_post_seconds on its own cannot help.
+        self._max_retainable_post_seconds = max(1, buffer_seconds - 1)
+        self._logged_post_clamp = False
+
         # Screenshot folder
         self.screenshot_folder = os.path.join(script_dir, "screenshots")
         os.makedirs(self.screenshot_folder, exist_ok=True)
@@ -152,6 +184,14 @@ class DetectionPipeline:
             1, int(runtime_config.get("yolo.pir_person_confirmations", 1))
         )
         self.person_confirmation_streaks = {"camera": 0, "pir": 0}
+        self.person_confirmation_boxes = {"camera": None, "pir": None}
+        self.person_confirmation_seen_at = {"camera": 0.0, "pir": 0.0}
+        self.person_confirmation_iou = max(
+            0.0, min(1.0, float(runtime_config.get("yolo.person_confirmation_iou", 0.10)))
+        )
+        self.person_confirmation_max_gap = max(
+            0.0, float(runtime_config.get("yolo.person_confirmation_max_gap_seconds", 8.0))
+        )
 
         # FPS tracking
         self.last_heartbeat = 0
@@ -306,6 +346,16 @@ class DetectionPipeline:
         self._flat_nonflat_count += 1
         if self._flat_nonflat_count < self._flat_healthy_required:
             return
+
+        # The reconnect budget is re-armed HERE, behind the sustained-health gate —
+        # not by the callers. Both call sites used to zero it on every single healthy
+        # heartbeat, which is exactly the "sensor flapping around the std threshold
+        # regains its reboot budget" case this gate exists to prevent: flat_recovery_action
+        # only escalates to a reboot once forced_reconnects >= reconnect_before_reboot,
+        # so one textured frame per cycle (sampled every ~30 s) pinned the ladder at
+        # "reconnect" forever and the camera was never rebooted.
+        self._flat_forced_reconnects = 0
+
         if self.flat_state.clear() and self.flat_state.should_notify(
             "recovered", current_time, self._flat_notify_interval
         ):
@@ -449,7 +499,6 @@ class DetectionPipeline:
                         # wedged OV3660 emits uniform frames), so this counts
                         # toward ending the episode even on a dark night.
                         self._flat_consecutive_count = 0
-                        self._flat_forced_reconnects = 0
                         self._flat_ladder_note_nonflat(current_time)
                     if (
                         self._dark_consecutive_count >= self._dark_consecutive_required
@@ -476,7 +525,6 @@ class DetectionPipeline:
                 else:
                     self._dark_consecutive_count = 0
                     self._flat_consecutive_count = 0
-                    self._flat_forced_reconnects = 0
                     self._flat_ladder_note_nonflat(current_time)
 
         # Motion detection
@@ -541,7 +589,7 @@ class DetectionPipeline:
         # YOLO inference
         all_detections = self.detector.detect_objects(frame)
 
-        person_candidates = [(l, c) for l, c in all_detections if l == "person"]
+        person_candidates = [(label, confidence) for label, confidence in all_detections if label == "person"]
         is_pir_triggered = yolo_reason.startswith("external_trigger")
         detection_profile = "pir" if is_pir_triggered else "camera"
         notify_confidence = (
@@ -555,11 +603,20 @@ class DetectionPipeline:
             else self.person_confirmations_required
         )
         person_detections = [
-            (l, c) for l, c in person_candidates if c >= notify_confidence
+            (label, confidence)
+            for label, confidence in person_candidates
+            if confidence >= notify_confidence
         ]
-        animal_detections = [(l, c) for l, c in all_detections if l != "person"]
+        animal_detections = [
+            (label, confidence) for label, confidence in all_detections if label != "person"
+        ]
 
         person_found = len(person_detections) > 0
+        max_person_confidence = max((c for _label, c in person_candidates), default=0.0)
+        logging.info(
+            "YOLO calibration: profile=%s reason=%s candidate=%.3f notify_threshold=%.3f accepted=%s",
+            detection_profile, yolo_reason, max_person_confidence, notify_confidence, person_found,
+        )
         if person_candidates and not person_found:
             max_conf = max(c for _l, c in person_candidates)
             logging.info(
@@ -569,7 +626,23 @@ class DetectionPipeline:
             )
 
         if person_found:
+            candidate_box = getattr(self.detector, "last_person_box", None)
+            prior_box = self.person_confirmation_boxes[detection_profile]
+            prior_seen = self.person_confirmation_seen_at[detection_profile]
+            overlap = box_iou(prior_box, candidate_box)
+            if self.person_confirmation_streaks[detection_profile] and (
+                current_time - prior_seen > self.person_confirmation_max_gap
+                or (overlap is not None and overlap < self.person_confirmation_iou)
+            ):
+                logging.info(
+                    "Person confirmation reset: gap=%.1fs iou=%s",
+                    current_time - prior_seen,
+                    "none" if overlap is None else f"{overlap:.2f}",
+                )
+                self.person_confirmation_streaks[detection_profile] = 0
             self.person_confirmation_streaks[detection_profile] += 1
+            self.person_confirmation_boxes[detection_profile] = candidate_box
+            self.person_confirmation_seen_at[detection_profile] = current_time
             confirmation_streak = self.person_confirmation_streaks[detection_profile]
             other_profile = "camera" if detection_profile == "pir" else "pir"
             self.person_confirmation_streaks[other_profile] = 0
@@ -585,6 +658,8 @@ class DetectionPipeline:
                 person_detections = []
         else:
             self.person_confirmation_streaks[detection_profile] = 0
+            self.person_confirmation_boxes[detection_profile] = None
+            self.person_confirmation_seen_at[detection_profile] = 0.0
 
         self.stats.record_motion_event(esp32_motion_detected, motion_detected, person_found)
         self.mqtt_client.publish("person", "ON" if person_found else "OFF")
@@ -784,11 +859,9 @@ class DetectionPipeline:
             # Face recognition — Groq vision (primary) or dlib fallback
             person_name = ""
             skip_telegram = False
-            groq_decision = None
 
             if self.groq_vision is not None:
                 gname, gconf, gdecision = self.groq_vision.identify(frame)
-                groq_decision = gdecision
                 if gdecision == "cooldown":
                     pass  # rate limit — skip silently
                 else:
@@ -963,10 +1036,7 @@ class DetectionPipeline:
             audio_data = self.audio_monitor.get_audio_data()
 
         queued_at = time.time()
-        max_post_seconds = max(
-            self.post_buffer_seconds,
-            int(self.runtime_config.get("adaptive_clip.max_post_seconds", 60)),
-        )
+        max_post_seconds = self._effective_max_post_seconds(self.post_buffer_seconds)
         self.recording_buffer_until = max(
             self.recording_buffer_until,
             queued_at + max_post_seconds + 2,
@@ -1030,6 +1100,26 @@ class DetectionPipeline:
         last = len(frames) - 1
         return [frames[round(i * last / (target_count - 1))] for i in range(target_count)]
 
+    def _effective_max_post_seconds(self, base_post_seconds: int) -> int:
+        """Longest post window that still yields a gap-free clip.
+
+        See `_max_retainable_post_seconds` in __init__: the configured maximum is
+        capped by how much history the rolling frame buffer actually keeps.
+        """
+        configured = max(
+            base_post_seconds,
+            int(self.runtime_config.get("adaptive_clip.max_post_seconds", 60)),
+        )
+        effective = min(configured, self._max_retainable_post_seconds)
+        if effective < configured and not self._logged_post_clamp:
+            self._logged_post_clamp = True
+            logging.info(
+                f"{self.log_prefix} Adaptive clip post window capped at {effective}s "
+                f"(configured {configured}s) — the frame buffer only retains "
+                f"{self._max_retainable_post_seconds}s. Raise clip_post_seconds to extend it."
+            )
+        return effective
+
     def _wait_for_event_tail(self, queued_at: float, base_post_seconds: int) -> float:
         """Wait for post-event frames, extending while PIR/YOLO activity continues."""
         if base_post_seconds <= 0:
@@ -1040,10 +1130,7 @@ class DetectionPipeline:
             return queued_at + base_post_seconds
 
         idle_seconds = max(1, int(self.runtime_config.get("adaptive_clip.idle_seconds", 10)))
-        max_post_seconds = max(
-            base_post_seconds,
-            int(self.runtime_config.get("adaptive_clip.max_post_seconds", 60)),
-        )
+        max_post_seconds = self._effective_max_post_seconds(base_post_seconds)
         min_deadline = queued_at + base_post_seconds
         max_deadline = queued_at + max_post_seconds
 
@@ -1114,7 +1201,13 @@ class DetectionPipeline:
                 if person_name:
                     msg += f" ({person_name})"
 
-                if self.notifier.create_mp4(frames, audio_data, mp4_path, fps=task.get("stream_fps", 10)):
+                # fps must match the rate the frames were *sampled* at, not the rate
+                # the stream was decoded at. These come from frame_buffer, which
+                # _buffer_clip_frame_if_needed fills at clip_fps during an active
+                # window. Writing them at stream_fps (~10 while a window is open)
+                # played every real event back at roughly double speed; it only
+                # looked right when testing idle, where the two rates happen to match.
+                if self.notifier.create_mp4(frames, audio_data, mp4_path, fps=self.clip_fps):
                     self.db.log_event("media", "mp4", 0.0, mp4_path)
                     mp4_created = True
 
