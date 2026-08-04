@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 import cv2
@@ -29,6 +30,16 @@ class Notifier:
         self.bot = None
         self.chat_id = None
         self.last_telegram_time = 0
+        # send_telegram() is called from at least five threads (notification
+        # worker, status monitor, audio monitor, HA callback, main loop). The
+        # cooldown check was an unguarded read-modify-write, so two events could
+        # both pass it and double-notify, or clobber each other's timestamp.
+        self._send_lock = threading.Lock()
+        # Set while a 429 backoff is in effect. Callers return immediately instead
+        # of sleeping: the previous code slept up to 60 s *in the calling thread*,
+        # which stalled the status monitor's watchdog or backed up the notification
+        # queue until events were dropped.
+        self._rate_limited_until = 0.0
 
         if config["telegram"]["enabled"] and TELEGRAM_AVAILABLE:
             try:
@@ -39,18 +50,37 @@ class Notifier:
                 logging.error(f"Telegram init failed: {e}")
 
     def send_telegram(self, message: str, media_path: str = None, bypass_cooldown: bool = False) -> bool:
-        """Send Telegram message/photo/video/GIF with cooldown."""
+        """Send Telegram message/photo/video/GIF with cooldown.
+
+        Returns True only when Telegram accepted the message. Callers that must not
+        lose an event should check the result — a False here means nothing was
+        delivered.
+        """
         current_time = time.time()
         cooldown = self.config.get("telegram_cooldown_seconds", 60)
-        if not bypass_cooldown and current_time - self.last_telegram_time < cooldown:
-            logging.info(
-                f"Telegram cooldown active "
-                f"({current_time - self.last_telegram_time:.0f}s / {cooldown}s)"
-            )
-            return False
 
-        if not self.bot or not self.chat_id:
-            return False
+        with self._send_lock:
+            if current_time < self._rate_limited_until:
+                logging.warning(
+                    f"Telegram rate-limited for another "
+                    f"{self._rate_limited_until - current_time:.0f}s; dropping message"
+                )
+                return False
+
+            if not bypass_cooldown and current_time - self.last_telegram_time < cooldown:
+                logging.info(
+                    f"Telegram cooldown active "
+                    f"({current_time - self.last_telegram_time:.0f}s / {cooldown}s)"
+                )
+                return False
+
+            if not self.bot or not self.chat_id:
+                return False
+
+            # Claim the slot before the network call so a concurrent caller cannot
+            # slip through the same cooldown window.
+            if not bypass_cooldown:
+                self.last_telegram_time = current_time
 
         try:
             if media_path and os.path.exists(media_path):
@@ -64,8 +94,6 @@ class Notifier:
             else:
                 self.bot.send_message(self.chat_id, message)
 
-            if not bypass_cooldown:
-                self.last_telegram_time = current_time
             logging.info(f"Telegram sent: {message[:50]}...")
             return True
         except telebot.apihelper.ApiTelegramException as e:
@@ -76,8 +104,13 @@ class Notifier:
                 except (KeyError, TypeError, ValueError):
                     pass
                 retry_after = min(retry_after, 60)
-                logging.warning(f"Telegram 429: backoff {retry_after}s")
-                time.sleep(retry_after)
+                # Record the window instead of sleeping here: this method runs on
+                # whatever thread had something to say, including the frame path and
+                # the watchdog. Blocking one of those for a minute is worse than
+                # dropping a notification, and the sleep did not retry anyway.
+                logging.warning(f"Telegram 429: suppressing sends for {retry_after}s")
+                with self._send_lock:
+                    self._rate_limited_until = time.time() + retry_after
             else:
                 logging.error(f"Telegram API error {e.error_code}: {e}")
         except Exception as e:
