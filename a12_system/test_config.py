@@ -70,6 +70,7 @@ def test_media_cleanup_defaults():
     """Verify media retention keeps disk usage bounded."""
     assert DEFAULT_CONFIG["media_retention_days"] == 2
     assert DEFAULT_CONFIG["media_cleanup_interval_seconds"] == 3600
+    assert DEFAULT_CONFIG["decision_audit_retention_days"] == 30
     assert DEFAULT_CONFIG["notification_queue_maxsize"] == 10
     print("[OK] Media cleanup defaults: 2d retention, hourly check")
 

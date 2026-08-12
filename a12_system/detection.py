@@ -151,6 +151,7 @@ class Detector:
         try:
             return self._detect_objects_impl(frame)
         except Exception as e:
+            self.last_backend = "local"
             logging.error(f"YOLO inference failed: {e}")
             return []
 
@@ -163,16 +164,21 @@ class Detector:
             failure_until = getattr(self, "_remote_failure_until", 0.0)
             if now < failure_until:
                 logging.debug("Remote YOLO scorer circuit open for %.1fs", failure_until - now)
+                self.last_backend = "fallback"
                 return self._detect_objects_local(frame)
             detections = self._detect_objects_http(frame)
             if detections is not None:
                 self._remote_failure_until = 0.0
+                self.last_backend = "http"
                 return detections
             backoff = max(0.0, float(yolo_cfg.get("remote_failure_backoff_seconds", 30.0)))
             self._remote_failure_until = now + backoff
             logging.warning(
                 "Remote YOLO scorer unavailable; circuit open for %.1fs, falling back locally", backoff
             )
+            self.last_backend = "fallback"
+            return self._detect_objects_local(frame)
+        self.last_backend = "local"
         return self._detect_objects_local(frame)
 
     def _detect_objects_http(self, frame: np.ndarray) -> list[tuple[str, float]] | None:
