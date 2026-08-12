@@ -241,6 +241,9 @@ class DetectionPipeline:
         self.cleanup_max_age_days = max(
             0.25, float(runtime_config.get("media_retention_days", 2))
         )
+        self.decision_audit_retention_days = max(
+            0.0, float(runtime_config.get("decision_audit_retention_days", 30))
+        )
 
         # Async notification worker
         queue_maxsize = max(1, int(runtime_config.get("notification_queue_maxsize", 10)))
@@ -553,12 +556,14 @@ class DetectionPipeline:
         # Decide whether to run YOLO
         run_yolo = False
         yolo_reason = ""
+        trigger_source = ""
 
         if self.force_yolo_event.is_set():
             source = self.shared_state.get("external_yolo_source", "external_trigger")
             logging.info(f"Forced YOLO check ({source})!")
             run_yolo = True
             yolo_reason = "external_trigger"
+            trigger_source = str(source)
             self.last_external_yolo = current_time
             self.force_yolo_event.clear()
         elif current_time < float(self.shared_state.get("external_yolo_until", 0.0)):
@@ -570,14 +575,17 @@ class DetectionPipeline:
                 )
                 run_yolo = True
                 yolo_reason = "external_trigger_window"
+                trigger_source = str(source)
                 self.last_external_yolo = current_time
         elif motion_detected and counter_val % self.yolo_check_interval == 0:
             run_yolo = True
             yolo_reason = "motion_detected"
+            trigger_source = yolo_reason
         elif (current_time - self.last_periodic_yolo) > self.periodic_yolo_interval:
             logging.info(f"Periodic YOLO check (no motion for {self.periodic_yolo_interval}s)")
             run_yolo = True
             yolo_reason = "periodic"
+            trigger_source = yolo_reason
             self.last_periodic_yolo = current_time
 
         self._buffer_clip_frame_if_needed(frame, current_time)
@@ -613,6 +621,21 @@ class DetectionPipeline:
 
         person_found = len(person_detections) > 0
         max_person_confidence = max((c for _label, c in person_candidates), default=0.0)
+        candidate_label = "person" if person_candidates else ""
+        yolo_confidence_threshold = float(
+            self.runtime_config.get("yolo.confidence_threshold", notify_confidence)
+        )
+        audit_context = {
+            "trigger_source": trigger_source or yolo_reason,
+            "backend": str(getattr(self.detector, "last_backend", "local")),
+            "candidate_label": candidate_label,
+            "candidate_confidence": max_person_confidence if person_candidates else None,
+            "yolo_confidence_threshold": yolo_confidence_threshold,
+            "notify_confidence_threshold": float(notify_confidence),
+            "confirmations_required": confirmations_required,
+            "notify_threshold": self.event_notify_threshold,
+            "local_record_threshold": self.event_local_record_threshold,
+        }
         logging.info(
             "YOLO calibration: profile=%s reason=%s candidate=%.3f notify_threshold=%.3f accepted=%s",
             detection_profile, yolo_reason, max_person_confidence, notify_confidence, person_found,
@@ -660,6 +683,25 @@ class DetectionPipeline:
             self.person_confirmation_streaks[detection_profile] = 0
             self.person_confirmation_boxes[detection_profile] = None
             self.person_confirmation_seen_at[detection_profile] = 0.0
+        if not person_candidates:
+            self._log_decision_audit(
+                audit_context, 0, None, None, None, "no_person_candidate"
+            )
+        elif not person_detections:
+            outcome = (
+                "below_notify_confidence"
+                if max_person_confidence < notify_confidence
+                else "awaiting_confirmation"
+            )
+            self._log_decision_audit(
+                audit_context,
+                self.person_confirmation_streaks[detection_profile],
+                None,
+                None,
+                None,
+                outcome,
+            )
+
 
         self.stats.record_motion_event(esp32_motion_detected, motion_detected, person_found)
         self.mqtt_client.publish("person", "ON" if person_found else "OFF")
@@ -677,10 +719,31 @@ class DetectionPipeline:
                 yolo_reason,
                 detection_profile,
                 confirmation_streak,
+                audit_context,
             )
 
         if animal_detections:
             self._handle_animal_detections(frame, animal_detections)
+
+    def _log_decision_audit(
+        self,
+        audit_context: dict,
+        confirmation_streak: int,
+        sensor_confirmed: bool | None,
+        active_sensors: list[str] | None,
+        event_score: int | None,
+        decision_outcome: str,
+    ) -> None:
+        """Add the final policy state to one YOLO audit record."""
+        audit = dict(audit_context)
+        audit.update(
+            confirmation_streak=confirmation_streak,
+            sensor_confirmed=sensor_confirmed,
+            active_sensors=active_sensors,
+            event_score=event_score,
+            decision_outcome=decision_outcome,
+        )
+        self.db.log_decision_audit(**audit)
 
     def _score_event(
         self,
@@ -749,6 +812,7 @@ class DetectionPipeline:
         yolo_reason: str,
         detection_profile: str,
         confirmation_streak: int,
+        audit_context: dict,
     ) -> None:
         """Process person detections with sensor fusion logic."""
         for label, confidence in detections:
@@ -826,6 +890,10 @@ class DetectionPipeline:
             self.mqtt_client.publish("camera/detection/score", str(event_score))
 
             if self.require_sensor_for_recording and not sensor_confirmed:
+                self._log_decision_audit(
+                    audit_context, confirmation_streak, sensor_confirmed,
+                    active_sensors, event_score, "not_recorded_sensor_required",
+                )
                 logging.info(
                     "Person event ignored for recording: no PIR/HA sensor confirmation "
                     f"(profile={detection_profile}, reason={yolo_reason}, score={event_score})"
@@ -842,6 +910,10 @@ class DetectionPipeline:
                 )
 
             if not should_record_locally:
+                self._log_decision_audit(
+                    audit_context, confirmation_streak, sensor_confirmed,
+                    active_sensors, event_score, "not_recorded_below_local_threshold",
+                )
                 logging.info(
                     "Person event ignored below local record threshold "
                     f"(score={event_score}, threshold={self.event_local_record_threshold})"
@@ -851,7 +923,16 @@ class DetectionPipeline:
             # Cooldown check
             if label in self.last_save_time:
                 if (time.time() - self.last_save_time[label]) < self.cooldown_seconds:
+                    self._log_decision_audit(
+                        audit_context, confirmation_streak, sensor_confirmed,
+                        active_sensors, event_score, "suppressed_by_cooldown",
+                    )
                     continue
+
+            self._log_decision_audit(
+                audit_context, confirmation_streak, sensor_confirmed, active_sensors, event_score,
+                "recorded_and_notified" if should_notify else "recorded_local_only",
+            )
 
             self.stats.record_detection(label)
             self.db.log_event("detection", label, float(confidence))
@@ -1088,6 +1169,13 @@ class DetectionPipeline:
         except Exception as e:
             logging.error(f"Cleanup error: {e}")
 
+    def _run_scheduled_cleanup(self, now: float) -> None:
+        if now - self.last_cleanup <= self.cleanup_interval:
+            return
+        self._cleanup_old_media()
+        self.db.prune_decision_audit(self.decision_audit_retention_days)
+        self.last_cleanup = now
+
     def _sample_preview_frames(self, frames: list, seconds: int, fps: int) -> list:
         """Sample a short preview across the whole local clip."""
         if not frames:
@@ -1304,10 +1392,9 @@ class DetectionPipeline:
                         self.db.log_event("media", "jpg_notify", 0.0, jpg_path)
 
                 self.notification_queue.task_done()
+                self._run_scheduled_cleanup(time.time())
             except queue.Empty:
-                if time.time() - self.last_cleanup > self.cleanup_interval:
-                    self._cleanup_old_media()
-                    self.last_cleanup = time.time()
+                self._run_scheduled_cleanup(time.time())
                 continue
             except Exception as e:
                 logging.error(f"Notification worker error: {e}")

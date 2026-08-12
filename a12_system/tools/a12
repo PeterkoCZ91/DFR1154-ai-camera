@@ -100,6 +100,46 @@ cmd_events() {
   sqlite3 -header -column "${db}" \
     "SELECT id, datetime, type, label, value, media_path FROM events ORDER BY id DESC LIMIT ${n};"
 }
+cmd_calibrate() {
+  local days="${1:-7}"
+  local db="${A12_DATA_DIR}/events.db"
+  if ! [[ "${days}" =~ ^[1-9][0-9]*$ ]]; then
+    fail "Days must be a positive integer"
+    exit 1
+  fi
+  if [[ ! -f "${db}" ]]; then
+    fail "Cannot open ${db}"
+    exit 1
+  fi
+  if ! sqlite3 "${db}" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='decision_audit';" | grep -qx 1; then
+    fail "decision_audit is unavailable; start an updated A12 once to create it"
+    exit 1
+  fi
+  echo "A12 decision calibration (last ${days} day(s), local audit only)"
+  echo "---------------------------------------------------------"
+  sqlite3 -header -column "${db}" "
+    WITH filtered AS (
+      SELECT *, CASE
+        WHEN candidate_confidence IS NULL THEN 'no candidate'
+        WHEN candidate_confidence < notify_confidence_threshold THEN 'below notify'
+        WHEN candidate_confidence < 0.70 THEN 'notify-0.69'
+        WHEN candidate_confidence < 0.85 THEN '0.70-0.84'
+        ELSE '0.85-1.00' END AS confidence_band
+      FROM decision_audit
+      WHERE timestamp >= strftime('%s', 'now') - (${days} * 86400)
+    )
+    SELECT backend, confidence_band, COUNT(*) AS decisions,
+           SUM(sensor_confirmed = 1) AS sensor_confirmed,
+           SUM(decision_outcome = 'recorded_and_notified') AS notified,
+           SUM(decision_outcome = 'recorded_local_only') AS local_only,
+           ROUND(AVG(candidate_confidence), 3) AS avg_confidence
+    FROM filtered GROUP BY backend, confidence_band ORDER BY backend, confidence_band;
+    SELECT decision_outcome, COUNT(*) AS decisions
+    FROM decision_audit
+    WHERE timestamp >= strftime('%s', 'now') - (${days} * 86400)
+    GROUP BY decision_outcome ORDER BY decisions DESC, decision_outcome;"
+}
+
 
 cmd_config() {
   load_config_env || true
@@ -324,6 +364,11 @@ case "${cmd}" in
     shift || true
     cmd_events "${1:-20}"
     ;;
+  calibrate)
+    shift || true
+    cmd_calibrate "${1:-7}"
+    ;;
+
 
   tail)
     tail -f "${A12_DATA_DIR}/a12.log"
@@ -352,6 +397,7 @@ Commands:
   logs [N]         Stream last N lines of container logs (default: 50)
   tail             Follow the /data a12.log file
   events [N]       Query last N events from events.db (default: 20)
+  calibrate [days] Aggregate local decision audit for calibration (default: 7)
   build            Build the Docker image
   rebuild          Alias for build
   up | start       Start the a12 service in detached mode

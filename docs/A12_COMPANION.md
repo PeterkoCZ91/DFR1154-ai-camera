@@ -140,9 +140,12 @@ cd a12_system
 | `a12 up` / `a12 start` | Start the compose stack in detached mode |
 | `a12 down` / `a12 stop` | Stop and remove the compose stack |
 | `a12 events [N]` | Query last N events from `events.db` (default 20) |
+| `a12 calibrate [days]` | Aggregate the local YOLO/policy audit for the selected period (default 7 days) |
 | `a12 tail` | Follow `a12.log` on the host |
 | `a12 enroll [args]` | Run `enroll_faces.py` for face whitelist enrollment |
 | `a12 help` | Show this command list |
+
+Decision audit rows are retained locally for 30 days by default. Set `DECISION_AUDIT_RETENTION_DAYS=0` to keep them indefinitely.
 
 **Environment:** The script uses `A12_DATA_DIR` (default `/opt/a12-data`) for the data
 volume path. For multiple cameras, also set unique `A12_COMPOSE_PROJECT`,
