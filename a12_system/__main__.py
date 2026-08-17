@@ -388,12 +388,17 @@ class Application:
                     threading.Timer(5.0, _camera_exposure_reset_silent).start()
 
                     consecutive_failures = 0
-                    camera.process_stream(
+                    stream_end_reason = camera.process_stream(
                         stream_response,
                         self.pipeline.process_frame,
                         target_fps_getter=target_decode_fps,
                         reconnect_requested=_stream_reconnect_requested,
                     )
+
+                    if stream_end_reason in ("frozen", "stream_ended"):
+                        # Camera-side view of the stall we just hit: did the
+                        # camera drop us (send_fail/errno) and how starved is it?
+                        camera.log_health_snapshot(stream_end_reason)
 
                     if shared_state.pop("reboot_camera", False):
                         # Camera-side OV3660 wedge: reconnects can't fix gray pixels

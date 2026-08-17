@@ -778,6 +778,20 @@ class DetectionPipeline:
         score += round(confidence_bonus_score * confidence_ratio)
         return score
 
+    def _local_only_clip_message(self, event_score: int | None, mp4_path: str) -> str:
+        """Say WHY a clip stayed local. score=None used to read as a scoring
+        failure — but None means no event score was ever computed: the clip came
+        from the PIR path, which suppresses Telegram until YOLO confirms a person."""
+        if event_score is None:
+            return (
+                "Telegram suppressed (clip without confirmed person); "
+                f"local MP4 saved (path={mp4_path})"
+            )
+        return (
+            "Telegram skipped by event score; local MP4 saved "
+            f"(score={event_score}, path={mp4_path})"
+        )
+
     def _should_buffer_clip_frames(self, current_time: float) -> bool:
         """Buffer clips only after PIR/HA activity or while a clip is being completed."""
         if current_time < float(self.shared_state.get("external_yolo_until", 0.0)):
@@ -1303,10 +1317,7 @@ class DetectionPipeline:
                         self.runtime_config.get("telegram.media_mode", "mp4")
                     ).lower()
                     if not send_telegram:
-                        logging.info(
-                            "Telegram skipped by event score; local MP4 saved "
-                            f"(score={event_score}, path={mp4_path})"
-                        )
+                        logging.info(self._local_only_clip_message(event_score, mp4_path))
                     elif media_mode == "mp4":
                         self.notifier.send_telegram(
                             self._telegram_message(msg), mp4_path, bypass_cooldown=bypass_telegram_cooldown
