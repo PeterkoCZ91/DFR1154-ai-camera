@@ -224,14 +224,63 @@ class Camera:
             pass
         return None
 
+    def log_health_snapshot(self, context: str) -> dict | None:
+        """One-line camera-side view right after a stream stall.
+
+        The camera's stream_health counters (send_fail_count, last_drop_reason,
+        last_errno) say whether the camera itself dropped this client — evidence
+        that a "Stream frozen" was cut on the far end, not lost inside A12.
+        """
+        health = self.get_health()
+        if not health:
+            logging.warning(f"{self.log_prefix} Camera health after {context} unavailable")
+            return None
+        stream = health.get("stream_health") or {}
+        parts = [
+            f"{key}={health[key]}"
+            for key in ("wifi_rssi", "free_heap", "uptime_seconds")
+            if key in health
+        ]
+        parts += [
+            f"{key}={stream[key]}"
+            for key in (
+                "active_detection_clients",
+                "send_fail_count",
+                "no_frame_count",
+                "last_drop_reason",
+                "last_errno",
+            )
+            if key in stream
+        ]
+        logging.warning(
+            f"{self.log_prefix} Camera health after {context}: " + " ".join(parts)
+        )
+        return health
+
     def process_stream(
         self, response: requests.Response, callback, target_fps_getter=None,
-        reconnect_requested=None,
-    ) -> None:
-        """Read frames from MJPEG stream and call callback for each frame."""
+        reconnect_requested=None, freeze_timeout: float = 20.0,
+    ) -> str:
+        """Read frames from MJPEG stream and call callback for each frame.
+
+        Returns why the stream loop ended: "frozen" (no decoded frame for
+        freeze_timeout), "forced_reconnect" (flat-frame watchdog),
+        "stream_ended" (drain/decode thread died — camera closed or errored)
+        or "interrupted".
+        """
         raw_queue: queue.Queue[bytes] = queue.Queue(maxsize=3)
         frame_queue: queue.Queue = queue.Queue(maxsize=1)
         stop_event = threading.Event()
+
+        # Cross-thread stall telemetry. Each key has a single writer (drain or
+        # decode); the main loop only reads, so plain dict updates are enough.
+        telemetry = {
+            "bytes_total": 0,
+            "raw_total": 0,
+            "last_raw_at": 0.0,
+            "truncated_total": 0,
+            "decode_errors_total": 0,
+        }
 
         def put_drop_oldest(target_queue: queue.Queue, item) -> None:
             try:
@@ -261,6 +310,7 @@ class Camera:
                     if not chunk:
                         continue
                     buffer += chunk
+                    telemetry["bytes_total"] += len(chunk)
                     if len(buffer) > 2_000_000:
                         logging.warning(f"{self.log_prefix} MJPEG buffer overflow; dropping stale bytes")
                         buffer = buffer[-200_000:]
@@ -289,8 +339,11 @@ class Camera:
                             buffer = buffer[a + declared :]
                             if not (jpg.startswith(b"\xff\xd8") and jpg.endswith(b"\xff\xd9")):
                                 truncated_frames += 1
+                                telemetry["truncated_total"] = truncated_frames
                                 continue          # drop it, do not hand on a partial JPEG
                             frame_count += 1
+                            telemetry["raw_total"] = frame_count
+                            telemetry["last_raw_at"] = time.time()
                             put_drop_oldest(raw_queue, jpg)
                             continue
 
@@ -303,9 +356,18 @@ class Camera:
                         jpg = buffer[a : b + 2]
                         buffer = buffer[b + 2 :]
                         frame_count += 1
+                        telemetry["raw_total"] = frame_count
+                        telemetry["last_raw_at"] = time.time()
                         put_drop_oldest(raw_queue, jpg)
             except Exception as e:
-                logging.error(f"{self.log_prefix} Stream drain error: {e}")
+                # Closing the response from the main loop makes iter_content()
+                # raise (urllib3's "'NoneType' object has no attribute 'read'").
+                # That's our own teardown, not a stream problem — only an
+                # exception BEFORE stop was requested is a real drop.
+                if stop_event.is_set():
+                    logging.info(f"{self.log_prefix} Stream drain closed during teardown ({e})")
+                else:
+                    logging.error(f"{self.log_prefix} Stream drain error: {e}")
             finally:
                 stop_event.set()
                 response.close()
@@ -323,6 +385,7 @@ class Camera:
             def note_decode_error(reason: str) -> None:
                 nonlocal decode_errors, last_decode_error_log
                 decode_errors += 1
+                telemetry["decode_errors_total"] = decode_errors
                 now = time.time()
                 if now - last_decode_error_log >= 60:
                     logging.warning(
@@ -370,6 +433,34 @@ class Camera:
         decoder.start()
 
         last_frame_time = time.time()
+        # Telemetry baselines at the last delivered frame — the freeze log
+        # reports deltas over the stall window, which is what localizes it:
+        # bytes=0 → camera went silent; bytes>0 raw=0 → unparseable stream;
+        # raw>0 → frames arrive but decode/pacing starves the callback.
+        window_base = dict(telemetry)
+        reason = "stream_ended"
+
+        def log_freeze() -> None:
+            now = time.time()
+            bytes_w = telemetry["bytes_total"] - window_base["bytes_total"]
+            raw_w = telemetry["raw_total"] - window_base["raw_total"]
+            truncated_w = telemetry["truncated_total"] - window_base["truncated_total"]
+            decode_err_w = telemetry["decode_errors_total"] - window_base["decode_errors_total"]
+            last_raw_at = telemetry["last_raw_at"]
+            last_raw_age = f"{now - last_raw_at:.1f}s ago" if last_raw_at else "never"
+            if bytes_w == 0:
+                likely = "no_bytes_from_camera"
+            elif raw_w == 0:
+                likely = "unparseable_stream"
+            else:
+                likely = "decode_or_pacing_stall"
+            logging.warning(
+                f"{self.log_prefix} Stream frozen "
+                f"(no decoded frame for {now - last_frame_time:.1f}s): "
+                f"window bytes={bytes_w} raw={raw_w} truncated={truncated_w} "
+                f"decode_errors={decode_err_w} last_raw_frame={last_raw_age} "
+                f"likely={likely}. Reconnecting..."
+            )
 
         try:
             while not stop_event.is_set():
@@ -378,21 +469,24 @@ class Camera:
                         f"{self.log_prefix} Forced stream reconnect "
                         f"(flat-frame watchdog). Rebuilding connection."
                     )
+                    reason = "forced_reconnect"
                     break
-                if time.time() - last_frame_time > 20:
-                    logging.warning(f"{self.log_prefix} Stream frozen (20s timeout). Reconnecting...")
+                if time.time() - last_frame_time > freeze_timeout:
+                    log_freeze()
+                    reason = "frozen"
                     break
 
                 try:
                     frame = frame_queue.get(timeout=1.0)
                     last_frame_time = time.time()
+                    window_base = dict(telemetry)
                     callback(frame)
                 except queue.Empty:
                     if not drain.is_alive() or not decoder.is_alive():
                         break
                     continue
         except KeyboardInterrupt:
-            pass
+            reason = "interrupted"
         finally:
             stop_event.set()
             # Close the response BEFORE joining. The drain thread is parked inside
@@ -409,3 +503,4 @@ class Camera:
                 logging.debug(f"{self.log_prefix} Stream response close failed: {e}")
             drain.join(timeout=2)
             decoder.join(timeout=2)
+        return reason
