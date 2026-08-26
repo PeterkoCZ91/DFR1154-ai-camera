@@ -84,6 +84,8 @@ firmware repo stops at the camera / A12 companion boundary.
 ```env
 YOLO_BACKEND=http
 YOLO_SCORER_URL=http://SCORER_HOST:8766/score
+# Optional; default is 4 seconds for a bounded shared-scorer CPU queue.
+YOLO_REMOTE_TIMEOUT_SECONDS=4
 ```
 
 The scorer contract is:
@@ -103,7 +105,17 @@ Content-Type: image/jpeg
 
 A12 reads `classes`, filters it through `YOLO_CLASSES`, applies
 `YOLO_CONFIDENCE_THRESHOLD`, and returns the same `(label, confidence)` detections to the
-pipeline. If the scorer is unavailable, A12 falls back to the local model if it loaded.
+pipeline. The HTTP deadline is configurable with `YOLO_REMOTE_TIMEOUT_SECONDS`; if the
+scorer is unavailable or exceeds that deadline, A12 falls back to the local model if it
+loaded.
+
+A12 keeps aggregate-only counters for these calls (`scorer` in `stats.json`). Failures
+are split rather than pooled: `transport_failures` means the scorer could not be
+reached, `http_errors` means it answered non-2xx, `malformed_responses` means it
+answered something A12 could not use, and `fallbacks` counts local-model fallbacks.
+`error_kinds` holds exception class names and HTTP statuses only — never exception
+text, which can carry the scorer URL. `request_seconds_max` covers failed attempts
+too, so it is the number to size `YOLO_REMOTE_TIMEOUT_SECONDS` against.
 Recalibrate thresholds before production use with a different shared model; scores from a
 larger model are not directly comparable to `yolo11n`.
 

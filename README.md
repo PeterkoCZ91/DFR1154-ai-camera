@@ -212,6 +212,11 @@ For the full A12 runtime guide, shared scorer contract, face-recognition flow an
 commands, see [`docs/A12_COMPANION.md`](docs/A12_COMPANION.md). For Docker deployment and
 multiple camera instances, see [`a12_system/DOCKER.md`](a12_system/DOCKER.md).
 
+A12 keeps aggregate-only shared-scorer telemetry in its statistics and daily summary:
+requests, successes, malformed responses, unreachable-scorer errors, non-2xx answers and
+local fallbacks, plus request latency. It never stores image payloads, scorer URLs or
+exception text in these counters — only exception class names and HTTP status codes.
+
 > [!NOTE]
 > When using A12, disable ESP32 Telegram to avoid duplicate alerts and free heap: comment
 > out `#define INCLUDE_TELEGRAM` in `firmware/config.h` before flashing. See

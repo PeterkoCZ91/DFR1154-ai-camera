@@ -427,6 +427,20 @@ class StatusMonitor(threading.Thread):
             f"Uptime: {uptime}\n"
             f"Události (24h):\n{event_lines}"
         )
+        scorer_summary = summary.get("scorer", {})
+        if scorer_summary.get("requests", 0) or scorer_summary.get("fallbacks", 0):
+            # Scorer counters are cumulative since process start, unlike the 24h
+            # event counts above — say so instead of implying a daily window.
+            failures = scorer_summary.get("transport_failures", 0) + scorer_summary.get(
+                "http_errors", 0
+            )
+            msg += (
+                "\nScorer (od startu): "
+                f"{scorer_summary.get('successes', 0)} OK / "
+                f"{failures} chyb / "
+                f"{scorer_summary.get('fallbacks', 0)} fallbacků"
+                f", p95 {scorer_summary.get('request_seconds_p95', 0):.2f}s"
+            )
         face_enabled = self.runtime_config.get("face_recognition.enabled", False)
         if face_enabled:
             known_faces = sum(

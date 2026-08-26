@@ -164,6 +164,7 @@ class Detector:
             failure_until = getattr(self, "_remote_failure_until", 0.0)
             if now < failure_until:
                 logging.debug("Remote YOLO scorer circuit open for %.1fs", failure_until - now)
+                scorer_client.record_fallback()
                 self.last_backend = "fallback"
                 return self._detect_objects_local(frame)
             detections = self._detect_objects_http(frame)
@@ -173,6 +174,7 @@ class Detector:
                 return detections
             backoff = max(0.0, float(yolo_cfg.get("remote_failure_backoff_seconds", 30.0)))
             self._remote_failure_until = now + backoff
+            scorer_client.record_fallback()
             logging.warning(
                 "Remote YOLO scorer unavailable; circuit open for %.1fs, falling back locally", backoff
             )
