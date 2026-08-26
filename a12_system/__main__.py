@@ -18,7 +18,7 @@ import requests
 from .config import load_config
 from .logging_setup import setup_logging
 from .runtime_config import RuntimeConfig
-from .camera import Camera
+from .camera import Camera, stall_event_detail
 from .flat_episode import prune_files
 from .detection import Detector
 from .notifier import Notifier
@@ -398,7 +398,15 @@ class Application:
                     if stream_end_reason in ("frozen", "stream_ended"):
                         # Camera-side view of the stall we just hit: did the
                         # camera drop us (send_fail/errno) and how starved is it?
-                        camera.log_health_snapshot(stream_end_reason)
+                        health = camera.log_health_snapshot(stream_end_reason)
+                        # Persist the stall: docker logs rotate (and have been
+                        # lost to corruption), the events DB keeps statistics.
+                        self.pipeline.db.log_event(
+                            "stream_stall",
+                            stream_end_reason,
+                            0.0,
+                            stall_event_detail(camera.last_freeze_summary, health),
+                        )
 
                     if shared_state.pop("reboot_camera", False):
                         # Camera-side OV3660 wedge: reconnects can't fix gray pixels

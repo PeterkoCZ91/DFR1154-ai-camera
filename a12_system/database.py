@@ -96,13 +96,17 @@ class EventDB:
             except Exception as e:
                 logging.error(f"Failed to log audio stats: {e}")
 
-    def log_decision_audit(self, **audit: object) -> None:
-        """Persist one YOLO/policy decision without changing event logging."""
+    def log_decision_audit(self, **audit: object) -> int | None:
+        """Persist one YOLO/policy decision without changing event logging.
+
+        Returns the audit row id so callers can tie side evidence (candidate
+        snapshots) back to the exact decision, or None when the insert failed.
+        """
         with self.lock:
             try:
                 timestamp = time.time()
                 dt = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
-                self.conn.execute(
+                cursor = self.conn.execute(
                     """
                     INSERT INTO decision_audit (
                         timestamp, datetime, trigger_source, backend, candidate_label,
@@ -125,8 +129,10 @@ class EventDB:
                     ),
                 )
                 self.conn.commit()
+                return cursor.lastrowid
             except Exception as e:
                 logging.error(f"Failed to log decision audit: {e}")
+                return None
 
     def prune_decision_audit(self, max_age_days: float, batch_size: int = 1000) -> int:
         """Delete expired audit rows and checkpoint WAL without blocking inference."""

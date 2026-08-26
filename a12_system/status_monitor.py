@@ -417,6 +417,10 @@ class StatusMonitor(threading.Thread):
             ("Potvrzená osoba", counts.get(("detection", "person"), 0)),
             ("Pes", counts.get(("detection", "dog"), 0)),
             ("Audio alerty", counts.get(("audio", "LOUD_NOISE"), 0)),
+            # Stalls are persisted to the events DB precisely because the docker
+            # log rotates them away; leaving them out of the summary would mean
+            # nobody ever sees them without querying SQLite by hand.
+            ("Přerušení streamu", count_type("stream_stall")),
         ]
         event_lines = "\n".join(
             f"  {label}: {value}x" for label, value in summary_items if value > 0
