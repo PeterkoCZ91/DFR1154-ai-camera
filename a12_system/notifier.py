@@ -17,12 +17,6 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
 
-try:
-    import imageio
-    GIF_AVAILABLE = True
-except ImportError:
-    GIF_AVAILABLE = False
-
 
 class Notifier:
     def __init__(self, config: dict):
@@ -125,7 +119,7 @@ class Notifier:
         size: tuple[int, int] = (320, 240),
     ) -> bool:
         """Create GIF from frames."""
-        if not GIF_AVAILABLE or not frames:
+        if not frames:
             return False
 
         try:

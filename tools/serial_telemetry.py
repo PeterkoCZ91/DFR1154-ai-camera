@@ -1079,7 +1079,7 @@ def main():
     print(f"Port: {args.port} @ {args.baud}")
     print(f"DB:   {args.db} (session #{session_id})")
     print(f"Raw log: {'OFF' if args.no_raw_log else 'ON'}")
-    print(f"Press Ctrl+C to stop\n")
+    print("Press Ctrl+C to stop\n")
 
     # Graceful shutdown
     def shutdown(signum=None, frame=None):

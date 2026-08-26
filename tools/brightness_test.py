@@ -18,7 +18,6 @@ Použití:
 import argparse
 import csv
 import io
-import os
 import sys
 import time
 from datetime import datetime
@@ -173,7 +172,7 @@ def main():
         return
 
     base_url = f"http://{args.ip}"
-    print(f"ESP32 OV3660 Brightness Test")
+    print("ESP32 OV3660 Brightness Test")
     print(f"Kamera: {args.ip}  |  Snímků: {args.samples}  |  Baseline: {args.baseline}")
     print()
 

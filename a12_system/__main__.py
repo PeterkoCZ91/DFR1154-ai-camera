@@ -7,7 +7,6 @@ Entry point: python -m A12_System_v2
 import logging
 import os
 import signal
-import sys
 import threading
 import time
 from datetime import datetime
@@ -315,10 +314,6 @@ class Application:
 
         def target_decode_fps():
             now = time.time()
-            active_until = max(
-                float(shared_state.get("external_yolo_until", 0.0)),
-                float(shared_state.get("recording_buffer_until", 0.0)),
-            )
             if now < float(shared_state.get("recording_buffer_until", 0.0)):
                 shared_state["pipeline_state"] = "recording_buffer"
                 shared_state["stream_decode_fps"] = active_decode_fps
