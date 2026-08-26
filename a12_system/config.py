@@ -30,8 +30,9 @@ DEFAULT_CONFIG = {
         # camera changes image coordinates even when it keeps seeing the same person.
         "person_confirmation_iou": 0.0,
         "person_confirmation_max_gap_seconds": 8.0,
-        # Do not stall the frame callback for ten seconds when the shared scorer is down.
-        "remote_timeout_seconds": 2.0,
+        # Allow the shared scorer's bounded CPU queue to complete without stalling for
+        # ten seconds; callers still fall back locally after this deadline.
+        "remote_timeout_seconds": 4.0,
         "remote_failure_backoff_seconds": 30.0,
         "check_interval": 5,
     },

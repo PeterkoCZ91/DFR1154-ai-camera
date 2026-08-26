@@ -83,6 +83,7 @@ def test_yolo_defaults():
     assert DEFAULT_CONFIG["yolo"]["classes"] == ["person", "dog"]
     assert DEFAULT_CONFIG["yolo"]["confidence_threshold"] == 0.55
     assert DEFAULT_CONFIG["yolo"]["notify_confidence_threshold"] == 0.55
+    assert DEFAULT_CONFIG["yolo"]["remote_timeout_seconds"] == 4.0
     assert DEFAULT_CONFIG["yolo"]["person_confirmations"] == 2
     assert DEFAULT_CONFIG["yolo"]["pir_notify_confidence_threshold"] == 0.45
     assert DEFAULT_CONFIG["yolo"]["pir_person_confirmations"] == 1

@@ -7,6 +7,8 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
+from . import scorer_client
+
 
 class Statistics:
     def __init__(self, save_path: str = "stats.json", auto_save_interval: int = 300):
@@ -109,6 +111,7 @@ class Statistics:
                     "accuracy": f"{accuracy:.1f}%",
                 },
                 "detections": dict(self.detections),
+                "scorer": scorer_client.metrics_snapshot(),
             }
 
     def save(self) -> bool:
@@ -119,6 +122,7 @@ class Statistics:
                 "session": summary["session"],
                 "face_recognition": summary["face_recognition"],
                 "detections": summary["detections"],
+                "scorer": summary["scorer"],
                 "cumulative": {
                     "face_attempts": self.face_attempts,
                     "face_recognized": self.face_recognized,

@@ -18,6 +18,7 @@ def _config(backend="http"):
             "scorer_url": "http://scorer.example:8766/score",
             "classes": ["person", "dog"],
             "confidence_threshold": 0.55,
+            "remote_timeout_seconds": 4.0,
         },
         "motion": {"enabled": False, "threshold": 50, "min_contour_area": 500},
     }
@@ -36,6 +37,18 @@ def _detector(config=None):
     return det
 
 
+def _scorer(**over):
+    """Stub of the scorer_client module with every attribute detection uses."""
+    stub = types.SimpleNamespace(
+        score_image=lambda *args, **kwargs: None,
+        record_fallback=lambda: None,
+        default_source_id=lambda: None,
+    )
+    for key, value in over.items():
+        setattr(stub, key, value)
+    return stub
+
+
 def _jpeg(monkeypatch):
     monkeypatch.setattr(
         detection.cv2,
@@ -50,7 +63,7 @@ def test_detect_objects_http_filters_classes(monkeypatch):
     monkeypatch.setattr(
         detection,
         "scorer_client",
-        types.SimpleNamespace(
+        _scorer(
             score_image=lambda url, body, timeout=10: calls.append((url, body, timeout))
             or {"classes": {"person": 0.72, "dog": 0.40, "car": 0.99}}
         ),
@@ -60,7 +73,26 @@ def test_detect_objects_http_filters_classes(monkeypatch):
     out = _detector().detect_objects(np.zeros((4, 4, 3), dtype=np.uint8))
 
     assert out == [("person", 0.72)]
-    assert calls == [("http://scorer.example:8766/score", b"jpeg-bytes", 2.0)]
+    assert calls == [("http://scorer.example:8766/score", b"jpeg-bytes", 4.0)]
+
+
+def test_detect_objects_http_counts_a_fallback_when_the_scorer_is_down(monkeypatch):
+    _jpeg(monkeypatch)
+    fallbacks = []
+    monkeypatch.setattr(
+        detection,
+        "scorer_client",
+        _scorer(record_fallback=lambda: fallbacks.append(1)),
+        raising=False,
+    )
+    det = _detector()
+    monkeypatch.setattr(det, "_detect_objects_local", lambda frame: [], raising=False)
+
+    det.detect_objects(np.zeros((4, 4, 3), dtype=np.uint8))
+    det.detect_objects(np.zeros((4, 4, 3), dtype=np.uint8))
+
+    # One fallback for the failed request, one for the now-open circuit.
+    assert fallbacks == [1, 1]
 
 
 def test_detect_objects_http_keeps_person_box(monkeypatch):
@@ -68,7 +100,7 @@ def test_detect_objects_http_keeps_person_box(monkeypatch):
     monkeypatch.setattr(
         detection,
         "scorer_client",
-        types.SimpleNamespace(
+        _scorer(
             score_image=lambda *args, **kwargs: {"classes": {"person": 0.72}, "box": [1, 2, 30, 40]}
         ),
         raising=False,
@@ -84,7 +116,7 @@ def test_detect_objects_http_keeps_pir_person_candidate_below_base_threshold(mon
     monkeypatch.setattr(
         detection,
         "scorer_client",
-        types.SimpleNamespace(score_image=lambda *args, **kwargs: {"classes": {"person": 0.50}}),
+        _scorer(score_image=lambda *args, **kwargs: {"classes": {"person": 0.50}}),
         raising=False,
     )
     det = _detector()
@@ -98,7 +130,7 @@ def test_detect_objects_http_rejects_invalid_confidence(monkeypatch):
     monkeypatch.setattr(
         detection,
         "scorer_client",
-        types.SimpleNamespace(score_image=lambda *args, **kwargs: {"classes": {"person": float("nan")}}),
+        _scorer(score_image=lambda *args, **kwargs: {"classes": {"person": float("nan")}}),
         raising=False,
     )
 
@@ -120,7 +152,7 @@ def test_detect_objects_http_failure_falls_back_to_local(monkeypatch):
     monkeypatch.setattr(
         detection,
         "scorer_client",
-        types.SimpleNamespace(score_image=lambda url, body, timeout=10: None),
+        _scorer(),
         raising=False,
     )
     det = _detector()
@@ -135,7 +167,7 @@ def test_detect_objects_remote_failure_opens_circuit(monkeypatch):
     monkeypatch.setattr(
         detection,
         "scorer_client",
-        types.SimpleNamespace(score_image=lambda *args, **kwargs: calls.append(1) or None),
+        _scorer(score_image=lambda *args, **kwargs: calls.append(1) or None),
         raising=False,
     )
     det = _detector()
@@ -180,7 +212,7 @@ def test_detect_objects_local_backend_does_not_call_http(monkeypatch):
     monkeypatch.setattr(
         detection,
         "scorer_client",
-        types.SimpleNamespace(score_image=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError)),
+        _scorer(score_image=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError)),
         raising=False,
     )
     det = _detector(_config(backend="local"))
