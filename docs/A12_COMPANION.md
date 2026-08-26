@@ -159,6 +159,27 @@ cd a12_system
 
 Decision audit rows are retained locally for 30 days by default. Set `DECISION_AUDIT_RETENTION_DAYS=0` to keep them indefinitely.
 
+### Learning data retention
+
+An audit row is only checkable against ground truth if its image still exists, so
+two folders under `screenshots/` opt out of the default `MEDIA_RETENTION_DAYS=2`
+sweep:
+
+| Folder | Retention | Purpose |
+| --- | --- | --- |
+| `person/` | `PERSON_MEDIA_RETENTION_DAYS` (default 30, clamped up to `MEDIA_RETENTION_DAYS`) | Confirmed person clips outlive the audit rows that reference them |
+| `candidates/` | follows `DECISION_AUDIT_RETENTION_DAYS` | The frame behind a person-candidate audit row |
+
+`candidates/` exists for the decisions that save nothing else: a rejected or
+still-unconfirmed candidate leaves no clip, so without the snapshot there is no
+way to see what YOLO actually scored at 0.55 — or at an unconfirmed 0.92. Outcomes
+that already write their own media (`recorded_and_notified`, `recorded_local_only`)
+are skipped so the clip is not duplicated. `CANDIDATE_SNAPSHOT_MIN_INTERVAL_SECONDS`
+rate-limits the folder; at the default 1.0 it measures roughly 11 MB/day.
+
+Setting a retention to `0` means "keep indefinitely" everywhere, including the
+files — a `0` never sweeps a folder empty.
+
 **Environment:** The script uses `A12_DATA_DIR` (default `/opt/a12-data`) for the data
 volume path. For multiple cameras, also set unique `A12_COMPOSE_PROJECT`,
 `A12_CONTAINER`, `CAMERA_ID`, `MQTT_BASE_TOPIC`, and `ESP32_MQTT_DEVICE` values:

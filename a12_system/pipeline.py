@@ -14,6 +14,28 @@ import numpy as np
 from .flat_episode import FlatEpisodeState
 
 
+def retention_days(value: float, floor: float = 0.0) -> float:
+    """Turn a configured retention into a day count for the media sweep.
+
+    Every retention knob A12 documents treats 0 as "keep indefinitely", so it
+    maps to infinity here. Reading that 0 as a literal day count is what made
+    `MEDIA_RETENTION_DAYS=0` delete media after the 0.25-day floor, and would
+    make `DECISION_AUDIT_RETENTION_DAYS=0` — the one setting that keeps audit
+    rows forever — wipe the candidate images those rows point at.
+    """
+    days = float(value)
+    if days <= 0:
+        return float("inf")
+    return max(floor, days)
+
+
+# Outcomes that already save their own person media. A candidate copy of the
+# same frame would only duplicate the clip, and because snapshots share one
+# rate-limit slot it would also crowd out the unconfirmed candidate a second
+# later — the exact frame the candidates folder exists to preserve.
+OUTCOMES_WITH_OWN_MEDIA = frozenset({"recorded_and_notified", "recorded_local_only"})
+
+
 def classify_frame_health(
     brightness: float, std: float, dark_threshold: float, flat_std_threshold: float
 ) -> str | None:
@@ -194,7 +216,9 @@ class DetectionPipeline:
         )
 
         # FPS tracking
-        self.last_heartbeat = 0
+        # Do not emit a misleading startup heartbeat with Frames: 1. The first
+        # heartbeat should describe a real interval after the stream is running.
+        self.last_heartbeat = time.time()
         self.heartbeat_interval = 30
         self.frame_count = 0
         self.stream_fps = 10  # updated from heartbeat
@@ -238,12 +262,28 @@ class DetectionPipeline:
         self.cleanup_interval = max(
             60, int(runtime_config.get("media_cleanup_interval_seconds", 3600))
         )
-        self.cleanup_max_age_days = max(
-            0.25, float(runtime_config.get("media_retention_days", 2))
+        # The 0.25 floor only stops a small non-zero value from sweeping media
+        # away within minutes; 0 still means "keep forever" as documented.
+        self.cleanup_max_age_days = retention_days(
+            runtime_config.get("media_retention_days", 2), 0.25
         )
         self.decision_audit_retention_days = max(
             0.0, float(runtime_config.get("decision_audit_retention_days", 30))
         )
+        # Person media and candidate snapshots are learning data: they must
+        # outlive the default 2-day media sweep, or week-old audit rows point
+        # at deleted files.
+        self.person_media_retention_days = retention_days(
+            runtime_config.get("person_media_retention_days", 30),
+            self.cleanup_max_age_days,
+        )
+        self.candidate_snapshot_enabled = bool(
+            runtime_config.get("candidate_snapshot_enabled", True)
+        )
+        self.candidate_snapshot_min_interval = max(
+            0.0, float(runtime_config.get("candidate_snapshot_min_interval_seconds", 1.0))
+        )
+        self._last_candidate_snapshot = 0.0
 
         # Async notification worker
         queue_maxsize = max(1, int(runtime_config.get("notification_queue_maxsize", 10)))
@@ -700,6 +740,7 @@ class DetectionPipeline:
                 None,
                 None,
                 outcome,
+                frame=frame,
             )
 
 
@@ -733,6 +774,7 @@ class DetectionPipeline:
         active_sensors: list[str] | None,
         event_score: int | None,
         decision_outcome: str,
+        frame=None,
     ) -> None:
         """Add the final policy state to one YOLO audit record."""
         audit = dict(audit_context)
@@ -743,7 +785,46 @@ class DetectionPipeline:
             event_score=event_score,
             decision_outcome=decision_outcome,
         )
-        self.db.log_decision_audit(**audit)
+        audit_id = self.db.log_decision_audit(**audit)
+        if (
+            frame is not None
+            and audit.get("candidate_label")
+            and decision_outcome not in OUTCOMES_WITH_OWN_MEDIA
+        ):
+            self._save_candidate_snapshot(
+                frame, audit_id, audit.get("candidate_confidence"), decision_outcome
+            )
+
+    def _save_candidate_snapshot(
+        self, frame, audit_id: int | None, confidence: float | None, outcome: str
+    ) -> str | None:
+        """Keep the frame behind a person-candidate audit row.
+
+        Rejected and unconfirmed candidates otherwise leave no image, so their
+        audit rows can never be verified against ground truth — the one thing
+        threshold calibration and dataset mining need. Files live in
+        screenshots/candidates/ and age out with the decision audit, not with
+        the 2-day media sweep.
+        """
+        if not self.candidate_snapshot_enabled:
+            return None
+        now = time.time()
+        if now - self._last_candidate_snapshot < self.candidate_snapshot_min_interval:
+            return None
+        try:
+            folder = os.path.join(self.screenshot_folder, "candidates")
+            os.makedirs(folder, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            conf = f"{confidence:.2f}" if confidence is not None else "na"
+            name = f"cand_{stamp}_a{audit_id if audit_id is not None else 'x'}_{conf}_{outcome}.jpg"
+            path = os.path.join(folder, name)
+            if not cv2.imwrite(path, frame):
+                return None
+            self._last_candidate_snapshot = now
+            return path
+        except Exception as e:
+            logging.warning(f"Candidate snapshot failed: {e}")
+            return None
 
     def _score_event(
         self,
@@ -907,6 +988,7 @@ class DetectionPipeline:
                 self._log_decision_audit(
                     audit_context, confirmation_streak, sensor_confirmed,
                     active_sensors, event_score, "not_recorded_sensor_required",
+                    frame=frame,
                 )
                 logging.info(
                     "Person event ignored for recording: no PIR/HA sensor confirmation "
@@ -927,6 +1009,7 @@ class DetectionPipeline:
                 self._log_decision_audit(
                     audit_context, confirmation_streak, sensor_confirmed,
                     active_sensors, event_score, "not_recorded_below_local_threshold",
+                    frame=frame,
                 )
                 logging.info(
                     "Person event ignored below local record threshold "
@@ -940,12 +1023,14 @@ class DetectionPipeline:
                     self._log_decision_audit(
                         audit_context, confirmation_streak, sensor_confirmed,
                         active_sensors, event_score, "suppressed_by_cooldown",
+                        frame=frame,
                     )
                     continue
 
             self._log_decision_audit(
                 audit_context, confirmation_streak, sensor_confirmed, active_sensors, event_score,
                 "recorded_and_notified" if should_notify else "recorded_local_only",
+                frame=frame,
             )
 
             self.stats.record_detection(label)
@@ -1167,19 +1252,36 @@ class DetectionPipeline:
                 f"at {timestamp}"
             )
 
+    def _retention_days_for(self, top_folder: str) -> float:
+        """Learning data outlives the default media sweep: person clips follow
+        their own retention, candidate snapshots follow the decision audit's.
+
+        The audit keeps its own raw value because EventDB.prune_decision_audit
+        needs 0 to mean "do not prune"; retention_days maps it to infinity for
+        the file sweep so the images survive with the rows.
+        """
+        if top_folder == "person":
+            return self.person_media_retention_days
+        if top_folder == "candidates":
+            return retention_days(self.decision_audit_retention_days)
+        return self.cleanup_max_age_days
+
     def _cleanup_old_media(self) -> None:
-        """Remove media files older than cleanup_max_age_days from screenshots folder."""
-        cutoff = time.time() - self.cleanup_max_age_days * 86400
+        """Remove media files past their folder's retention from screenshots."""
+        now = time.time()
         removed = 0
         try:
             for root, _dirs, files in os.walk(self.screenshot_folder):
+                rel = os.path.relpath(root, self.screenshot_folder)
+                top = "" if rel == "." else rel.split(os.sep)[0]
+                cutoff = now - self._retention_days_for(top) * 86400
                 for fname in files:
                     fpath = os.path.join(root, fname)
                     if os.path.getmtime(fpath) < cutoff:
                         os.remove(fpath)
                         removed += 1
             if removed:
-                logging.info(f"Cleanup: removed {removed} media files older than {self.cleanup_max_age_days}d")
+                logging.info(f"Cleanup: removed {removed} media files past retention")
         except Exception as e:
             logging.error(f"Cleanup error: {e}")
 

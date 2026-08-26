@@ -46,11 +46,34 @@ def _part_content_length(buffer: bytes, soi: int) -> int | None:
     return declared
 
 
+def stall_event_detail(freeze_summary: str | None, health: dict | None) -> str:
+    """Compact one-line stall diagnosis for the events DB.
+
+    Merges A12's freeze-window telemetry with the camera's own stream_health
+    counters so a stall row stays useful after the docker log has rotated away.
+    """
+    parts = []
+    if freeze_summary:
+        parts.append(freeze_summary)
+    stream = (health or {}).get("stream_health") or {}
+    parts += [
+        f"{key}={stream[key]}"
+        for key in ("send_fail_count", "no_frame_count", "last_drop_reason", "last_errno")
+        if key in stream
+    ]
+    if health and "wifi_rssi" in health:
+        parts.append(f"wifi_rssi={health['wifi_rssi']}")
+    return " ".join(parts) or "no diagnostics"
+
+
 class Camera:
     # Last raw JPEG delivered by the stream — forensic evidence for flat-frame
     # episodes (a second stream client starves, so this is the only way to see
     # the actual bytes A12 received).
     last_raw_jpg: bytes | None = None
+    # Freeze-window telemetry of the most recent "Stream frozen" break, for the
+    # caller to persist alongside the camera health snapshot.
+    last_freeze_summary: str | None = None
 
     def __init__(self, config: dict, stream_port: int | None = None, audio_port: int | None = None):
         self.config = config
@@ -439,6 +462,7 @@ class Camera:
         # raw>0 → frames arrive but decode/pacing starves the callback.
         window_base = dict(telemetry)
         reason = "stream_ended"
+        self.last_freeze_summary = None
 
         def log_freeze() -> None:
             now = time.time()
@@ -454,6 +478,11 @@ class Camera:
                 likely = "unparseable_stream"
             else:
                 likely = "decode_or_pacing_stall"
+            self.last_freeze_summary = (
+                f"likely={likely} bytes={bytes_w} raw={raw_w} "
+                f"truncated={truncated_w} decode_errors={decode_err_w} "
+                f"last_raw_frame={last_raw_age}"
+            )
             logging.warning(
                 f"{self.log_prefix} Stream frozen "
                 f"(no decoded frame for {now - last_frame_time:.1f}s): "

@@ -144,6 +144,11 @@ DEFAULT_CONFIG = {
     },
     "media_retention_days": 2,
     "decision_audit_retention_days": 30,
+    # Learning data: person media and candidate snapshots outlive the 2-day
+    # media sweep so 30-day-old audit rows still have their images.
+    "person_media_retention_days": 30,
+    "candidate_snapshot_enabled": True,
+    "candidate_snapshot_min_interval_seconds": 1.0,
     "media_cleanup_interval_seconds": 3600,
     "notification_queue_maxsize": 10,
     "ir_control": {
@@ -325,6 +330,9 @@ ENV_OVERRIDES = [
     ("EVENT_SCORE_LOCAL_RECORD_THRESHOLD", "event_scoring.local_record_threshold", _parse_int),
     ("MEDIA_RETENTION_DAYS", "media_retention_days", _parse_float),
     ("DECISION_AUDIT_RETENTION_DAYS", "decision_audit_retention_days", _parse_float),
+    ("PERSON_MEDIA_RETENTION_DAYS", "person_media_retention_days", _parse_float),
+    ("CANDIDATE_SNAPSHOT_ENABLED", "candidate_snapshot_enabled", _parse_bool),
+    ("CANDIDATE_SNAPSHOT_MIN_INTERVAL_SECONDS", "candidate_snapshot_min_interval_seconds", _parse_float),
     ("MEDIA_CLEANUP_INTERVAL_SECONDS", "media_cleanup_interval_seconds", _parse_int),
     ("NOTIFICATION_QUEUE_MAXSIZE", "notification_queue_maxsize", _parse_int),
     # Home Assistant
