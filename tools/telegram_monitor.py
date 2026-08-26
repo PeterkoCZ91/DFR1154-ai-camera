@@ -45,7 +45,7 @@ def main():
         sys.exit(1)
 
     ser.read(ser.in_waiting or 1)  # flush
-    print(f"[*] Monitoring started. Ctrl+C to stop.\n")
+    print("[*] Monitoring started. Ctrl+C to stop.\n")
 
     motion_count = 0
     person_count = 0

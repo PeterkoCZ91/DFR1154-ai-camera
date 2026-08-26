@@ -213,10 +213,10 @@ def main():
         print(f"Periodic: every {args.interval}s")
     if args.on_motion:
         print(f"Motion:  via DB {args.db} (cooldown {args.cooldown}s)")
-    print(f"Press Ctrl+C to stop\n")
+    print("Press Ctrl+C to stop\n")
 
     # Test camera connection
-    print(f"Testing camera connection...", end=" ", flush=True)
+    print("Testing camera connection...", end=" ", flush=True)
     try:
         r = requests.get(f"http://{args.ip}{FRAME_ENDPOINT}", timeout=5)
         if r.status_code == 200 and len(r.content) > 1000:
@@ -225,7 +225,7 @@ def main():
             print(f"{YELLOW}Warning: status={r.status_code}, size={len(r.content)}{RESET}\n")
     except requests.RequestException as e:
         print(f"{RED}FAIL: {e}{RESET}")
-        print(f"Zkontroluj IP kamery a zkus znovu.")
+        print("Zkontroluj IP kamery a zkus znovu.")
         sys.exit(1)
 
     def shutdown(signum=None, frame=None):

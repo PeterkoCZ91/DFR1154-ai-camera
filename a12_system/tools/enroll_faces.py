@@ -128,7 +128,6 @@ def _test_camera(frame_url: str, auth) -> bool:
 
 def cmd_capture(args) -> None:
     try:
-        import requests
         import cv2
     except ImportError:
         print("ERROR: install missing packages: pip install requests opencv-python")
@@ -158,8 +157,8 @@ def cmd_capture(args) -> None:
 
     total_target = sum(p[2] for p in phases)
     print(f"\nEnrolling '{args.name}' — {total_target} frames across {len(phases)} guided poses.")
-    print(f"[Green = capturing]  [Orange = too similar, move more]  [Red = no/multiple faces]")
-    print(f"[Q / Esc = stop early]\n")
+    print("[Green = capturing]  [Orange = too similar, move more]  [Red = no/multiple faces]")
+    print("[Q / Esc = stop early]\n")
 
     encodings, names = load_db(data_dir)
     all_session_encs: list = []

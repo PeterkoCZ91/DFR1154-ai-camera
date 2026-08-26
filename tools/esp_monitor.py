@@ -15,10 +15,8 @@ Logs to: tools/esp_monitor.log (rotated at 10MB)
 import serial
 import threading
 import time
-import sys
 import argparse
 import re
-import json
 import os
 from datetime import datetime
 
@@ -363,10 +361,10 @@ def main():
     if args.filter:
         print(f"Filter: '{args.filter}'")
     if args.no_dedup:
-        print(f"Dedup: disabled")
+        print("Dedup: disabled")
     if not HAS_REQUESTS:
         print(f"{YELLOW}Note: install 'requests' for HTTP health checks{RESET}")
-    print(f"Press Ctrl+C to stop\n")
+    print("Press Ctrl+C to stop\n")
 
     # Open log file
     rotate_log()

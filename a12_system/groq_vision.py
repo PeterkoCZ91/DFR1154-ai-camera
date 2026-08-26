@@ -1,8 +1,9 @@
 """Groq vision-based face recognition for person whitelisting and Nuki unlock."""
 
 import base64
+import json
 import logging
-import os
+import re
 import time
 from pathlib import Path
 
@@ -143,7 +144,6 @@ class GroqVision:
             resp.raise_for_status()
             text = resp.json()["choices"][0]["message"]["content"].strip()
 
-            import json, re
             m = re.search(r"\{.*\}", text, re.DOTALL)
             if not m:
                 logging.warning(f"[GroqVision] Unexpected response: {text}")
