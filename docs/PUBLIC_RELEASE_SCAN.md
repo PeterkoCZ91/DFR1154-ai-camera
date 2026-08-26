@@ -43,8 +43,24 @@ pio run -d firmware
 This scan intentionally excludes `.git`, vendored Edge Impulse sources, binary media and
 known placeholder examples. Review every remaining hit manually.
 
+```bash
+rg -n \
+  "(bot[0-9]+:|gsk_|sk-[A-Za-z0-9]|Bearer +[A-Za-z0-9._-]+|chat_id|api[_-]?key|token|password|secret|known_faces|events\.db|a12\.log)" \
+  -g '!**/.git/**' \
+  -g '!firmware/lib/ei-person-detection-fomo/**' \
+  -g '!**/*.png' -g '!**/*.jpg' -g '!**/*.jpeg' -g '!**/*.webp' \
+  .
+```
+
+Network examples such as `192.168.1.100`, `192.168.4.1`, and `192.168.x.x` are allowed
+only when they are clearly generic examples or firmware default setup addresses. Replace
+real deployment addresses with `<camera-ip>`, `<mqtt-ip>`, `<ha-url>`, or TEST-NET examples
+such as `192.0.2.10`.
+
+### Vendored Edge Impulse sources
+
 The Edge Impulse exclusion is a blind spot, not a safe area — it hides a whole
-directory from every scan above. An export embeds Edge Impulse account metadata in
+directory from the scan above. An export embeds Edge Impulse account metadata in
 `model-parameters/model_metadata.h` and `model-parameters/model_variables.h`
 (`EI_CLASSIFIER_PROJECT_OWNER`, `EI_CLASSIFIER_PROJECT_ID`, `.project_owner`, plus
 the project name and dataset labels). The values currently committed were reviewed
@@ -59,20 +75,6 @@ project name, dataset labels or collaborator handles:
 rg -n "PROJECT_OWNER|project_owner|PROJECT_ID|project_id" \
   firmware/lib/ei-person-detection-fomo/src/model-parameters/
 ```
-
-```bash
-rg -n \
-  "(bot[0-9]+:|gsk_|sk-[A-Za-z0-9]|Bearer +[A-Za-z0-9._-]+|chat_id|api[_-]?key|token|password|secret|known_faces|events\.db|a12\.log)" \
-  -g '!**/.git/**' \
-  -g '!firmware/lib/ei-person-detection-fomo/**' \
-  -g '!**/*.png' -g '!**/*.jpg' -g '!**/*.jpeg' -g '!**/*.webp' \
-  .
-```
-
-Network examples such as `192.168.1.100`, `192.168.4.1`, and `192.168.x.x` are allowed
-only when they are clearly generic examples or firmware default setup addresses. Replace
-real deployment addresses with `<camera-ip>`, `<mqtt-ip>`, `<ha-url>`, or TEST-NET examples
-such as `192.0.2.10`.
 
 ## Must Not Be Committed
 
