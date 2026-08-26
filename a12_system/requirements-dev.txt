@@ -1,0 +1,8 @@
+# CI toolchain, pinned on purpose.
+#
+# ruff is pinned exactly: 0.16 enables rules this repo was never formatted for
+# (I001 import sorting, EXE001 shebangs, datetime-timezone checks) and would
+# turn CI red on a linter release with no code change. Bumping it is a separate,
+# deliberate commit that also does the reformatting.
+pytest>=8,<10
+ruff==0.15.20
