@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # A push dropped during an Actions outage leaves that commit unverified with
+  # nothing to re-run, since a run is only created in response to an event.
+  workflow_dispatch:
+
+jobs:
+  a12:
+    name: A12 companion (lint + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            a12_system/requirements.txt
+            a12_system/requirements-dev.txt
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # face_recognition is deliberately excluded: it needs dlib, which
+          # takes minutes to build and is optional at runtime. The tests that
+          # touch it are skipped when the import fails, exactly as on a Pi.
+          pip install -r a12_system/requirements.txt
+          pip install -r a12_system/requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Test (pytest)
+        run: pytest -q
