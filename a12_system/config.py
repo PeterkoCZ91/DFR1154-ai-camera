@@ -132,6 +132,11 @@ DEFAULT_CONFIG = {
     "flat_frame_max_reboots": 5,
     "flat_frame_healthy_required": 10,
     "flat_frame_notify_interval": 3600.0,
+    "stream_freeze_reboot_after": 5,
+    "stream_freeze_max_reboots": 3,
+    "stream_freeze_healthy_gap_seconds": 600.0,
+    "stream_freeze_reboot_cooldown": 120.0,
+    "stream_freeze_notify_interval": 3600.0,
     "camera_exposure_reset_settings": {
         "aec": 1,
         "aec2": 1,
@@ -295,6 +300,12 @@ ENV_OVERRIDES = [
     ("FLAT_FRAME_MAX_REBOOTS", "flat_frame_max_reboots", _parse_int),
     ("FLAT_FRAME_HEALTHY_REQUIRED", "flat_frame_healthy_required", _parse_int),
     ("FLAT_FRAME_NOTIFY_INTERVAL", "flat_frame_notify_interval", _parse_float),
+    # Stream-freeze watchdog (decode/send stalls distinct from flat frames)
+    ("STREAM_FREEZE_REBOOT_AFTER", "stream_freeze_reboot_after", _parse_int),
+    ("STREAM_FREEZE_MAX_REBOOTS", "stream_freeze_max_reboots", _parse_int),
+    ("STREAM_FREEZE_HEALTHY_GAP_SECONDS", "stream_freeze_healthy_gap_seconds", _parse_float),
+    ("STREAM_FREEZE_REBOOT_COOLDOWN", "stream_freeze_reboot_cooldown", _parse_float),
+    ("STREAM_FREEZE_NOTIFY_INTERVAL", "stream_freeze_notify_interval", _parse_float),
     # Face recognition
     ("FACE_RECOGNITION_ENABLED", "face_recognition.enabled", _parse_bool),
     # MQTT

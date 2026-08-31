@@ -402,6 +402,7 @@ class Application:
                             0.0,
                             stall_event_detail(camera.last_freeze_summary, health),
                         )
+                        self.pipeline.note_stream_freeze(stream_end_reason)
 
                     if shared_state.pop("reboot_camera", False):
                         # Camera-side OV3660 wedge: reconnects can't fix gray pixels
