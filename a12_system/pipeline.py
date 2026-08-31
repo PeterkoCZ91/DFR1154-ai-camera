@@ -342,6 +342,25 @@ class DetectionPipeline:
         self.flat_state = FlatEpisodeState(os.path.join(script_dir, "flat_episode_state.json"))
         self._flat_notify_interval = float(runtime_config.get("flat_frame_notify_interval", 3600))
 
+        # Stream-freeze escalation: a "Stream frozen"/"stream_ended" break
+        # already forces a reconnect (the __main__ loop redials immediately),
+        # so unlike the flat-frame ladder there is no separate reconnect rung
+        # — only whether freezes keep recurring close together for long enough
+        # to call it a storm rather than background noise. The camera's own
+        # health telemetry (send_fail_count climbing, last_errno=104,
+        # uptime_seconds never resetting) points at a wedged socket/heap state
+        # on the ESP32 itself that reconnecting cannot clear — only a device
+        # reboot does.
+        self._freeze_reboot_after = int(runtime_config.get("stream_freeze_reboot_after", 5))
+        self._freeze_max_reboots = int(runtime_config.get("stream_freeze_max_reboots", 3))
+        self._freeze_healthy_gap = float(runtime_config.get("stream_freeze_healthy_gap_seconds", 600))
+        self._freeze_action_cooldown = float(runtime_config.get("stream_freeze_reboot_cooldown", 120))
+        self._freeze_notify_interval = float(runtime_config.get("stream_freeze_notify_interval", 3600))
+        self._freeze_consecutive_count = 0
+        self._last_freeze_time = 0.0
+        self._last_freeze_action = 0.0
+        self.freeze_state = FlatEpisodeState(os.path.join(script_dir, "stream_freeze_state.json"))
+
     def _trigger_nuki_unlock(self, name: str):
         if not self.ha_url or not self.ha_token:
             logging.warning(f"{self.log_prefix} Nuki unlock skipped — no HA config")
@@ -404,6 +423,67 @@ class DetectionPipeline:
         ):
             self.notifier.send_telegram(
                 self._telegram_message("Stream recovered — frames are healthy again."),
+                bypass_cooldown=True,
+            )
+
+    def note_stream_freeze(self, reason: str) -> None:
+        """Register a "frozen"/"stream_ended" stream break; reboot the camera
+        over LAN if they keep recurring without a healthy gap between them.
+
+        Called once per break from the __main__ reconnect loop, after the
+        stream teardown already happened — so unlike the flat-frame ladder
+        this never itself tears down a live connection, it only escalates to
+        ``shared_state["reboot_camera"]`` for __main__ to act on before its
+        next ``get_stream()`` call.
+        """
+        now = time.time()
+        if now - self._last_freeze_time >= self._freeze_healthy_gap:
+            if self.freeze_state.clear() and self.freeze_state.should_notify(
+                "recovered", now, self._freeze_notify_interval
+            ):
+                self.notifier.send_telegram(
+                    self._telegram_message("Stream stable again after repeated freezes."),
+                    bypass_cooldown=True,
+                )
+            self._freeze_consecutive_count = 0
+        self._last_freeze_time = now
+        self._freeze_consecutive_count += 1
+
+        if self._freeze_consecutive_count == self._freeze_reboot_after:
+            self.freeze_state.mark_active()
+
+        action = flat_recovery_action(
+            self._freeze_consecutive_count, self._freeze_reboot_after,
+            0, self.freeze_state.reboot_count(), 0, self._freeze_max_reboots,
+            now, self._last_freeze_action, self._freeze_action_cooldown,
+        )
+        if action == "reboot":
+            reboots_used = self.freeze_state.record_reboot()
+            logging.critical(
+                f"{self.log_prefix} Stream froze {self._freeze_consecutive_count}x "
+                f"({reason}) without a healthy gap — rebooting camera over LAN "
+                f"({reboots_used}/{self._freeze_max_reboots})"
+            )
+            self.shared_state["reboot_camera"] = True
+            self._last_freeze_action = now
+            self._freeze_consecutive_count = 0
+            if self.freeze_state.should_notify("freeze_reboot", now, self._freeze_notify_interval):
+                self.notifier.send_telegram(
+                    self._telegram_message(
+                        "Camera stream keeps freezing — rebooting it over the LAN"
+                        " to recover. (rate-limited alert)"
+                    ),
+                    bypass_cooldown=True,
+                )
+        elif action == "giveup" and self.freeze_state.set_gaveup():
+            logging.critical(
+                f"{self.log_prefix} Stream freezes survived {self._freeze_max_reboots} "
+                "camera reboots — giving up, hardware needs a manual look"
+            )
+            self.notifier.send_telegram(
+                self._telegram_message(
+                    "Camera keeps freezing even after repeated reboots — needs a manual look."
+                ),
                 bypass_cooldown=True,
             )
 
