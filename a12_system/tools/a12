@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 A12_SYSTEM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_DIR="$(cd "${A12_SYSTEM_DIR}/.." && pwd)"
 A12_DATA_DIR="${A12_DATA_DIR:-/opt/a12-data}"
-COMPOSE_PROJECT="${A12_COMPOSE_PROJECT:-a12_system_v2}"
+COMPOSE_PROJECT="${A12_COMPOSE_PROJECT:-a12_system}"
 CONTAINER="${A12_CONTAINER:-a12-system-v2}"
 COMPOSE_FILE="${A12_COMPOSE_FILE:-${A12_SYSTEM_DIR}/docker-compose.yml}"
 CONFIG_ENV="${A12_DATA_DIR}/config.env"
@@ -138,6 +138,33 @@ cmd_calibrate() {
     FROM decision_audit
     WHERE timestamp >= strftime('%s', 'now') - (${days} * 86400)
     GROUP BY decision_outcome ORDER BY decisions DESC, decision_outcome;"
+
+  if ! sqlite3 "${db}" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='decision_labels';" | grep -qx 1; then
+    return 0
+  fi
+  local labeled
+  labeled="$(sqlite3 "${db}" "SELECT COUNT(*) FROM decision_labels;")"
+  echo
+  if [[ "${labeled}" == "0" ]]; then
+    echo "Ground truth: none recorded, so the counts above cannot say which"
+    echo "decisions were right. Run 'a12 review' to label the kept snapshots."
+    return 0
+  fi
+  echo "Ground truth (all verdicts, never pruned): ${labeled} labeled"
+  sqlite3 -header -column "${db}" "
+    SELECT CASE
+             WHEN candidate_confidence IS NULL THEN 'no candidate'
+             WHEN candidate_confidence < 0.55 THEN '0.00-0.54'
+             WHEN candidate_confidence < 0.65 THEN '0.55-0.64'
+             WHEN candidate_confidence < 0.85 THEN '0.65-0.84'
+             ELSE '0.85-1.00' END AS confidence_band,
+           SUM(truth = 'person') AS person,
+           SUM(truth = 'not_person') AS not_person,
+           SUM(truth = 'unsure') AS unsure,
+           CASE WHEN SUM(truth IN ('person','not_person')) = 0 THEN NULL
+                ELSE ROUND(100.0 * SUM(truth = 'person')
+                     / SUM(truth IN ('person','not_person')), 0) END AS precision_pct
+    FROM decision_labels GROUP BY confidence_band ORDER BY confidence_band;"
 }
 
 
@@ -369,6 +396,11 @@ case "${cmd}" in
     cmd_calibrate "${1:-7}"
     ;;
 
+  review)
+    shift || true
+    python3 "${A12_SYSTEM_DIR}/tools/review_decisions.py" --data-dir "${A12_DATA_DIR}" "$@"
+    ;;
+
 
   tail)
     tail -f "${A12_DATA_DIR}/a12.log"
@@ -385,7 +417,7 @@ Usage: a12 <command> [args]
 
 Environment:
   A12_DATA_DIR          Runtime data dir (default: /opt/a12-data)
-  A12_COMPOSE_PROJECT  Compose project name (default: a12_system_v2)
+  A12_COMPOSE_PROJECT  Compose project name (default: a12_system, the compose dir name)
   A12_CONTAINER        Container name (default: a12-system-v2)
 
 Commands:
@@ -398,6 +430,7 @@ Commands:
   tail             Follow the /data a12.log file
   events [N]       Query last N events from events.db (default: 20)
   calibrate [days] Aggregate local decision audit for calibration (default: 7)
+  review [args]    Attach ground truth to audited decisions (--stats, --list, --set)
   build            Build the Docker image
   rebuild          Alias for build
   up | start       Start the a12 service in detached mode

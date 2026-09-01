@@ -29,6 +29,12 @@ def retention_days(value: float, floor: float = 0.0) -> float:
     return max(floor, days)
 
 
+# A decision reached without any sensor behind it carries no independent claim
+# that something was there, so a "nobody here" verdict from it is not evidence
+# of anything. Only a sensor-triggered miss is worth an image.
+UNTRIGGERED_SOURCES = frozenset({"periodic"})
+
+
 # Outcomes that already save their own person media. A candidate copy of the
 # same frame would only duplicate the clip, and because snapshots share one
 # rate-limit slot it would also crowd out the unconfirmed candidate a second
@@ -284,6 +290,15 @@ class DetectionPipeline:
             0.0, float(runtime_config.get("candidate_snapshot_min_interval_seconds", 1.0))
         )
         self._last_candidate_snapshot = 0.0
+        self.miss_snapshot_enabled = bool(
+            runtime_config.get("miss_snapshot_enabled", True)
+        )
+        # Misses get their own limiter: sharing one with candidates would let a
+        # busy candidate stream starve the population that has no other record.
+        self.miss_snapshot_min_interval = max(
+            0.0, float(runtime_config.get("miss_snapshot_min_interval_seconds", 5.0))
+        )
+        self._last_miss_snapshot = 0.0
 
         # Async notification worker
         queue_maxsize = max(1, int(runtime_config.get("notification_queue_maxsize", 10)))
@@ -805,7 +820,8 @@ class DetectionPipeline:
             self.person_confirmation_seen_at[detection_profile] = 0.0
         if not person_candidates:
             self._log_decision_audit(
-                audit_context, 0, None, None, None, "no_person_candidate"
+                audit_context, 0, None, None, None, "no_person_candidate",
+                frame=frame,
             )
         elif not person_detections:
             outcome = (
@@ -855,8 +871,12 @@ class DetectionPipeline:
         event_score: int | None,
         decision_outcome: str,
         frame=None,
-    ) -> None:
-        """Add the final policy state to one YOLO audit record."""
+    ) -> int | None:
+        """Add the final policy state to one YOLO audit record.
+
+        Returns the audit row id so the caller can attach the media it goes on
+        to save.
+        """
         audit = dict(audit_context)
         audit.update(
             confirmation_streak=confirmation_streak,
@@ -866,14 +886,17 @@ class DetectionPipeline:
             decision_outcome=decision_outcome,
         )
         audit_id = self.db.log_decision_audit(**audit)
-        if (
-            frame is not None
-            and audit.get("candidate_label")
-            and decision_outcome not in OUTCOMES_WITH_OWN_MEDIA
-        ):
-            self._save_candidate_snapshot(
-                frame, audit_id, audit.get("candidate_confidence"), decision_outcome
-            )
+        if frame is None:
+            return audit_id
+        if audit.get("candidate_label"):
+            if decision_outcome not in OUTCOMES_WITH_OWN_MEDIA:
+                self._save_candidate_snapshot(
+                    frame, audit_id, audit.get("candidate_confidence"), decision_outcome
+                )
+        elif decision_outcome == "no_person_candidate":
+            self._save_miss_snapshot(
+                frame, audit_id, audit.get("trigger_source"))
+        return audit_id
 
     def _save_candidate_snapshot(
         self, frame, audit_id: int | None, confidence: float | None, outcome: str
@@ -904,6 +927,40 @@ class DetectionPipeline:
             return path
         except Exception as e:
             logging.warning(f"Candidate snapshot failed: {e}")
+            return None
+
+    def _save_miss_snapshot(
+        self, frame, audit_id: int | None, trigger_source: str | None
+    ) -> str | None:
+        """Keep the frame behind a sensor-triggered "nobody here" decision.
+
+        A sensor fired and YOLO found no candidate at all. That is either a real
+        miss — the failure this project cares most about — or a cat, a branch or
+        rain, and the two are indistinguishable without the image. These rows
+        carry no candidate_label, so the candidate gate above never covers them,
+        which left the largest population in the audit as the only one with no
+        evidence at all. Files live in screenshots/misses/ and age out with the
+        decision audit.
+        """
+        if not self.miss_snapshot_enabled:
+            return None
+        if not trigger_source or trigger_source in UNTRIGGERED_SOURCES:
+            return None
+        now = time.time()
+        if now - self._last_miss_snapshot < self.miss_snapshot_min_interval:
+            return None
+        try:
+            folder = os.path.join(self.screenshot_folder, "misses")
+            os.makedirs(folder, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            name = f"miss_{stamp}_a{audit_id if audit_id is not None else 'x'}.jpg"
+            path = os.path.join(folder, name)
+            if not cv2.imwrite(path, frame):
+                return None
+            self._last_miss_snapshot = now
+            return path
+        except Exception as e:
+            logging.warning(f"Miss snapshot failed: {e}")
             return None
 
     def _score_event(
@@ -1107,7 +1164,7 @@ class DetectionPipeline:
                     )
                     continue
 
-            self._log_decision_audit(
+            audit_id = self._log_decision_audit(
                 audit_context, confirmation_streak, sensor_confirmed, active_sensors, event_score,
                 "recorded_and_notified" if should_notify else "recorded_local_only",
                 frame=frame,
@@ -1163,6 +1220,8 @@ class DetectionPipeline:
             jpg_path = os.path.join(label_folder, self._media_name(label, timestamp, ".jpg"))
             cv2.imwrite(jpg_path, frame)
             self.db.log_event("media", "jpg", 0.0, jpg_path)
+            # Close the audit → media link while both are still in scope.
+            self.db.set_decision_audit_media(audit_id, jpg_path)
 
             if skip_telegram:
                 continue
@@ -1342,7 +1401,7 @@ class DetectionPipeline:
         """
         if top_folder == "person":
             return self.person_media_retention_days
-        if top_folder == "candidates":
+        if top_folder in ("candidates", "misses"):
             return retention_days(self.decision_audit_retention_days)
         return self.cleanup_max_age_days
 

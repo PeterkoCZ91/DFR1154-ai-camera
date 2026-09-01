@@ -35,7 +35,55 @@
 - [x] Animal/Bird filter (A12 System)
 - [x] Fix ESP32 GUI (Socket Starvation)
 
-## Pending
+## Recently Completed (2026-08-26)
+- [x] A12: Shared-scorer failure classes split (transport / HTTP status / malformed) with exception-class-only telemetry, latency p50/p95/max
+- [x] A12: Learning-data retention — `screenshots/person/` and `candidates/` opt out of the 2-day media sweep; a retention of `0` now means "keep forever" for files too
+- [x] A12: Candidate snapshots for decisions that save no other media; recorded outcomes skipped so clips are not duplicated
+- [x] A12: Miss snapshots (`screenshots/misses/`) for sensor-triggered decisions that found no candidate — previously the largest and only evidence-free population in the audit
+- [x] A12: `decision_labels` ground truth + `a12 review` (interactive / `--stats` / `--list` / `--set`); `a12 calibrate` reports precision per confidence band
+- [x] A12: `decision_audit.media_path` links a decision to the clip it produced
+- [x] A12: Stream stalls persisted to `events.db` and counted in the daily summary
+- [x] CI: `ruff check .` + `pytest -q` on every push, linter pinned
+- [x] Fix: `a12` wrapper addressed the wrong compose project, so every lifecycle command ran against an empty project
+
+## Next
+
+The audit now records every decision together with the knobs that applied, and
+keeps a frame for the decisions that produce no other evidence. That changes
+what is worth doing next, and in which order — several of these are only worth
+doing after the one above them.
+
+- [ ] **1. Deploy the audit changes and let them collect.** Miss snapshots, the
+  ground-truth table and the audit→media link are in the code but not on a
+  camera until the image is rebuilt (`a12 build && a12 up`). Everything below
+  needs the data they produce. `decision_audit` gains a column on first start;
+  the migration is idempotent.
+- [ ] **2. Recognise occupants instead of tuning thresholds.** In a household
+  deployment nearly every person alert is an occupant, so alerting on "a person"
+  spends the entire notification budget on expected events and buries the one
+  that matters. The whitelist suppression path already exists
+  (`face_recognition.whitelisted_names` → `skip_telegram`); what is missing is
+  running it by default and treating **unrecognised** person as the alerting
+  event rather than *person*. Ranks above threshold work: the confidence a
+  known occupant scores is not what decides whether to alert.
+- [ ] **3. Distinguish known from unknown in the labels.** `decision_labels.truth`
+  is currently `person` / `not_person` / `unsure`. Splitting `person` into known
+  and unknown makes the labels feed (2) directly instead of only feeding
+  threshold work.
+- [ ] **4. Set thresholds from labels, not from guesses.** After a fortnight of
+  review, `a12 review --stats` shows precision per confidence band and the
+  notify threshold follows from where it collapses. Not before: with no labels
+  every threshold is still a guess.
+- [ ] **5. Re-measure the notification cooldown.** It currently drops a large
+  share of already-confirmed person events, which is either the right call or a
+  silent loss depending on (2) — with occupant recognition in place, most of what
+  it suppresses should not have been an alert at all. Measure after (2), not now.
+- [ ] **6. Inference latency into `events.db`.** Scorer p50/p95/max is per-process
+  and resets on every restart, so "were the misses concentrated when inference
+  was slow?" cannot be asked historically.
+- [ ] **7. Drop or populate `audio_stats`.** Zero rows; the audio monitor is off.
+
+## Backlog
 - [ ] **Security hardening:** Disable LAB_MODE, enforce HTTPS, remove hardcoded credentials
 - [ ] **FTP/WebDAV upload:** Auto-offload recordings to NAS/server
 - [ ] **Intercom:** Bidirectional audio (browser → ESP speaker)

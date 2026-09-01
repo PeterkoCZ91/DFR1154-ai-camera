@@ -1193,10 +1193,23 @@ The full command table and multi-instance examples live in
 | Web dashboard overhaul | :white_check_mark: Done | 10 info cards + 5 toggles + 13 tools, dark theme, CZ/EN toggle |
 | A12_System v2 (Python) | :white_check_mark: Done | Modular split (15 modules), paho-mqtt v2, thread safety, persistent DB |
 
+### A12 Companion — Decision Auditing (done 2026-08)
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Decision audit + retention | :white_check_mark: Done | Every YOLO/policy decision stored with the thresholds that applied to it |
+| Learning-data retention | :white_check_mark: Done | `person/`, `candidates/` and `misses/` outlive the 2-day media sweep so old audit rows still have their images |
+| Candidate + miss snapshots | :white_check_mark: Done | Keeps the frame behind decisions that save no other media, including sensor-triggered "found nobody" |
+| Ground truth (`a12 review`) | :white_check_mark: Done | Human verdicts in `decision_labels`, never pruned; `a12 calibrate` reports precision per confidence band |
+| Scorer telemetry | :white_check_mark: Done | Transport / HTTP-status / malformed failures counted apart, latency p50/p95/max, no payloads or URLs retained |
+
 ### Future Features
 
 | Feature | Status | Description |
 |---------|--------|-------------|
+| Occupant-aware alerting | :bulb: Planned | Treat an **unrecognised** person as the alerting event rather than any person. In a household deployment nearly every person alert is an occupant, so alerting on "person" spends the whole notification budget on expected events. The whitelist suppression path already exists; running it by default does not. |
+| Known/unknown in ground truth | :bulb: Planned | Split the `person` verdict so labels feed occupant recognition, not only threshold tuning |
+| Inference latency in `events.db` | :bulb: Planned | Scorer latency is per-process today and resets on restart, so slow-inference periods cannot be correlated with misses after the fact |
 | ESP-DL YOLOv11n pedestrian | :warning: Attempted, blocked | PlatformIO `custom_component_add` is a no-op under `framework = arduino`. Needs hybrid `arduino, espidf`. See `firmware/MIGRATION_ESP_DL.md`. Effort: 5-8 days. |
 | Lux-gate for FOMO | :bulb: Planned | Skip FOMO inference when ambient lux is below threshold — camera already reads LTR-308 every frame. Reduces false positives at night without time-based active hours. |
 | Dedicated YOLO stream endpoint | :bulb: Planned | `/yolo-stream` serving SVGA/VGA MJPEG for A12, reducing A12 CPU decode overhead vs. full-res stream. |

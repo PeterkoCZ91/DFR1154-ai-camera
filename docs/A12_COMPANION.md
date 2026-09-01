@@ -169,6 +169,7 @@ sweep:
 | --- | --- | --- |
 | `person/` | `PERSON_MEDIA_RETENTION_DAYS` (default 30, clamped up to `MEDIA_RETENTION_DAYS`) | Confirmed person clips outlive the audit rows that reference them |
 | `candidates/` | follows `DECISION_AUDIT_RETENTION_DAYS` | The frame behind a person-candidate audit row |
+| `misses/` | follows `DECISION_AUDIT_RETENTION_DAYS` | The frame behind a sensor-triggered "nobody here" row |
 
 `candidates/` exists for the decisions that save nothing else: a rejected or
 still-unconfirmed candidate leaves no clip, so without the snapshot there is no
@@ -177,8 +178,41 @@ that already write their own media (`recorded_and_notified`, `recorded_local_onl
 are skipped so the clip is not duplicated. `CANDIDATE_SNAPSHOT_MIN_INTERVAL_SECONDS`
 rate-limits the folder; at the default 1.0 it measures roughly 11 MB/day.
 
+`misses/` covers the largest and previously blindest population in the audit: a
+sensor fired and YOLO found no candidate at all. That decision is either a real
+miss — the failure this project cares most about — or a cat, a branch or rain,
+and nothing but the frame can tell the two apart. Those rows carry no
+`candidate_label`, so the candidate rule above never applied to them. Periodic
+checks are excluded: with no sensor behind it, "nobody here" is not a claim that
+anybody was there. `MISS_SNAPSHOT_MIN_INTERVAL_SECONDS` is a separate limiter
+from the candidate one on purpose, so a busy candidate stream cannot starve it.
+See `docs/DATA_PRIVACY.md` — this folder keeps frames of people the system never
+alerted on.
+
 Setting a retention to `0` means "keep indefinitely" everywhere, including the
 files — a `0` never sweeps a folder empty.
+
+### Ground truth
+
+The audit records every knob that applied to a decision, which is enough to
+replay what a different threshold would have done — but only once something says
+whether the frame actually held a person. `a12 review` is that something:
+
+```bash
+a12 review              # interactive pass: [p] person [n] not a person [u] unsure
+a12 review --stats      # coverage plus precision per confidence band
+a12 review --list       # unlabeled snapshot paths, for an external viewer
+a12 review --set 8697 person
+```
+
+Verdicts land in `decision_labels`, keyed by the audit row id that each snapshot
+filename carries. The table denormalises the confidence and outcome it describes
+and is **never pruned**: audit rows expire after
+`DECISION_AUDIT_RETENTION_DAYS`, but a human-checked label is the only thing in
+this database that cannot be recomputed. `a12 calibrate` reports precision per
+band once labels exist, and says so plainly while they do not.
+
+`--stats` and `--list` need no display; interactive review opens a cv2 window.
 
 **Environment:** The script uses `A12_DATA_DIR` (default `/opt/a12-data`) for the data
 volume path. For multiple cameras, also set unique `A12_COMPOSE_PROJECT`,
