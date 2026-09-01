@@ -154,6 +154,10 @@ DEFAULT_CONFIG = {
     "person_media_retention_days": 30,
     "candidate_snapshot_enabled": True,
     "candidate_snapshot_min_interval_seconds": 1.0,
+    # A sensor fired and YOLO found nobody: the miss population, and the only
+    # one that used to have no image at all.
+    "miss_snapshot_enabled": True,
+    "miss_snapshot_min_interval_seconds": 5.0,
     "media_cleanup_interval_seconds": 3600,
     "notification_queue_maxsize": 10,
     "ir_control": {
@@ -344,6 +348,8 @@ ENV_OVERRIDES = [
     ("PERSON_MEDIA_RETENTION_DAYS", "person_media_retention_days", _parse_float),
     ("CANDIDATE_SNAPSHOT_ENABLED", "candidate_snapshot_enabled", _parse_bool),
     ("CANDIDATE_SNAPSHOT_MIN_INTERVAL_SECONDS", "candidate_snapshot_min_interval_seconds", _parse_float),
+    ("MISS_SNAPSHOT_ENABLED", "miss_snapshot_enabled", _parse_bool),
+    ("MISS_SNAPSHOT_MIN_INTERVAL_SECONDS", "miss_snapshot_min_interval_seconds", _parse_float),
     ("MEDIA_CLEANUP_INTERVAL_SECONDS", "media_cleanup_interval_seconds", _parse_int),
     ("NOTIFICATION_QUEUE_MAXSIZE", "notification_queue_maxsize", _parse_int),
     # Home Assistant

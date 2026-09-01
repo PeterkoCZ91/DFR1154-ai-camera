@@ -57,8 +57,32 @@ class EventDB:
             event_score INTEGER,
             notify_threshold INTEGER NOT NULL,
             local_record_threshold INTEGER NOT NULL,
-            decision_outcome TEXT NOT NULL
+            decision_outcome TEXT NOT NULL,
+            media_path TEXT
         )""")
+
+        # Ground truth for the decisions above. Deliberately denormalised and
+        # deliberately NOT pruned: audit rows expire after
+        # DECISION_AUDIT_RETENTION_DAYS, but a human-checked label is the only
+        # thing here that cannot be recomputed, so it has to outlive its row.
+        c.execute("""CREATE TABLE IF NOT EXISTS decision_labels (
+            audit_id INTEGER PRIMARY KEY,
+            labeled_at REAL NOT NULL,
+            datetime TEXT NOT NULL,
+            truth TEXT NOT NULL,
+            candidate_confidence REAL,
+            decision_outcome TEXT,
+            trigger_source TEXT,
+            image_path TEXT,
+            note TEXT
+        )""")
+
+        # media_path was added after the first deployments; ALTER is the only
+        # way to reach an existing decision_audit, and it must not fail twice.
+        existing = {row[1] for row in c.execute("PRAGMA table_info(decision_audit)")}
+        if "media_path" not in existing:
+            c.execute("ALTER TABLE decision_audit ADD COLUMN media_path TEXT")
+            logging.info("decision_audit: added media_path column")
 
         # Indexes for common queries
         c.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
@@ -66,6 +90,7 @@ class EventDB:
         c.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, timestamp)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_decision_audit_timestamp ON decision_audit(timestamp)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_decision_audit_outcome ON decision_audit(decision_outcome)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_decision_labels_truth ON decision_labels(truth)")
 
         self.conn.commit()
 
@@ -133,6 +158,98 @@ class EventDB:
             except Exception as e:
                 logging.error(f"Failed to log decision audit: {e}")
                 return None
+
+    def set_decision_audit_media(self, audit_id: int | None, media_path: str) -> None:
+        """Attach the saved clip to the decision that produced it.
+
+        Without this the only link between a decision and its media is a
+        timestamp across two tables, which is guesswork the moment two events
+        land in the same second.
+        """
+        if audit_id is None or not media_path:
+            return
+        with self.lock:
+            try:
+                self.conn.execute(
+                    "UPDATE decision_audit SET media_path = ? WHERE id = ?",
+                    (media_path, audit_id),
+                )
+                self.conn.commit()
+            except Exception as e:
+                logging.error(f"Failed to attach media to decision audit: {e}")
+
+    def save_decision_label(
+        self,
+        audit_id: int,
+        truth: str,
+        candidate_confidence: float | None = None,
+        decision_outcome: str | None = None,
+        trigger_source: str | None = None,
+        image_path: str | None = None,
+        note: str | None = None,
+    ) -> bool:
+        """Record one human verdict about a decision, replacing any earlier one."""
+        with self.lock:
+            try:
+                now = time.time()
+                self.conn.execute(
+                    """
+                    INSERT INTO decision_labels (
+                        audit_id, labeled_at, datetime, truth, candidate_confidence,
+                        decision_outcome, trigger_source, image_path, note
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(audit_id) DO UPDATE SET
+                        labeled_at=excluded.labeled_at, datetime=excluded.datetime,
+                        truth=excluded.truth, note=excluded.note
+                    """,
+                    (
+                        audit_id, now,
+                        datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
+                        truth, candidate_confidence, decision_outcome,
+                        trigger_source, image_path, note,
+                    ),
+                )
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logging.error(f"Failed to save decision label: {e}")
+                return False
+
+    def labeled_audit_ids(self) -> set[int]:
+        """Audit ids that already carry a verdict, so review can skip them."""
+        with self.lock:
+            try:
+                return {row[0] for row in self.conn.execute(
+                    "SELECT audit_id FROM decision_labels")}
+            except Exception as e:
+                logging.error(f"Failed to read decision labels: {e}")
+                return set()
+
+    def decision_audit_rows(self, audit_ids) -> dict:
+        """Fetch the audit context for the given ids, keyed by id."""
+        ids = [int(i) for i in audit_ids]
+        if not ids:
+            return {}
+        out = {}
+        with self.lock:
+            try:
+                for start in range(0, len(ids), 500):
+                    chunk = ids[start:start + 500]
+                    marks = ",".join("?" * len(chunk))
+                    for row in self.conn.execute(
+                        f"""SELECT id, candidate_confidence, decision_outcome,
+                                   trigger_source, candidate_label
+                            FROM decision_audit WHERE id IN ({marks})""", chunk
+                    ):
+                        out[row[0]] = {
+                            "candidate_confidence": row[1],
+                            "decision_outcome": row[2],
+                            "trigger_source": row[3],
+                            "candidate_label": row[4],
+                        }
+            except Exception as e:
+                logging.error(f"Failed to read decision audit rows: {e}")
+        return out
 
     def prune_decision_audit(self, max_age_days: float, batch_size: int = 1000) -> int:
         """Delete expired audit rows and checkpoint WAL without blocking inference."""

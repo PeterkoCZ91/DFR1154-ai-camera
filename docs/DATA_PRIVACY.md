@@ -97,6 +97,18 @@ discarded or stored locally, and only Home Assistant on your LAN sees the result
 - Metadata in `events.db` (timestamps, detection labels, media paths) does not contain
   faces, but it does reveal **activity patterns** for a location. Treat the data directory
   as sensitive and keep it off shared or public storage.
+- **Learning data keeps imagery longer than the clip sweep, on purpose.**
+  `screenshots/candidates/` and `screenshots/misses/` hold single frames behind
+  audited decisions so a threshold can later be judged against what the camera
+  actually saw. They follow `DECISION_AUDIT_RETENTION_DAYS` (30 by default), not
+  `MEDIA_RETENTION_DAYS` (2). `misses/` is the one to be deliberate about: it
+  stores frames where a sensor fired and the model recognised **nobody**, so it
+  collects passers-by the system never alerted on. Set
+  `MISS_SNAPSHOT_ENABLED=false` (or shorten the audit retention) if you do not
+  want that.
+- `decision_labels` in `events.db` holds human verdicts about those frames and is
+  **never pruned** — it is the only table here that cannot be recomputed. It stores
+  a verdict, a confidence and an image path, no imagery and no identities.
 
 ---
 
