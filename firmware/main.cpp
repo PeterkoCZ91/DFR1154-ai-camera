@@ -218,33 +218,57 @@ const char* getCameraProfileString() {
 }
 
 void updateCameraProfile() {
-    float lux = 0.0f;
-    if (!readAmbientLight(&lux)) return;
-
-    // Skip first call when LTR-308 hasn't done a real read yet (lux still 0.0).
-    // initCamera() already applied DUSK defaults; captureTask will call us again
-    // after the first readAmbientLightSCCBSafe() with a real value.
-    if (lux == 0.0f) return;
-
-    // Hysteresis thresholds (lux)
-    // Day:   >100  (drop to dusk at <60)
-    // Dusk:  15-100 (drop to night at <15, rise to day at >100)
-    // Night: <15   (rise to dusk at >20 — 5 lux gap prevents oscillation)
-    // Note: NIGHT (AGC-off, exposure-based) handles low-lux scenes with bright spots better
-    // than DUSK (AGC-on). Center-heavy AEC zone weights cause DUSK to underexpose dim scenes
-    // with a bright window or lamp in frame. Raised threshold 12→15 to catch these earlier.
     CameraProfile target = currentProfile;
-    switch (currentProfile) {
-        case PROFILE_DAY:
-            if (lux < 60.0f) target = PROFILE_DUSK;
-            break;
-        case PROFILE_DUSK:
-            if (lux > 100.0f) target = PROFILE_DAY;
-            else if (lux < 15.0f) target = PROFILE_NIGHT;
-            break;
-        case PROFILE_NIGHT:
-            if (lux > 20.0f) target = PROFILE_DUSK;
-            break;
+    float lux = -1.0f;  // sentinel: no real reading in time-based mode
+
+    // Some enclosures seal the LTR-308 behind opaque plastic (only the lens
+    // gets a cutout), so it reads near-zero lux regardless of real light and
+    // permanently wedges the profile in NIGHT (AGC forced off) even in broad
+    // daylight. Reuse the IR LED's existing time_based/night_start_hour/
+    // night_end_hour schedule (already exposed via POST /ir-control, no new
+    // config surface) as a clock-driven alternative that does not depend on
+    // the sensor at all. Only two states here, not three: without a real lux
+    // reading there is no signal to tell DAY (>100 lux) apart from DUSK.
+    IRConfig irConfig = getIRConfig();
+    if (irConfig.time_based) {
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo)) {
+            int currentHour = timeinfo.tm_hour;
+            bool isNight = (irConfig.night_start_hour > irConfig.night_end_hour)
+                ? (currentHour >= irConfig.night_start_hour || currentHour < irConfig.night_end_hour)
+                : (currentHour >= irConfig.night_start_hour && currentHour < irConfig.night_end_hour);
+            target = isNight ? PROFILE_NIGHT : PROFILE_DUSK;
+        }
+        // NTP not synced yet: keep whatever profile is already active rather
+        // than guess.
+    } else {
+        lux = 0.0f;
+        if (!readAmbientLight(&lux)) return;
+
+        // Skip first call when LTR-308 hasn't done a real read yet (lux still 0.0).
+        // initCamera() already applied DUSK defaults; captureTask will call us again
+        // after the first readAmbientLightSCCBSafe() with a real value.
+        if (lux == 0.0f) return;
+
+        // Hysteresis thresholds (lux)
+        // Day:   >100  (drop to dusk at <60)
+        // Dusk:  15-100 (drop to night at <15, rise to day at >100)
+        // Night: <15   (rise to dusk at >20 — 5 lux gap prevents oscillation)
+        // Note: NIGHT (AGC-off, exposure-based) handles low-lux scenes with bright spots better
+        // than DUSK (AGC-on). Center-heavy AEC zone weights cause DUSK to underexpose dim scenes
+        // with a bright window or lamp in frame. Raised threshold 12→15 to catch these earlier.
+        switch (currentProfile) {
+            case PROFILE_DAY:
+                if (lux < 60.0f) target = PROFILE_DUSK;
+                break;
+            case PROFILE_DUSK:
+                if (lux > 100.0f) target = PROFILE_DAY;
+                else if (lux < 15.0f) target = PROFILE_NIGHT;
+                break;
+            case PROFILE_NIGHT:
+                if (lux > 20.0f) target = PROFILE_DUSK;
+                break;
+        }
     }
 
     if (target == currentProfile) return;
@@ -277,19 +301,26 @@ void updateCameraProfile() {
             s->set_contrast(s, 1);         // +1 = boost midtone separation
             s->set_saturation(s, -1);      // Reduce color noise
             s->set_sharpness(s, 0);
-            // Adaptive denoise: stronger at low lux end of DUSK range (5-250 lux)
+            // Adaptive denoise: stronger at low lux end of DUSK range (5-250 lux).
+            // No real reading in time-based mode (lux<0 sentinel): pick the
+            // middle of the range rather than assume either extreme.
             {
-                int denoise_level = (lux > 150.0f) ? 2 : (lux >= 50.0f) ? 3 : 4;
+                int denoise_level = (lux < 0.0f) ? 3 : (lux > 150.0f) ? 2 : (lux >= 50.0f) ? 3 : 4;
                 s->set_denoise(s, denoise_level);
+                s->set_ae_level(s, 5);         // +5 = max AEC target (105/255 = 41%)
+                s->set_exposure_ctrl(s, 1);    // AEC auto
+                s->set_aec2(s, 1);             // DSP exposure ON (ESPHome recommended)
+                s->set_gain_ctrl(s, 1);        // AGC auto
+                s->set_gainceiling(s, (gainceiling_t)6);  // 128x
+                s->set_lenc(s, 1);             // Lens correction ON
+                if (lux < 0.0f) {
+                    Serial.printf("📷 Profile: DUSK (time-based) — brightness=3, ae_level=5, denoise=%d, gain 128x\n",
+                                  denoise_level);
+                } else {
+                    Serial.printf("📷 Profile: DUSK (%.0f lux) — brightness=3, ae_level=5, denoise=%d, gain 128x\n",
+                                  lux, denoise_level);
+                }
             }
-            s->set_ae_level(s, 5);         // +5 = max AEC target (105/255 = 41%)
-            s->set_exposure_ctrl(s, 1);    // AEC auto
-            s->set_aec2(s, 1);             // DSP exposure ON (ESPHome recommended)
-            s->set_gain_ctrl(s, 1);        // AGC auto
-            s->set_gainceiling(s, (gainceiling_t)6);  // 128x
-            s->set_lenc(s, 1);             // Lens correction ON
-            Serial.printf("📷 Profile: DUSK (%.0f lux) — brightness=3, ae_level=5, denoise=%d, gain 128x\n",
-                          lux, (lux > 150.0f) ? 2 : (lux >= 50.0f) ? 3 : 4);
             break;
         case PROFILE_NIGHT:
             // Very low light: max everything, AGC OFF (Issue #203 key finding)
@@ -305,7 +336,11 @@ void updateCameraProfile() {
             s->set_agc_gain(s, 0);         // Manual gain = 0
             s->set_gainceiling(s, (gainceiling_t)6);  // 128x ceiling
             s->set_lenc(s, 0);             // Lens correction OFF (dark current)
-            Serial.printf("📷 Profile: NIGHT (%.0f lux) — brightness=3, ae_level=5, AGC OFF\n", lux);
+            if (lux < 0.0f) {
+                Serial.println("📷 Profile: NIGHT (time-based) — brightness=3, ae_level=5, AGC OFF");
+            } else {
+                Serial.printf("📷 Profile: NIGHT (%.0f lux) — brightness=3, ae_level=5, AGC OFF\n", lux);
+            }
             break;
     }
 

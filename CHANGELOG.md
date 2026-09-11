@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased] - 2026-09-11
+
+### Fixed (Firmware — day/night profile blind to a sealed ambient-light sensor)
+
+- **`updateCameraProfile()` can now switch DAY/DUSK/NIGHT by clock instead of by lux.** An enclosure with a single cutout for the lens seals the LTR-308 behind opaque plastic; it then reads near-zero lux permanently regardless of real room lighting, which locks the profile in `NIGHT` (AGC forced off, heavy denoise) even in broad daylight and produces a flat, washed-out image. This was mistaken for a hung/wedged sensor for most of a debugging session — a soft `/reboot`, a full physical power-cycle, and forcing the IR LED off were all tried first and none of them changed the image, because none of them address a sensor that has no light path at all. Forcing the profile to `DUSK` (full-auto AEC/AGC) immediately produced a sharp image, which is what actually pointed at the ambient-light reading rather than the sensor. `updateCameraProfile()` now reuses the IR LED's existing `time_based` / `night_start_hour` / `night_end_hour` schedule (`POST /ir-control`, no new config surface) as a clock-driven alternative to lux — DUSK during the day window, NIGHT during the night window — for exactly this case. Lux-based switching (three profiles, including `DAY`) remains the default when `time_based` is off.
+- Lesson for next time this comes up: check `GET /status` → `camera_profile` and the LTR-308's `ambient_light_lux` before chasing sensor/hardware-fault theories. A near-zero lux reading in a lit room, on a board that streams a sharp image once the profile is forced away from `NIGHT`, points at the sensor's light path (or the enclosure), not the camera.
+
 ## [Unreleased] - 2026-07-11
 
 ### Added (Firmware — LAN reboot endpoint, v3.12.49)
