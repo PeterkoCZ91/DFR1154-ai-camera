@@ -3,6 +3,7 @@
 import logging
 from urllib.parse import urlsplit
 import queue
+import re
 import threading
 import time
 
@@ -287,7 +288,7 @@ class Camera:
         """Read frames from MJPEG stream and call callback for each frame.
 
         Returns why the stream loop ended: "frozen" (no decoded frame for
-        freeze_timeout), "forced_reconnect" (flat-frame watchdog),
+        freeze_timeout), "forced_reconnect" (requested by caller),
         "stream_ended" (drain/decode thread died — camera closed or errored)
         or "interrupted".
         """
@@ -336,15 +337,15 @@ class Camera:
                     telemetry["bytes_total"] += len(chunk)
                     if len(buffer) > 2_000_000:
                         logging.warning(f"{self.log_prefix} MJPEG buffer overflow; dropping stale bytes")
-                        buffer = buffer[-200_000:]
+                        buffer = buffer[-_PART_HEADER_LOOKBEHIND:]
 
                     while True:
                         a = buffer.find(b"\xff\xd8")
                         if a == -1:
-                            # No SOI in sight; keep only a tail in case one is split
-                            # across the chunk boundary.
-                            if len(buffer) > 4:
-                                buffer = buffer[-4:]
+                            # Headers and SOI can both span network chunks.
+                            # Keep the full bounded header window until SOI arrives.
+                            if len(buffer) > _PART_HEADER_LOOKBEHIND:
+                                buffer = buffer[-_PART_HEADER_LOOKBEHIND:]
                             break
 
                         # Prefer the part's Content-Length over hunting for EOI.
@@ -354,9 +355,29 @@ class Camera:
                         # mangled result — which then feeds the flat/dark watchdog
                         # and can trigger a spurious camera reboot.
                         declared = _part_content_length(buffer, a)
+                        # A new multipart header before the expected payload end
+                        # means the previous send was cut short. Resynchronise at
+                        # that header, preserving the next part's Content-Length.
+                        boundary_match = re.search(
+                            rb"\r\n--[^\r\n]{1,200}\r\n(?:Content-Type|Content-Length):",
+                            buffer[a + 2:], re.IGNORECASE,
+                        )
+                        next_part = (
+                            a + 2 + boundary_match.start() if boundary_match else -1
+                        )
+                        eoi = buffer.find(b"\xff\xd9", a + 2)
+                        if next_part != -1 and (
+                            (declared is not None and next_part < a + declared)
+                            or (declared is None and (eoi == -1 or next_part < eoi))
+                        ):
+                            truncated_frames += 1
+                            telemetry["truncated_total"] = truncated_frames
+                            buffer = buffer[next_part + 2:]
+                            continue
                         if declared is not None:
                             if len(buffer) - a < declared:
-                                buffer = buffer[a:]   # wait for the rest
+                                # Do not discard the headers while waiting: doing
+                                # so loses Content-Length on the next iteration.
                                 break
                             jpg = buffer[a : a + declared]
                             buffer = buffer[a + declared :]
@@ -372,6 +393,12 @@ class Camera:
 
                         # No usable Content-Length: fall back to marker scanning.
                         b = buffer.find(b"\xff\xd9", a + 2)
+                        next_soi = buffer.find(b"\xff\xd8", a + 2)
+                        if next_soi != -1 and (b == -1 or next_soi < b):
+                            truncated_frames += 1
+                            telemetry["truncated_total"] = truncated_frames
+                            buffer = buffer[max(a + 2, next_soi - _PART_HEADER_LOOKBEHIND):]
+                            continue
                         if b == -1:
                             if a > 0:
                                 buffer = buffer[a:]
@@ -455,7 +482,7 @@ class Camera:
         drain.start()
         decoder.start()
 
-        last_frame_time = time.time()
+        last_frame_time = time.monotonic()
         # Telemetry baselines at the last delivered frame — the freeze log
         # reports deltas over the stall window, which is what localizes it:
         # bytes=0 → camera went silent; bytes>0 raw=0 → unparseable stream;
@@ -485,7 +512,7 @@ class Camera:
             )
             logging.warning(
                 f"{self.log_prefix} Stream frozen "
-                f"(no decoded frame for {now - last_frame_time:.1f}s): "
+                f"(no decoded frame for {time.monotonic() - last_frame_time:.1f}s): "
                 f"window bytes={bytes_w} raw={raw_w} truncated={truncated_w} "
                 f"decode_errors={decode_err_w} last_raw_frame={last_raw_age} "
                 f"likely={likely}. Reconnecting..."
@@ -500,20 +527,25 @@ class Camera:
                     )
                     reason = "forced_reconnect"
                     break
-                if time.time() - last_frame_time > freeze_timeout:
-                    log_freeze()
-                    reason = "frozen"
-                    break
-
                 try:
-                    frame = frame_queue.get(timeout=1.0)
-                    last_frame_time = time.time()
-                    window_base = dict(telemetry)
-                    callback(frame)
+                    # Always consume a ready frame before declaring a stall.
+                    # Processing can take longer than the stream timeout while
+                    # the drain and decoder continue receiving healthy frames.
+                    remaining = freeze_timeout - (time.monotonic() - last_frame_time)
+                    frame = frame_queue.get(timeout=max(0.001, min(1.0, remaining)))
                 except queue.Empty:
                     if not drain.is_alive() or not decoder.is_alive():
                         break
+                    if time.monotonic() - last_frame_time > freeze_timeout:
+                        log_freeze()
+                        reason = "frozen"
+                        break
                     continue
+                callback(frame)
+                # The watchdog measures waiting for a frame, excluding work
+                # performed by our own callback (inference, disk, notifications).
+                last_frame_time = time.monotonic()
+                window_base = dict(telemetry)
         except KeyboardInterrupt:
             reason = "interrupted"
         finally:

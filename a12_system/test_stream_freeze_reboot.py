@@ -54,6 +54,8 @@ def _pipeline(tmp_path, clock, **overrides):
     p._freeze_notify_interval = overrides.get("notify_interval", 0.0)
     p._freeze_consecutive_count = 0
     p._last_freeze_time = 0.0
+    p._freeze_healthy_frames = 0
+    p._flat_healthy_required = 3
     p._last_freeze_action = 0.0
     return p
 
@@ -100,7 +102,7 @@ def test_reboot_budget_exhausted_gives_up(tmp_path, monkeypatch):
     assert any("manual look" in m.lower() for m in p.notifier.sent)
 
 
-def test_healthy_gap_resets_episode_and_notifies_recovery(tmp_path, monkeypatch):
+def test_quiet_gap_does_not_prove_recovery(tmp_path, monkeypatch):
     clock = _Clock(1000.0)
     monkeypatch.setattr("a12_system.pipeline.time.time", clock.time)
     p = _pipeline(tmp_path, clock, reboot_after=2, healthy_gap=600.0, cooldown=0.0, notify_interval=0.0)
@@ -113,4 +115,73 @@ def test_healthy_gap_resets_episode_and_notifies_recovery(tmp_path, monkeypatch)
     clock.now += 999.0
     p.note_stream_freeze("stream_ended")
     assert p._freeze_consecutive_count == 1
-    assert any("stable again" in m.lower() for m in p.notifier.sent)
+    assert not p.notifier.sent
+    assert p.freeze_state.reboot_count() == 1
+    assert p.freeze_state.episode_active()
+
+
+def test_only_sustained_healthy_frames_restore_budget(tmp_path):
+    p = _pipeline(tmp_path, _Clock())
+    p.freeze_state.mark_active()
+    p.freeze_state.record_reboot()
+    for now in range(1000, 1020):
+        p._note_stream_frame_health(False, now)
+    assert p.freeze_state.reboot_count() == 1
+    assert not p.notifier.sent
+    p._note_stream_frame_health(True, 1021)
+    p._note_stream_frame_health(False, 1022)
+    p._note_stream_frame_health(True, 1023)
+    p._note_stream_frame_health(True, 1024)
+    assert p.freeze_state.reboot_count() == 1
+    p._note_stream_frame_health(True, 1025)
+    assert p.freeze_state.reboot_count() == 0
+    assert len(p.notifier.sent) == 1
+
+
+def test_uniform_night_frames_never_command_recovery(tmp_path, monkeypatch):
+    import queue
+    from unittest.mock import Mock
+
+    import numpy as np
+    import pytest
+
+    clock = _Clock()
+    monkeypatch.setattr("a12_system.pipeline.time.time", clock.time)
+    p = _pipeline(tmp_path, clock)
+    p.running = True
+    p.frame_count = 0
+    p.last_heartbeat = 0
+    p.heartbeat_interval = 30
+    p.frame_buffer = []
+    p.notification_queue = queue.Queue()
+    p.status_monitor = None  # no lux telemetry must not imply sensor failure
+    p.mqtt_client = Mock()
+    p._dark_frame_threshold = 30
+    p._flat_frame_std_threshold = 1
+    p._dark_consecutive_count = 0
+    p._dark_consecutive_required = 1
+    p._last_exposure_reset = 0
+    p._flat_consecutive_count = 0
+    p._flat_nonflat_count = 0
+    p._flat_reconnect_strikes = 5
+    p._flat_notify_interval = 3600
+    p.flat_state = FlatEpisodeState(str(tmp_path / "flat.json"))
+    p.runtime_config = Mock()
+    p.runtime_config.get.return_value = 50
+
+    class EndOfWatchdog(Exception):
+        pass
+
+    # Stop at the motion boundary, after the real heartbeat/watchdog code ran.
+    p.detector = Mock()
+    p.detector.detect_motion.side_effect = EndOfWatchdog
+    for level in (0, 40, 65):
+        frame = np.full((120, 160, 3), level, dtype=np.uint8)
+        for _ in range(120):
+            clock.now += 31
+            with pytest.raises(EndOfWatchdog):
+                p.process_frame(frame)
+            assert not p.shared_state.get("reboot_camera")
+            assert not p.shared_state.get("force_stream_reconnect")
+    assert p.flat_state.reboot_count() == 0
+    assert not any("hardware" in m or "hung" in m for m in p.notifier.sent)

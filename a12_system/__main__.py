@@ -252,27 +252,8 @@ class Application:
         else:
             logging.info(f"{log_prefix} HA Monitor disabled (no token)")
 
-        # Exposure reset callback — triggered by brightness watchdog when AEC freezes
-        exposure_reset_settings = self.runtime_config.get("camera_exposure_reset_settings") or {
-            "aec": 1,
-            "aec2": 1,
-            "ae_level": 5,
-            "agc": 1,
-            "gainceiling": 6,
-            "brightness": 3,
-            "contrast": 1,
-            "denoise": 4,
-        }
-
-        def _camera_exposure_reset_silent():
-            camera.set_camera_settings(exposure_reset_settings)
-
-        def _camera_exposure_reset():
-            _camera_exposure_reset_silent()
-            notifier.send_telegram(
-                f"{camera_label}: Camera exposure auto-reset (AEC freeze detected)",
-                bypass_cooldown=True,
-            )
+        # Exposure is owned by the selected day/night profile. Reconnecting
+        # transport is not evidence of an exposure fault and must not rewrite it.
 
         # Detection pipeline
         self.pipeline = DetectionPipeline(
@@ -288,7 +269,6 @@ class Application:
             shared_state=shared_state,
             status_monitor=self.status_monitor,
             script_dir=DATA_DIR,
-            camera_reset_fn=_camera_exposure_reset_silent,
         )
 
         # Initial camera config
@@ -303,7 +283,7 @@ class Application:
         # suppress the message.
         startup_msg = _startup_message(config, detector)
         if self.pipeline.flat_state.episode_active():
-            startup_msg += "\nNote: flat-frame episode still active (camera may be wedged)."
+            startup_msg += "\nNote: low-detail image episode still active (low light is possible)."
         notifier.send_telegram(startup_msg, bypass_cooldown=True)
 
         idle_decode_fps = max(1, int(self.runtime_config.get("stream_idle_decode_fps", 2)))
@@ -375,13 +355,6 @@ class Application:
                         stuck_notified = False
                         shared_state["send_recovery_snapshot"] = True
 
-                    # Kick AEC shortly after every (re)connect so the OV3660 doesn't
-                    # stay frozen at near-zero exposure. The pipeline brightness
-                    # watchdog also covers this, but it is rate-limited to one reset
-                    # per 300s — up to 5 minutes of near-black frames (blind
-                    # detection) if its window was just consumed.
-                    threading.Timer(5.0, _camera_exposure_reset_silent).start()
-
                     consecutive_failures = 0
                     stream_end_reason = camera.process_stream(
                         stream_response,
@@ -390,25 +363,10 @@ class Application:
                         reconnect_requested=_stream_reconnect_requested,
                     )
 
-                    if stream_end_reason in ("frozen", "stream_ended"):
-                        # Camera-side view of the stall we just hit: did the
-                        # camera drop us (send_fail/errno) and how starved is it?
-                        health = camera.log_health_snapshot(stream_end_reason)
-                        # Persist the stall: docker logs rotate (and have been
-                        # lost to corruption), the events DB keeps statistics.
-                        self.pipeline.db.log_event(
-                            "stream_stall",
-                            stream_end_reason,
-                            0.0,
-                            stall_event_detail(camera.last_freeze_summary, health),
-                        )
-                        self.pipeline.note_stream_freeze(stream_end_reason)
+                    self._record_stream_break(camera, stream_end_reason, reboot_grace_until)
 
                     if shared_state.pop("reboot_camera", False):
-                        # Camera-side OV3660 wedge: reconnects can't fix gray pixels
-                        # at the source. Reboot the camera over the LAN — a soft
-                        # ESP.restart clears it (verified 2026-07-11). The next
-                        # get_stream() reconnects to the fresh boot.
+                        # The transport watchdog requested a bounded recovery attempt.
                         camera.reboot()
                         # The camera drops offline for ~15-25s now. That outage is
                         # self-inflicted: don't let the loop below count it toward
@@ -443,6 +401,24 @@ class Application:
                 time.sleep(5)
 
         self._cleanup()
+
+    def _record_stream_break(self, camera, reason: str, reboot_grace_until: float) -> None:
+        """Record real transport breaks, excluding the expected reboot outage."""
+        if reason not in ("frozen", "stream_ended"):
+            return
+        # Decide before the health request: slow diagnostics must not turn an
+        # expected break into a new failure by crossing the grace deadline.
+        expected = time.time() < reboot_grace_until
+        health = camera.log_health_snapshot(reason)
+        self.pipeline.db.log_event(
+            "stream_stall", reason, 0.0,
+            ("expected_after_reboot " if expected else "")
+            + stall_event_detail(camera.last_freeze_summary, health),
+        )
+        if expected:
+            logging.info("Stream ended during camera reboot grace; escalation skipped")
+            return
+        self.pipeline.note_stream_freeze(reason)
 
     def _cleanup(self) -> None:
         # Idempotent: run() calls this on the normal path and main() calls it again
