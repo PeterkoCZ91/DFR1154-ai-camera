@@ -145,16 +145,24 @@ a time.
 
 ### Tier 3 — observability, once Tier 1 is collecting
 
-- [x] **Stream stalls: detection window fixed 2026-09-12.** The socket read
-  timeout (30 s) was longer than the freeze heuristic (20 s), so it could never
-  fire first and every transport break was recorded as an image-level `frozen`
-  event ~23 s late. Now 2 s / 3 s, both configurable
-  (`STREAM_READ_TIMEOUT`, `STREAM_FREEZE_TIMEOUT`). Expected ~26 min/day of
-  blindness -> ~5 min. **Not yet demonstrated:** `frozen` events stopped on
-  their own on 2026-09-12 (117 / 62 / 46 on the preceding days, then 0) before
-  the fix shipped, for reasons not established — an IR-LED hypothesis was
-  rejected because stalls were spread evenly across all hours. Re-measure when
-  they return.
+- [x] **Stream stalls: classification fixed, window reverted — 2026-09-12.** The
+  socket read timeout (30 s) was longer than the freeze heuristic (20 s), so it
+  could never fire first and every transport break was recorded as an image-level
+  `frozen` event instead of `stream_ended`. That ordering fix stands; it now runs
+  18 s / 20 s, both configurable (`STREAM_READ_TIMEOUT`, `STREAM_FREEZE_TIMEOUT`).
+  **The window was also narrowed to 2 s / 3 s at 17:43 and reverted at 18:53 the
+  same evening** after an hour of measurement: 49 teardowns in that hour and
+  25.8 % of it blind, against ~1 break/hour and ~0.6 % before. Tearing the stream
+  down is not free — the camera caps concurrent detection clients and holds the
+  stale slot, so a reconnect took a median 14 s to deliver frames again. The
+  detection window is therefore bounded from below by the cost of acting on it,
+  not by the idle frame gap; gaps shorter than a reconnect heal on their own.
+- [ ] **Make a reconnect cheap before narrowing the window again.** A median 14 s
+  reconnect is what forces a 20 s window. Raising or clearing the camera's
+  detection-client cap (or making it release the stale slot on FIN) would let the
+  window drop to seconds without churn. Measure the gap-length distribution
+  between 2 s and 20 s first — ~39 breaks/hour live in that band and currently
+  heal by themselves.
 - [ ] **Original observation, kept for context:** 447 `frozen` + 74 `stream_ended` in
   the same 7 days (~75/day). Each one costs a reconnect. Decide whether that is
   the expected cost of MJPEG over WiFi at this RSSI or a defect worth chasing —

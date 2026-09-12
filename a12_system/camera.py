@@ -110,17 +110,22 @@ class Camera:
         be strictly shorter than the freeze heuristic, or silence can only ever
         be caught by the heuristic and a genuine transport break is recorded as
         an image-quality event. Until 2026-09-12 the read timeout was 30 s
-        against a 20 s heuristic — exactly inverted — which cost ~23 s of
-        blindness per stall, ~26 min/day at the observed ~75 stalls/day.
+        against a 20 s heuristic — exactly inverted.
 
-        The floor for the freeze timeout is the healthy idle gap: ~0.5 s of
-        decode pacing plus the camera's own 2 s wait for a new frame.
+        The floor is set by what a teardown COSTS, not by the idle frame gap.
+        The camera caps concurrent detection clients and holds the stale slot
+        after we drop, so a reconnect takes a median 14 s to deliver frames
+        again. Tightening this pair to 2 s/3 s on 2026-09-12 17:43 therefore
+        made things much worse, not better: 49 teardowns in the following hour
+        and 25.8 % of it blind, against ~0.6 % before. Reverted the same
+        evening. A gap shorter than a reconnect heals by itself; reconnecting
+        through it turns a 3 s hiccup into a 14 s outage.
 
         Split out of __init__ so tests reach the real wiring instead of
         re-declaring the attribute list by hand.
         """
-        self.freeze_timeout = float(config.get("stream_freeze_timeout", 3.0))
-        self.stream_read_timeout = float(config.get("stream_read_timeout", 2.0))
+        self.freeze_timeout = float(config.get("stream_freeze_timeout", 20.0))
+        self.stream_read_timeout = float(config.get("stream_read_timeout", 18.0))
         self.stream_connect_timeout = float(config.get("stream_connect_timeout", 5.0))
 
     def _refresh_urls(self, *, force: bool = False) -> None:
