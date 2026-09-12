@@ -119,7 +119,7 @@ care about any particular one.
   (verified in the running image), so the lazy-import branch in
   `detection.py:63-76` is dead code today. Nothing here is proven in production
   until a backend exists — see item 5.
-- [ ] **5. Enable a backend: YuNet + SFace, two files.** Verified inside the
+- [x] **5. DONE 2026-09-12. Backend enabled: YuNet + SFace.** Verified inside the
   running container: OpenCV 4.11 exposes both `cv2.FaceDetectorYN_create` and
   `cv2.FaceRecognizerSF_create`, and calling them with a bogus path fails in the
   ONNX importer — the implementations are real, only the model files are
@@ -133,7 +133,25 @@ care about any particular one.
   would not survive a container recreate. Headroom is 850 MB of the 1 GB limit,
   but measured at idle with the face path dead — measure the backend's real
   resident cost before trusting it.
-- [ ] **6. Derive the match threshold from data.** `tolerance = 0.6` is the
+- [ ] **6. Derive the match threshold from data — now measurable.** `0.363`
+  cosine is OpenCV's published operating point for SFace, not one fitted here,
+  exactly the mistake dlib's `0.6` was. First numbers, measured 2026-09-12 on
+  the 10 enrolled reference photos and the last 300 stored person frames:
+  - **The pipeline is sound.** Leave-one-out over the reference photos scores
+    a median of **0.891** (min 0.529) against the same person, and **10/10**
+    clear the threshold. Detection, alignment, embedding and matching all work.
+  - **In the wild, 5 of 70 face-bearing frames matched**, and **all five had a
+    face >=80px** (26 such frames); of the 44 frames with a smaller face, none
+    matched at all. That is the PIR gate's premise confirmed from a second
+    direction: below ~80px an embedding is not worth computing.
+  - **This says nothing yet about the miss rate**, because those 300 frames are
+    unlabelled — a non-match is equally consistent with "a different person" and
+    with "the resident, missed". The household has two adults and only one is
+    enrolled, so many are certainly other people. Fitting a threshold needs
+    labelled frames: enrol the second person, then compare within-person and
+    between-person distributions the way `tools/enroll_sface.py` already reports
+    for the gallery itself.
+ `tolerance = 0.6` is the
   library default, never fitted. Measured: at 35 degrees of head pitch dlib's
   distance for the *same person* is 0.566 against that 0.6 — the error budget is
   spent by geometry before a stranger appears.

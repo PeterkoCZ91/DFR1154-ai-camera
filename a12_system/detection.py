@@ -11,6 +11,13 @@ import cv2
 import numpy as np
 
 from . import scorer_client
+from .face_backend import (
+    DEFAULT_COSINE_THRESHOLD,
+    SFACE_BACKEND,
+    SFaceBackend,
+    best_match,
+    read_gallery,
+)
 from .face_result import _MIN_BOX_PIXELS, FaceOutcome, FaceResult
 
 face_recognition = None
@@ -58,6 +65,8 @@ class Detector:
         self.motion_streak = 0
         self.is_ultralytics_v8 = False
         self.last_person_box = None
+        self.face_backend = None
+        self.face_cosine_threshold = DEFAULT_COSINE_THRESHOLD
         self._remote_failure_until = 0.0
 
         self._init_yolo()
@@ -90,8 +99,81 @@ class Detector:
             logging.error(f"YOLO load failed: {e}")
             self.net = None
 
+    def _init_face_backend(self) -> bool:
+        """Wire OpenCV's YuNet + SFace, if the two model files are present.
+
+        Returns False so the caller can fall through to the historical dlib
+        path — which in this image has never been installable — rather than
+        leaving recognition half-configured.
+        """
+        cfg = self.config.get("face_recognition", {})
+        if cfg.get("backend", SFACE_BACKEND) != SFACE_BACKEND:
+            return False
+
+        models_dir = cfg.get(
+            "known_faces_dir", os.environ.get("A12_DATA_DIR", self.script_dir)
+        )
+        detector_path = os.path.join(
+            models_dir, cfg.get("yunet_model", "face_detection_yunet_2023mar.onnx")
+        )
+        recognizer_path = os.path.join(
+            models_dir, cfg.get("sface_model", "face_recognition_sface_2021dec.onnx")
+        )
+        missing = [p for p in (detector_path, recognizer_path) if not os.path.exists(p)]
+        if missing:
+            logging.warning(f"SFace backend unavailable, missing: {', '.join(missing)}")
+            return False
+
+        self.face_cosine_threshold = float(
+            cfg.get("cosine_threshold", DEFAULT_COSINE_THRESHOLD)
+        )
+        try:
+            self.face_backend = SFaceBackend.from_paths(
+                detector_path,
+                recognizer_path,
+                self.face_cosine_threshold,
+                float(cfg.get("detector_score_threshold", 0.6)),
+            )
+        except Exception as e:
+            logging.error(f"SFace backend init failed: {e}")
+            self.face_backend = None
+            return False
+
+        for pkl_path in self._gallery_paths(cfg, models_dir):
+            try:
+                with open(pkl_path, "rb") as handle:
+                    encodings, names = read_gallery(pickle.load(handle), SFACE_BACKEND)
+            except Exception as e:
+                logging.error(f"Could not read face gallery {pkl_path}: {e}")
+                continue
+            self.known_face_encodings.extend(encodings)
+            self.known_face_names.extend(names)
+
+        logging.info(
+            f"SFace backend ready, {len(self.known_face_names)} enrolled encodings"
+        )
+        return True
+
+    def _gallery_paths(self, cfg: dict, default_dir: str) -> list:
+        """Galleries for THIS backend only.
+
+        Kept apart from `known_faces_paths` on purpose: that file holds dlib
+        encodings, which read_gallery would refuse on every boot. Two backends,
+        two files, no warning spam and no chance of comparing across spaces.
+        """
+        paths = []
+        for filename in cfg.get("sface_gallery_paths", ["known_faces_sface.pkl"]):
+            path = filename if os.path.isabs(filename) else os.path.join(default_dir, filename)
+            if os.path.exists(path):
+                paths.append(path)
+            else:
+                logging.warning(f"{path} not found")
+        return paths
+
     def _init_face_recognition(self) -> None:
         if not self.config.get("face_recognition", {}).get("enabled"):
+            return
+        if self._init_face_backend():
             return
         global face_recognition, FACE_RECOGNITION_AVAILABLE
         if face_recognition is None:
@@ -350,6 +432,32 @@ class Detector:
             self.last_person_box = (x, y, x + box_width, y + box_height)
         return [(self.coco_classes[class_ids[i]], confidences[i]) for i in selected]
 
+    def _identify_with_backend(self, backend, frame: np.ndarray) -> FaceResult:
+        """The SFace path. Same FaceOutcome contract as the dlib one."""
+        if not self.known_face_encodings:
+            return FaceResult(FaceOutcome.UNAVAILABLE)
+
+        embeddings = backend.embed(frame)
+        if not embeddings:
+            return FaceResult(FaceOutcome.NO_FACE)
+
+        # Several faces can share a frame; the best match over all of them
+        # decides, so a resident standing behind a stranger is still found.
+        best_name, best_score = None, -1.0
+        for embedding in embeddings:
+            name, score = best_match(
+                embedding,
+                self.known_face_encodings,
+                self.known_face_names,
+                self.face_cosine_threshold,
+            )
+            if name is not None and score > best_score:
+                best_name, best_score = name, score
+
+        if best_name is not None:
+            return FaceResult(FaceOutcome.RESIDENT, best_name)
+        return FaceResult(FaceOutcome.STRANGER)
+
     def identify_person(self, frame: np.ndarray) -> FaceResult:
         """Check one frame against the enrolled gallery.
 
@@ -357,6 +465,10 @@ class Detector:
         apart from "somebody was recognisable and is not a resident". Only the
         latter says anything about who is at the door.
         """
+        backend = getattr(self, "face_backend", None)
+        if backend is not None:
+            return self._identify_with_backend(backend, frame)
+
         if not FACE_RECOGNITION_AVAILABLE or not self.known_face_encodings:
             return FaceResult(FaceOutcome.UNAVAILABLE)
 

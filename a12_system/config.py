@@ -44,6 +44,21 @@ DEFAULT_CONFIG = {
     },
     "face_recognition": {
         "enabled": False,
+        # OpenCV's own YuNet detector + SFace recogniser. Both ship inside
+        # opencv-python-headless and run on cv2.dnn, the engine the YOLO path
+        # already uses; enabling costs two model files in the data dir and no
+        # new dependency. Set to anything else to fall back to the historical
+        # dlib path, which has never been installed in this image.
+        "backend": "sface",
+        "yunet_model": "face_detection_yunet_2023mar.onnx",
+        "sface_model": "face_recognition_sface_2021dec.onnx",
+        "sface_gallery_paths": ["known_faces_sface.pkl"],
+        # Cosine similarity, higher is more similar — the opposite sense to the
+        # dlib tolerance below. 0.363 is OpenCV's published operating point and
+        # is NOT fitted to this camera.
+        "cosine_threshold": 0.363,
+        "detector_score_threshold": 0.6,
+        # dlib only.
         "tolerance": 0.6,
         "known_faces_paths": ["known_faces.pkl"],
         # Names to skip Telegram notifications for (household members).
@@ -341,6 +356,9 @@ ENV_OVERRIDES = [
     ("FACE_EPISODE_RESIDENT_CONFIRMATIONS", "face_recognition.episode_resident_confirmations", _parse_int),
     ("FACE_EPISODE_GAP_SECONDS", "face_recognition.episode_gap_seconds", _parse_float),
     ("FACE_TOLERANCE", "face_recognition.tolerance", _parse_float),
+    ("FACE_BACKEND", "face_recognition.backend", str),
+    ("FACE_COSINE_THRESHOLD", "face_recognition.cosine_threshold", _parse_float),
+    ("FACE_DETECTOR_SCORE_THRESHOLD", "face_recognition.detector_score_threshold", _parse_float),
     # MQTT
     ("MQTT_BROKER", "mqtt.broker_url", str),
     ("MQTT_PORT", "mqtt.port", _parse_int),
