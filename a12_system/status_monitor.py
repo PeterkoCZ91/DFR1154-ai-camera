@@ -17,7 +17,7 @@ class StatusMonitor(threading.Thread):
     Handles IR status, Audio status, Health checks, and SABOTAGE WATCHDOG.
     """
 
-    def __init__(self, runtime_config, mqtt_client, notifier, db, shared_state, http_session=None, stats=None):
+    def __init__(self, runtime_config, mqtt_client, notifier, db, shared_state, http_session=None, stats=None, camera=None):
         super().__init__(name="StatusMonitor")
         self.runtime_config = runtime_config
         self.mqtt_client = mqtt_client
@@ -29,6 +29,9 @@ class StatusMonitor(threading.Thread):
         self.running = True
 
         self.http_session = http_session or requests.Session()
+        # /settings is behind basic auth; only the camera client carries the
+        # credentials (a plain session gets 401), plus retries and mDNS refresh.
+        self.camera = camera
 
         # Polling intervals
         config = runtime_config.get_all()
@@ -50,6 +53,11 @@ class StatusMonitor(threading.Thread):
         self.sabotage_triggered = False
 
         # Profile hysteresis — prevents oscillation at lux thresholds
+        # Seconds in manual exposure before handing control back to auto. The
+        # off-write is what breaks the wedge; give the sensor a few frames in
+        # manual before re-arming AEC/AGC so the loop restarts from a clean state.
+        self._unwedge_settle_seconds = 2.0
+
         self._pending_profile: str | None = None
         self._pending_since: float = 0.0
         self._profile_confirm_seconds: int = 90
@@ -134,6 +142,10 @@ class StatusMonitor(threading.Thread):
                     self._run_watchdog(current_time)
                     self.last_heartbeat = current_time
 
+                # Not on the status_interval timer: a blind camera should not
+                # wait out a poll period before anything is attempted.
+                self._service_unwedge_request()
+
                 if current_time - self.last_status > self.status_interval:
                     self._poll_status()
                     self._run_day_night_logic()
@@ -157,6 +169,46 @@ class StatusMonitor(threading.Thread):
                 logging.exception(f"Status Monitor iteration failed: {e}")
 
             time.sleep(1)
+
+    def _service_unwedge_request(self) -> None:
+        """Rewrite the camera's AEC/AGC registers when the pipeline asks.
+
+        This runs here rather than in the pipeline because a wedged exposure
+        loop keeps the stream perfectly alive: __main__ stays blocked inside
+        process_stream() and never reaches its own recovery hook, and the
+        decode callback must not block on HTTP. Re-applying the day/night
+        profile is not a substitute — the 06:00 NIGHT->DUSK switch on
+        2026-09-12 moved brightness 5.0 -> 64.1 and restored no detail at all.
+        """
+        if not self.shared_state.pop("unwedge_camera", False):
+            return
+        if self.camera is None:
+            # Misconfiguration, not a camera fault — but staying silent would
+            # look exactly like a recovery that ran and did not help.
+            logging.error("AEC/AGC unwedge requested but no camera client is wired")
+            self.shared_state["unwedge_write_failed"] = True
+            return
+
+        # Dropping out of auto is the write that actually clears the wedge
+        # (verified 2026-09-12: detail returned on this write alone).
+        ok = self.camera.set_camera_settings(
+            {"aec": 0, "agc": 0, "agc_gain": 0, "aec_value": 300}
+        )
+        if ok:
+            time.sleep(self._unwedge_settle_seconds)
+            # Hand exposure back to the profile's full-auto control. If only
+            # this half fails the camera is left on a fixed exposure, so the
+            # failure still has to be reported and retried.
+            ok = self.camera.set_camera_settings({"aec": 1, "agc": 1})
+
+        if ok:
+            logging.warning("AEC/AGC rewritten to clear a suspected exposure wedge")
+        else:
+            # Port 80 is starved while port 81 streams, so these writes really
+            # do time out. A write that never landed proves nothing about the
+            # exposure loop — tell the pipeline so it refunds the attempt.
+            logging.error("AEC/AGC unwedge write did not reach the camera")
+            self.shared_state["unwedge_write_failed"] = True
 
     def _run_day_night_logic(self) -> None:
         """Switch camera profiles based on lux, with 90s hysteresis to prevent oscillation."""

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased] - 2026-09-12
+
+### Fixed (A12 — a wedged exposure loop left the camera blind for 12 hours)
+
+- **A sustained low-detail episode now rewrites the camera's AEC/AGC registers instead of doing nothing.** On 2026-09-11 at 21:00 the clock-driven profile switch to `NIGHT` (AGC forced off) landed in real darkness and wedged the OV3660 auto-exposure loop. The camera then streamed a uniform grey field (`brightness=64.1, std=0.3`) for the next 12 hours. Nothing recovered it: the stream-freeze watchdog never tripped, because a wedged exposure loop keeps delivering perfectly decodable JPEGs at full rate, and the 06:00 `NIGHT`→`DUSK` switch moved brightness `5.0` → `64.1` without restoring a single pixel of detail — re-applying a profile is not enough. The only alert sent was an hourly Telegram saying low light was possible. A12 now escalates to a bounded AEC/AGC rewrite (`POST /settings`: auto off, settle, auto back on), which restored a sharp image immediately when done by hand. It costs two HTTP writes and no downtime, and is a no-op on a genuinely dark but healthy scene, which is what makes it safe on evidence as ambiguous as uniform pixels — unlike the reboot ladder removed in `099fa12`, which the same wedge had survived five times. Bounded by `FLAT_FRAME_MAX_UNWEDGE_ATTEMPTS` (default 3) with the budget persisted across A12 restarts, and re-armed only by a sustained run of textured frames.
+- **The low-detail alert no longer blames the lighting.** It used to read *"low light is possible. Automatic reboot skipped"*, which sends the operator looking for a lighting problem — but `brightness=64` uniform grey is not darkness (real darkness on this camera reads ~5). It now states that the exposure registers are being rewritten, and the give-up message names the remaining candidates (genuinely dark or featureless scene, or a blocked lens) instead of implying a reboot was declined.
+- Diagnostic note: to tell darkness from a wedge, disable AEC/AGC and sweep the exposure by hand (`{"aec":0,"agc":0,"agc_gain":0,"aec_value":300}`). Detail appearing on that write alone means the exposure loop was wedged, not the sensor, the optics or the light level.
+
 ## [Unreleased] - 2026-09-11
 
 ### Fixed (Firmware — day/night profile blind to a sealed ambient-light sensor)

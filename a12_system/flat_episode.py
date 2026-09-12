@@ -83,6 +83,32 @@ class FlatEpisodeState:
     def reboot_count(self) -> int:
         return self._as_int(self._load().get("reboots"))
 
+    def record_unwedge(self) -> int:
+        """Count an AEC/AGC unwedge write; persisted for the same reason as
+        ``record_reboot`` — a crash-looping A12 must not re-arm a fresh budget
+        on every process start. Returns the new total for this episode."""
+        data = self._load()
+        n = self._as_int(data.get("unwedges")) + 1
+        data["unwedges"] = n
+        self._save(data)
+        return n
+
+    def refund_unwedge(self) -> None:
+        """Give back an attempt whose write never reached the camera.
+
+        The budget must count rewrites that actually happened: a camera that is
+        merely unreachable would otherwise exhaust it and make the give-up alert
+        blame the exposure loop for a write that never landed."""
+        data = self._load()
+        n = self._as_int(data.get("unwedges"))
+        if n <= 0:
+            return
+        data["unwedges"] = n - 1
+        self._save(data)
+
+    def unwedge_count(self) -> int:
+        return self._as_int(self._load().get("unwedges"))
+
     def set_gaveup(self) -> bool:
         """Latch the give-up terminal state. True exactly once per episode
         (persisted — an A12 restart must not re-send the give-up alert)."""
@@ -107,6 +133,7 @@ class FlatEpisodeState:
             return False
         data["episode_active"] = False
         data.pop("reboots", None)
+        data.pop("unwedges", None)
         data.pop("gaveup", None)
         data.pop("notified_flat_alert", None)
         # _save replaces the mirror wholesale, so the dropped keys are forgotten

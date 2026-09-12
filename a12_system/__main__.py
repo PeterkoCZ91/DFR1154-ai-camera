@@ -209,7 +209,7 @@ class Application:
         # Status monitor
         self.status_monitor = StatusMonitor(
             self.runtime_config, self.mqtt_client, notifier, self.db,
-            shared_state, self.http_session, stats=self.stats
+            shared_state, self.http_session, stats=self.stats, camera=camera
         )
         self.status_monitor.start()
 

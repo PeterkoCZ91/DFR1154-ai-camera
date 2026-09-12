@@ -99,6 +99,39 @@ def flat_recovery_action(
     return "giveup"
 
 
+def aec_unwedge_action(
+    consecutive_flat: int,
+    strikes: int,
+    attempts: int,
+    max_attempts: int,
+    now: float,
+    last_action: float,
+    cooldown: float,
+) -> str:
+    """Decide whether to rewrite the camera's AEC/AGC registers.
+
+    A wedged OV3660 exposure loop streams decodable but uniform JPEGs, so the
+    freeze watchdog never trips. Re-applying the day/night profile does not
+    clear it either (verified 2026-09-12: the 06:00 NIGHT->DUSK switch moved
+    brightness 5.0 -> 64.1 and detail still never came back). Toggling AEC/AGC
+    off and back on does, at the cost of two HTTP writes and no downtime —
+    cheaper and, on the 2026-09-11 episode, more effective than the LAN reboot
+    this replaced, which that wedge survived five times.
+
+    - ``"none"``    — below the strike threshold, or inside the cooldown.
+    - ``"unwedge"`` — rewrite AEC/AGC.
+    - ``"giveup"``  — ``max_attempts`` rewrites did not restore detail; the
+      cause is not the exposure loop. Stop writing and let the caller alert.
+    """
+    if consecutive_flat < strikes:
+        return "none"
+    if attempts >= max_attempts:
+        return "giveup"
+    if (now - last_action) < cooldown:
+        return "none"
+    return "unwedge"
+
+
 def box_iou(first, second) -> float | None:
     """Return intersection-over-union for two xyxy boxes, or None without both."""
     if first is None or second is None:
@@ -329,22 +362,9 @@ class DetectionPipeline:
         self._known_person_until = 0.0
 
         # Brightness watchdog — detects AEC freeze (OV3660 UXGA issue)
-        self._dark_frame_threshold = int(runtime_config.get("brightness_watchdog_threshold", 30))
-        self._dark_consecutive_required = int(runtime_config.get("brightness_watchdog_strikes", 1))
-        self._flat_frame_std_threshold = float(runtime_config.get("flat_frame_std_threshold", 1.0))
-        self._dark_consecutive_count = 0
-        self._last_exposure_reset = 0.0
-        # Image appearance cannot prove a sensor fault, especially at night.
-        # Keep a persistent, rate-limited low-detail episode, without recovery
-        # commands. Legacy flat-frame reboot settings no longer drive actions.
-        self._flat_reconnect_strikes = int(runtime_config.get("flat_frame_reconnect_strikes", 5))
-        self._flat_healthy_required = int(runtime_config.get("flat_frame_healthy_required", 10))
-        self._flat_consecutive_count = 0
-        self._flat_forced_reconnects = 0
-        self._flat_nonflat_count = 0
+        self.configure_frame_health_watchdog(runtime_config)
         # Persist notification timestamps so restarting A12 cannot flood the chat.
         self.flat_state = FlatEpisodeState(os.path.join(script_dir, "flat_episode_state.json"))
-        self._flat_notify_interval = float(runtime_config.get("flat_frame_notify_interval", 3600))
 
         # Stream-freeze escalation: a "Stream frozen"/"stream_ended" break
         # already forces a reconnect (the __main__ loop redials immediately),
@@ -400,6 +420,115 @@ class DetectionPipeline:
             )
         except Exception as e:
             logging.warning(f"{self.log_prefix} Recovery snapshot failed: {e}")
+
+    def configure_frame_health_watchdog(self, runtime_config) -> None:
+        """Read every frame-health knob and reset its counters.
+
+        Split out of __init__ so the wiring is reachable without building the
+        whole pipeline (__init__ starts threads and creates directories). Test
+        harnesses call this instead of re-declaring the attribute list by hand,
+        so a knob that __init__ forgets can no longer pass the suite.
+        """
+        self._dark_frame_threshold = int(runtime_config.get("brightness_watchdog_threshold", 30))
+        self._dark_consecutive_required = int(runtime_config.get("brightness_watchdog_strikes", 1))
+        self._flat_frame_std_threshold = float(runtime_config.get("flat_frame_std_threshold", 1.0))
+        self._dark_consecutive_count = 0
+        self._last_exposure_reset = 0.0
+        # Image appearance cannot prove a sensor fault, especially at night, so
+        # the only recovery driven from here is a non-disruptive AEC/AGC rewrite.
+        self._flat_reconnect_strikes = int(runtime_config.get("flat_frame_reconnect_strikes", 5))
+        self._flat_healthy_required = int(runtime_config.get("flat_frame_healthy_required", 10))
+        # AEC/AGC rewrite budget. Cheap (two POSTs, no outage) and a no-op on a
+        # genuinely dark but healthy scene, so it is safe on ambiguous evidence
+        # — unlike the reboot ladder this replaced.
+        self._flat_max_unwedge_attempts = int(
+            runtime_config.get("flat_frame_max_unwedge_attempts", 3)
+        )
+        self._flat_unwedge_cooldown = float(
+            runtime_config.get("flat_frame_unwedge_cooldown", 300)
+        )
+        self._flat_notify_interval = float(runtime_config.get("flat_frame_notify_interval", 3600))
+        self._last_flat_unwedge = 0.0
+        self._flat_consecutive_count = 0
+        self._flat_forced_reconnects = 0
+        self._flat_nonflat_count = 0
+
+    def _note_flat_frame(self, current_time: float) -> None:
+        """Track a uniform frame and, once sustained, rewrite AEC/AGC.
+
+        Uniform pixels still cannot tell darkness from a fault, so this never
+        reboots. Rewriting the exposure registers costs two HTTP writes, no
+        downtime, and is a no-op on a genuinely dark but healthy scene — which
+        is what makes it safe to attempt on evidence this ambiguous.
+        """
+        if self.shared_state.pop("unwedge_write_failed", False):
+            # The write never reached the camera, so it says nothing about the
+            # exposure loop. Give the attempt back and report the real problem.
+            self.flat_state.refund_unwedge()
+            if self.flat_state.should_notify(
+                "unwedge_failed", current_time, self._flat_notify_interval
+            ):
+                self.notifier.send_telegram(
+                    self._telegram_message(
+                        "Camera image has almost no detail and the exposure rewrite "
+                        "could not be applied — the camera is not answering on port 80. "
+                        "(rate-limited alert)"
+                    ),
+                    bypass_cooldown=True,
+                )
+
+        self._flat_consecutive_count += 1
+        self._flat_nonflat_count = 0
+        # Ignore brief low-detail blips before opening an episode.
+        if self._flat_consecutive_count == self._flat_reconnect_strikes:
+            self.flat_state.mark_active()
+        if self._flat_consecutive_count < self._flat_reconnect_strikes:
+            return
+
+        action = aec_unwedge_action(
+            self._flat_consecutive_count,
+            self._flat_reconnect_strikes,
+            self.flat_state.unwedge_count(),
+            self._flat_max_unwedge_attempts,
+            current_time,
+            self._last_flat_unwedge,
+            self._flat_unwedge_cooldown,
+        )
+
+        if action == "unwedge":
+            attempts = self.flat_state.record_unwedge()
+            self._last_flat_unwedge = current_time
+            logging.warning(
+                f"{self.log_prefix} Image has had no detail for "
+                f"{self._flat_consecutive_count} checks — rewriting AEC/AGC "
+                f"({attempts}/{self._flat_max_unwedge_attempts})"
+            )
+            self.shared_state["unwedge_camera"] = True
+            if self.flat_state.should_notify(
+                "flat_alert", current_time, self._flat_notify_interval
+            ):
+                self.notifier.send_telegram(
+                    self._telegram_message(
+                        "Camera image has almost no detail. Rewriting the exposure "
+                        "registers (AEC/AGC) to clear a possible wedge — no reboot, "
+                        "no downtime. (rate-limited alert)"
+                    ),
+                    bypass_cooldown=True,
+                )
+        elif action == "giveup" and self.flat_state.set_gaveup():
+            logging.critical(
+                f"{self.log_prefix} Image still has no detail after "
+                f"{self._flat_max_unwedge_attempts} AEC/AGC rewrites — "
+                "the exposure loop is not the cause"
+            )
+            self.notifier.send_telegram(
+                self._telegram_message(
+                    "Camera image still has no detail after repeated exposure "
+                    "rewrites. The exposure loop is not the cause — could be a "
+                    "genuinely dark or featureless scene, or a blocked lens."
+                ),
+                bypass_cooldown=True,
+            )
 
     def _flat_ladder_note_nonflat(self, current_time: float) -> None:
         """End the low-detail episode only after sustained textured images."""
@@ -545,24 +674,7 @@ class DetectionPipeline:
                 # Both black and gray uniform frames can be legitimate low-light
                 # images. Report their appearance without diagnosing a hang.
                 if flatness < self._flat_frame_std_threshold:
-                    self._flat_consecutive_count += 1
-                    self._flat_nonflat_count = 0
-                    # Ignore brief low-detail blips before opening an episode.
-                    if self._flat_consecutive_count == self._flat_reconnect_strikes:
-                        self.flat_state.mark_active()
-                    # Uniform pixels alone do not distinguish darkness from a
-                    # sensor fault. Never reconnect/reboot on this evidence.
-                    if self._flat_consecutive_count >= self._flat_reconnect_strikes:
-                        if self.flat_state.should_notify(
-                            "flat_alert", current_time, self._flat_notify_interval
-                        ):
-                            self.notifier.send_telegram(
-                                self._telegram_message(
-                                    "Camera image has very little detail; low light is possible. "
-                                    "Automatic reboot skipped: image alone does not prove a fault."
-                                ),
-                                bypass_cooldown=True,
-                            )
+                    self._note_flat_frame(current_time)
                 else:
                     # Texture ends the low-detail episode even on a dark night.
                     self._flat_consecutive_count = 0

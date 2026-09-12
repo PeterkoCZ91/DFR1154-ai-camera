@@ -131,6 +131,8 @@ DEFAULT_CONFIG = {
     "flat_frame_reboot_after": 3,
     "flat_frame_max_reboots": 5,
     "flat_frame_healthy_required": 10,
+    "flat_frame_max_unwedge_attempts": 3,
+    "flat_frame_unwedge_cooldown": 300.0,
     "flat_frame_notify_interval": 3600.0,
     "stream_freeze_reboot_after": 5,
     "stream_freeze_max_reboots": 3,
@@ -303,6 +305,8 @@ ENV_OVERRIDES = [
     ("FLAT_FRAME_REBOOT_AFTER", "flat_frame_reboot_after", _parse_int),
     ("FLAT_FRAME_MAX_REBOOTS", "flat_frame_max_reboots", _parse_int),
     ("FLAT_FRAME_HEALTHY_REQUIRED", "flat_frame_healthy_required", _parse_int),
+    ("FLAT_FRAME_MAX_UNWEDGE_ATTEMPTS", "flat_frame_max_unwedge_attempts", _parse_int),
+    ("FLAT_FRAME_UNWEDGE_COOLDOWN", "flat_frame_unwedge_cooldown", _parse_float),
     ("FLAT_FRAME_NOTIFY_INTERVAL", "flat_frame_notify_interval", _parse_float),
     # Stream-freeze watchdog (decode/send stalls distinct from flat frames)
     ("STREAM_FREEZE_REBOOT_AFTER", "stream_freeze_reboot_after", _parse_int),

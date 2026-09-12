@@ -138,7 +138,10 @@ def test_only_sustained_healthy_frames_restore_budget(tmp_path):
     assert len(p.notifier.sent) == 1
 
 
-def test_uniform_night_frames_never_command_recovery(tmp_path, monkeypatch):
+def test_uniform_night_frames_never_command_disruptive_recovery(tmp_path, monkeypatch):
+    """Uniform frames may trigger an AEC/AGC rewrite (cheap, no outage) but must
+    never reboot the camera or tear down the stream: darkness still looks
+    exactly like a fault, and a dark night is not a hardware failure."""
     import queue
     from unittest.mock import Mock
 
@@ -156,15 +159,16 @@ def test_uniform_night_frames_never_command_recovery(tmp_path, monkeypatch):
     p.notification_queue = queue.Queue()
     p.status_monitor = None  # no lux telemetry must not imply sensor failure
     p.mqtt_client = Mock()
-    p._dark_frame_threshold = 30
-    p._flat_frame_std_threshold = 1
-    p._dark_consecutive_count = 0
-    p._dark_consecutive_required = 1
-    p._last_exposure_reset = 0
-    p._flat_consecutive_count = 0
-    p._flat_nonflat_count = 0
-    p._flat_reconnect_strikes = 5
-    p._flat_notify_interval = 3600
+    p.configure_frame_health_watchdog({
+        "brightness_watchdog_threshold": 30,
+        "brightness_watchdog_strikes": 1,
+        "flat_frame_std_threshold": 1,
+        "flat_frame_reconnect_strikes": 5,
+        "flat_frame_notify_interval": 3600,
+        "flat_frame_max_unwedge_attempts": 3,
+        "flat_frame_unwedge_cooldown": 0.0,
+        "flat_frame_healthy_required": 3,
+    })
     p.flat_state = FlatEpisodeState(str(tmp_path / "flat.json"))
     p.runtime_config = Mock()
     p.runtime_config.get.return_value = 50
@@ -185,3 +189,8 @@ def test_uniform_night_frames_never_command_recovery(tmp_path, monkeypatch):
             assert not p.shared_state.get("force_stream_reconnect")
     assert p.flat_state.reboot_count() == 0
     assert not any("hardware" in m or "hung" in m for m in p.notifier.sent)
+    # The non-disruptive rewrite IS allowed on this evidence, and is bounded:
+    # it must stop at the budget rather than write every heartbeat all night.
+    # Pinned to the exact budget, not "<= 3": that weaker form also passes when
+    # the rewrite never fires at all, so it could not fail either way.
+    assert p.flat_state.unwedge_count() == 3
