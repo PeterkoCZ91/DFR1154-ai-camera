@@ -443,7 +443,11 @@ class Detector:
 
         # Several faces can share a frame; the best match over all of them
         # decides, so a resident standing behind a stranger is still found.
-        best_name, best_score = None, -1.0
+        # Two scores, on purpose. The matched one decides the identity; the
+        # closest one overall is reported when nothing matched, because a
+        # stranger just under the threshold is the case worth looking at.
+        best_name, best_name_score = None, -1.0
+        closest_score = -1.0
         for embedding in embeddings:
             name, score = best_match(
                 embedding,
@@ -451,12 +455,14 @@ class Detector:
                 self.known_face_names,
                 self.face_cosine_threshold,
             )
-            if name is not None and score > best_score:
-                best_name, best_score = name, score
+            closest_score = max(closest_score, score)
+            if name is not None and score > best_name_score:
+                best_name, best_name_score = name, score
 
         if best_name is not None:
-            return FaceResult(FaceOutcome.RESIDENT, best_name)
-        return FaceResult(FaceOutcome.STRANGER)
+            return FaceResult(FaceOutcome.RESIDENT, best_name, best_name_score)
+        score = closest_score if closest_score > -1.0 else None
+        return FaceResult(FaceOutcome.STRANGER, None, score)
 
     def identify_person(self, frame: np.ndarray) -> FaceResult:
         """Check one frame against the enrolled gallery.

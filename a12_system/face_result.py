@@ -5,6 +5,8 @@ not have to import OpenCV just to classify a label.
 """
 
 import enum
+import re
+import time
 from typing import NamedTuple, Optional
 
 
@@ -30,6 +32,11 @@ class FaceOutcome(enum.Enum):
 class FaceResult(NamedTuple):
     outcome: FaceOutcome
     name: Optional[str] = None
+    # Similarity to the closest gallery entry, when one was computed. Kept so
+    # the threshold can eventually be fitted to this camera instead of being
+    # inherited from a library default — a near miss and a total mismatch are
+    # very different facts and the outcome alone hides both.
+    score: Optional[float] = None
 
     @property
     def is_resident(self) -> bool:
@@ -168,3 +175,24 @@ class FaceEpisode:
         if self._error:
             return FaceResult(FaceOutcome.ERROR)
         return FaceResult(FaceOutcome.UNAVAILABLE)
+
+
+# Gallery names come from directory names, so they are user-controlled and must
+# never be able to steer a write outside the debug directory.
+_UNSAFE_IN_NAME = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def debug_crop_name(when: float, result: FaceResult) -> str:
+    """Filename encoding what the check saw, so a directory listing is the report.
+
+    The score comes before the name so files sort by how close the match was,
+    which is what you scan when deciding whether the threshold is wrong.
+    """
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(when))
+    parts = [stamp, f"{when % 1:.3f}".split(".")[1], result.outcome.value]
+    if result.score is not None:
+        parts.append(f"{result.score:.3f}")
+    if result.name:
+        safe = _UNSAFE_IN_NAME.sub("_", result.name).strip("._") or "unnamed"
+        parts.append(safe)
+    return "-".join(parts) + ".jpg"

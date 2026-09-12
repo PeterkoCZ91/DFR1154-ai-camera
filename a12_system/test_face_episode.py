@@ -257,7 +257,7 @@ class _StubStats:
         self.recorded.append(result)
 
 
-def _pipeline(detector, *, pir=True, **overrides):
+def _pipeline(detector, *, pir=True, face_cfg=None, **overrides):
     from a12_system.pipeline import DetectionPipeline
 
     p = DetectionPipeline.__new__(DetectionPipeline)
@@ -265,13 +265,10 @@ def _pipeline(detector, *, pir=True, **overrides):
     p.stats = _StubStats()
     p.shared_state = {"external_yolo_until": 1e12 if pir else 0.0}
     p.ha_monitor = None
-    p._face_require_pir_window = True
-    p._face_max_checks = 5
-    p._face_min_check_interval = 0.0
-    p._face_box_margin = 0.25
-    p._face_episode_gap = 30.0
-    p._face_episode = FaceEpisode(2)
-    p._last_face_check_at = 0.0
+    # Call the real wiring rather than re-declaring its attributes here.
+    cfg = {"min_check_interval_seconds": 0.0}
+    cfg.update(face_cfg or {})
+    p.configure_face_checks(cfg)
     for key, value in overrides.items():
         setattr(p, key, value)
     return p
@@ -344,3 +341,40 @@ def test_sightings_within_one_occurrence_accumulate(monkeypatch):
     p._face_verdict(_frame())
     clock["t"] = 1002.0
     assert p._face_verdict(_frame()).outcome is FaceOutcome.RESIDENT
+
+
+# --- keeping what the check saw -------------------------------------------
+
+
+def test_nothing_is_written_when_debug_saving_is_off(tmp_path):
+    det = _StubDetector([NO_FACE])
+    p = _pipeline(det, _face_debug_dir="")
+    p._face_verdict(_frame())
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_crop_is_written_when_debug_saving_is_on(tmp_path):
+    det = _StubDetector([NO_FACE])
+    p = _pipeline(det, _face_debug_dir=str(tmp_path))
+    p._face_verdict(_frame())
+    written = list(tmp_path.iterdir())
+    assert len(written) == 1
+    assert "no_face" in written[0].name
+
+
+def test_saving_is_bounded_so_it_cannot_fill_the_disk(tmp_path):
+    det = _StubDetector([NO_FACE] * 50)
+    p = _pipeline(
+        det, _face_debug_dir=str(tmp_path), _face_debug_limit=3,
+        _face_max_checks=50, _face_episode_gap=1e9,
+    )
+    for _ in range(10):
+        p._face_verdict(_frame())
+    assert len(list(tmp_path.iterdir())) == 3
+
+
+def test_a_failed_write_does_not_break_the_check(tmp_path):
+    """Debug output is a convenience; it must never cost a detection."""
+    det = _StubDetector([STRANGER])
+    p = _pipeline(det, _face_debug_dir=str(tmp_path / "nope" / "\0bad"))
+    assert p._face_verdict(_frame()).outcome is FaceOutcome.STRANGER

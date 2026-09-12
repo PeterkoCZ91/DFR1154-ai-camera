@@ -14,6 +14,7 @@ import numpy as np
 from .face_result import (
     FaceEpisode,
     FaceResult,
+    debug_crop_name,
     notification_name,
     should_run_face_check,
 )
@@ -254,18 +255,7 @@ class DetectionPipeline:
         self.pir_person_confirmations_required = max(
             1, int(runtime_config.get("yolo.pir_person_confirmations", 1))
         )
-        # Face checks are bounded per occurrence: they are only affordable, and
-        # only answerable, while the PIR says somebody is in the doorway.
-        _face_cfg = runtime_config.get("face_recognition", {}) or {}
-        self._face_require_pir_window = bool(_face_cfg.get("require_pir_window", True))
-        self._face_max_checks = max(1, int(_face_cfg.get("max_checks_per_episode", 5)))
-        self._face_min_check_interval = max(
-            0.0, float(_face_cfg.get("min_check_interval_seconds", 0.5))
-        )
-        self._face_box_margin = max(0.0, float(_face_cfg.get("person_box_margin", 0.25)))
-        self._face_episode_gap = max(1.0, float(_face_cfg.get("episode_gap_seconds", 30.0)))
-        self._face_episode = FaceEpisode(_face_cfg.get("episode_resident_confirmations", 2))
-        self._last_face_check_at = 0.0
+        self.configure_face_checks(runtime_config.get("face_recognition", {}) or {})
 
         self.person_confirmation_streaks = {"camera": 0, "pir": 0}
         self.person_confirmation_boxes = {"camera": None, "pir": None}
@@ -1079,6 +1069,49 @@ class DetectionPipeline:
             self._face_episode.reset()
         return self._face_episode
 
+    def configure_face_checks(self, face_cfg: dict) -> None:
+        """Everything the face check needs to know, in one place.
+
+        Split out of __init__ so tests reach the real wiring instead of
+        re-declaring the attribute list by hand — a stub that drifts from
+        __init__ passes while production raises AttributeError.
+        """
+        # The check is only affordable, and only answerable, while the PIR says
+        # somebody is standing in the doorway.
+        self._face_require_pir_window = bool(face_cfg.get("require_pir_window", True))
+        self._face_max_checks = max(1, int(face_cfg.get("max_checks_per_episode", 5)))
+        self._face_min_check_interval = max(
+            0.0, float(face_cfg.get("min_check_interval_seconds", 0.5))
+        )
+        self._face_box_margin = max(0.0, float(face_cfg.get("person_box_margin", 0.25)))
+        self._face_episode_gap = max(1.0, float(face_cfg.get("episode_gap_seconds", 30.0)))
+        self._face_episode = FaceEpisode(face_cfg.get("episode_resident_confirmations", 2))
+        self._last_face_check_at = 0.0
+        # Tuning aid: keep the exact crop that was checked, named by outcome
+        # and score. It is the only way to tell "the face was too small" from
+        # "the crop missed" from "the threshold is wrong" — the verdict alone
+        # hides all three. Off unless a directory is configured.
+        self._face_debug_dir = str(face_cfg.get("debug_crop_dir", "") or "")
+        self._face_debug_limit = max(0, int(face_cfg.get("debug_crop_limit", 200)))
+        self._face_debug_written = 0
+
+    def _save_face_debug_crop(self, crop, result: FaceResult, when: float) -> None:
+        """Best-effort: a debug convenience must never cost a detection."""
+        if not self._face_debug_dir or self._face_debug_written >= self._face_debug_limit:
+            return
+        try:
+            os.makedirs(self._face_debug_dir, exist_ok=True)
+            path = os.path.join(self._face_debug_dir, debug_crop_name(when, result))
+            if cv2.imwrite(path, crop):
+                self._face_debug_written += 1
+                if self._face_debug_written == self._face_debug_limit:
+                    logging.info(
+                        f"Face debug crops reached the limit of "
+                        f"{self._face_debug_limit}; no more will be written"
+                    )
+        except Exception as e:
+            logging.debug(f"Could not save face debug crop: {e}")
+
     def _face_verdict(self, frame) -> FaceResult:
         """Spend at most one face check on this frame, then answer for the episode.
 
@@ -1107,6 +1140,7 @@ class DetectionPipeline:
                 frame, self.detector.last_person_box, self._face_box_margin
             )
             check = self.detector.identify_person(crop)
+            self._save_face_debug_crop(crop, check, now)
             episode.record(check)
             self._last_face_check_at = now
             self.stats.record_face_attempt(check)

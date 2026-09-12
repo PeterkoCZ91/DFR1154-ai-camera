@@ -58,6 +58,11 @@ DEFAULT_CONFIG = {
         # is NOT fitted to this camera.
         "cosine_threshold": 0.363,
         "detector_score_threshold": 0.6,
+        # Tuning aid: write every checked crop, named by outcome and score, so
+        # a directory listing shows what the recogniser actually saw. Empty
+        # disables it; the limit stops a forgotten flag filling the disk.
+        "debug_crop_dir": "",
+        "debug_crop_limit": 200,
         # dlib only.
         "tolerance": 0.6,
         "known_faces_paths": ["known_faces.pkl"],
@@ -359,6 +364,8 @@ ENV_OVERRIDES = [
     ("FACE_BACKEND", "face_recognition.backend", str),
     ("FACE_COSINE_THRESHOLD", "face_recognition.cosine_threshold", _parse_float),
     ("FACE_DETECTOR_SCORE_THRESHOLD", "face_recognition.detector_score_threshold", _parse_float),
+    ("FACE_DEBUG_CROP_DIR", "face_recognition.debug_crop_dir", str),
+    ("FACE_DEBUG_CROP_LIMIT", "face_recognition.debug_crop_limit", _parse_int),
     # MQTT
     ("MQTT_BROKER", "mqtt.broker_url", str),
     ("MQTT_PORT", "mqtt.port", _parse_int),

@@ -260,3 +260,78 @@ def test_the_best_of_several_faces_decides():
     """Two people in frame: the resident must be found, not just the first face."""
     det = _detector([_emb(0, 1), _emb(1, 0)], [_emb(1, 0)], ["Resident"])
     assert det.identify_person(_frame()).outcome is FaceOutcome.RESIDENT
+
+
+# --- what the check saw, kept for replay -----------------------------------
+# Saving the actual crop plus the score is the only way to tell "the face was
+# too small" from "the crop was off the person" from "the threshold is wrong".
+# The verdict alone cannot distinguish those three.
+
+from a12_system.face_result import debug_crop_name  # noqa: E402
+from a12_system.face_result import FaceResult as FR  # noqa: E402
+
+
+def test_the_score_is_carried_out_of_the_match():
+    """Item 6 needs the distribution, not just the yes/no."""
+    det = _detector([_emb(1, 0)], [_emb(1, 0)], ["Resident"])
+    assert det.identify_person(_frame()).score > 0.99
+
+
+def test_a_near_miss_reports_how_near():
+    """A stranger just under the threshold is the interesting case."""
+    det = _detector([_emb(1, 0.4)], [_emb(1, 0)], ["Resident"], threshold=0.99)
+    result = det.identify_person(_frame())
+    assert result.outcome is FaceOutcome.STRANGER
+    assert 0.9 < result.score < 0.99
+
+
+def test_a_frame_with_no_face_has_no_score():
+    det = _detector([], [_emb(1, 0)], ["Resident"])
+    assert det.identify_person(_frame()).score is None
+
+
+def test_the_filename_records_the_outcome():
+    name = debug_crop_name(1757700000.0, FR(FaceOutcome.NO_FACE))
+    assert "no_face" in name and name.endswith(".jpg")
+
+
+def test_the_filename_records_the_score_so_files_sort_by_how_close():
+    name = debug_crop_name(1757700000.0, FR(FaceOutcome.STRANGER, None, 0.2718))
+    assert "0.272" in name
+
+
+def test_the_filename_records_who_was_matched():
+    name = debug_crop_name(1757700000.0, FR(FaceOutcome.RESIDENT, "Resident", 0.9))
+    assert "Resident" in name
+
+
+def test_a_name_can_never_escape_the_debug_directory():
+    """Gallery names come from directory names, which a user controls."""
+    name = debug_crop_name(1757700000.0, FR(FaceOutcome.RESIDENT, "../../etc/passwd", 0.9))
+    assert "/" not in name and ".." not in name
+
+
+def test_the_strongest_match_wins_regardless_of_face_order():
+    """Two people in frame, the resident seen better but detected first.
+
+    Tracking "the last face that matched somebody" instead of "the best match"
+    makes the answer depend on detection order, which is arbitrary.
+    """
+    gallery = [_emb(1, 0), _emb(0, 1)]
+    names = ["Resident", "Other"]
+    det = _detector([_emb(1, 0), _emb(0.8, 1)], gallery, names)
+    result = det.identify_person(_frame())
+    assert result.name == "Resident"
+    assert result.score > 0.99
+
+
+def test_the_reported_score_is_the_closest_face_not_the_last_one():
+    """With nobody matched, the near miss is the number worth keeping.
+
+    Overwriting instead of maximising makes the reported score depend on
+    detection order, which would quietly poison any threshold fitted from it.
+    """
+    det = _detector([_emb(1, 0.2), _emb(0, 1)], [_emb(1, 0)], ["Resident"], threshold=0.99)
+    result = det.identify_person(_frame())
+    assert result.outcome is FaceOutcome.STRANGER
+    assert result.score > 0.95
