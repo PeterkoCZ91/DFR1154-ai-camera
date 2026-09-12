@@ -94,14 +94,14 @@ care about any particular one.
 
 ### Tier 1 — alert quality (the actual product problem)
 
-- [ ] **2. Split "no face resolvable" from "face seen, not a resident".** Today
+- [x] **2. DONE 2026-09-12. Split "no face resolvable" from "face seen, not a resident".** Today
   both collapse into `Unknown` and alert. Measured on 300 stored person frames
   with a YuNet detector: only **22%** contain a detectable face at all and only
   **6.7%** carry one at the >=80px an embedding needs. So a face-based gate must
   answer for the other ~93%, and both answers are bad — "unknown" keeps the alert
   volume, "known" hides a stranger who never looks at the lens. Separating the
   two is one enum value and is worth more than any model change.
-- [ ] **3. Gate recognition on the PIR window and the YOLO person box.** The PIR
+- [x] **3. DONE 2026-09-12. Gate recognition on the PIR window and the YOLO person box.** The PIR
   (`binary_sensor.venkovni_senzor`) knows when somebody is standing in the
   doorway — which is exactly where faces are large. Measured with a person
   deliberately facing the camera: median face **99px**, max 131px, 76% of
@@ -110,17 +110,29 @@ care about any particular one.
   `detection.py:318-320` person box, turns an always-on cost into a few frames
   per event — which is what the original disable was about (OOM kills at a 2GB
   limit, `~/.codex/memories/a12_system_v2.md`, 2026-05-06).
-- [ ] **4. Decide per episode, not per frame.** `identify_person` is called once
+- [x] **4. DONE 2026-09-12. Decide per episode, not per frame.** `identify_person` is called once
   (`pipeline.py:1219`) on a single full frame. The clip buffer holds dozens.
   Literature puts frame-level aggregation at 63% -> 85%.
-- [ ] **5. If recognition is revived, replace dlib.** Benchmarked on this machine
-  (1 core, 640x480, ~110px face): the current dlib HOG+encode path costs
-  **251.9 ms**; `buffalo_s` (SCRFD-500M + ArcFace MobileFaceNet) costs **41.8 ms**
-  at 207 MB RSS with a 512-d embedding. Six times cheaper than the thing that
-  caused the OOM, and stronger. `buffalo_l` is the opposite trap: 618 ms, 669 MB.
-  YuNet+SFace (46.7 ms) needs **no new dependency at all** — OpenCV 4.12 already
-  ships both APIs. dlib publishes no wheel, so its 20-minute compile is inherent.
-  Raise `mem_limit` from 1g (currently using 398 MiB) before enabling anything.
+- [ ] **Not yet exercised on live data.** Items 2-4 ship behind
+  `FACE_RECOGNITION_ENABLED=false`, and the container has no backend at all:
+  `dlib`, `face_recognition`, `onnxruntime` and `insightface` are all absent
+  (verified in the running image), so the lazy-import branch in
+  `detection.py:63-76` is dead code today. Nothing here is proven in production
+  until a backend exists — see item 5.
+- [ ] **5. Enable a backend: YuNet + SFace, two files.** Verified inside the
+  running container: OpenCV 4.11 exposes both `cv2.FaceDetectorYN_create` and
+  `cv2.FaceRecognizerSF_create`, and calling them with a bogus path fails in the
+  ONNX importer — the implementations are real, only the model files are
+  missing. They run on `cv2.dnn`, the same engine the YOLO path already uses,
+  and inherit the existing `A12_CV_THREADS=1` pinning for free. Dropping
+  `face_detection_yunet_*.onnx` and `face_recognition_sface_*.onnx` into
+  `${A12_DATA_DIR}` is the whole delta: no pip install, no image rebuild — the
+  same convention `yolo11n.onnx` already follows. insightface `buffalo_s` is
+  the opposite: a new pip dependency, a second ONNX runtime, an image rebuild,
+  and a model download into `~/.insightface`, outside the bind mount, so it
+  would not survive a container recreate. Headroom is 850 MB of the 1 GB limit,
+  but measured at idle with the face path dead — measure the backend's real
+  resident cost before trusting it.
 - [ ] **6. Derive the match threshold from data.** `tolerance = 0.6` is the
   library default, never fitted. Measured: at 35 degrees of head pitch dlib's
   distance for the *same person* is 0.566 against that 0.6 — the error budget is

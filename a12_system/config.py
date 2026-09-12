@@ -49,6 +49,20 @@ DEFAULT_CONFIG = {
         # Names to skip Telegram notifications for (household members).
         # Populated at runtime from known_faces.pkl + user config.
         "whitelisted_names": [],
+        # Run the check only while the PIR says somebody is in the doorway.
+        # That is where faces are large enough to embed (median 99px, against
+        # 35px in ordinary passage) and it bounds an always-on cost to a few
+        # frames per occurrence.
+        "require_pir_window": True,
+        "max_checks_per_episode": 5,
+        "min_check_interval_seconds": 0.5,
+        # YOLO person boxes clip the crown; a face detector needs the head.
+        "person_box_margin": 0.25,
+        # Sightings of the same name needed before the episode suppresses an
+        # alert. A false accept here hides a real stranger, so it is not 1.
+        "episode_resident_confirmations": 2,
+        # Quiet time after which the next person starts a fresh episode.
+        "episode_gap_seconds": 30.0,
     },
     "telegram": {
         "enabled": False,
@@ -320,6 +334,13 @@ ENV_OVERRIDES = [
     ("STREAM_FREEZE_NOTIFY_INTERVAL", "stream_freeze_notify_interval", _parse_float),
     # Face recognition
     ("FACE_RECOGNITION_ENABLED", "face_recognition.enabled", _parse_bool),
+    ("FACE_REQUIRE_PIR_WINDOW", "face_recognition.require_pir_window", _parse_bool),
+    ("FACE_MAX_CHECKS_PER_EPISODE", "face_recognition.max_checks_per_episode", _parse_int),
+    ("FACE_MIN_CHECK_INTERVAL_SECONDS", "face_recognition.min_check_interval_seconds", _parse_float),
+    ("FACE_PERSON_BOX_MARGIN", "face_recognition.person_box_margin", _parse_float),
+    ("FACE_EPISODE_RESIDENT_CONFIRMATIONS", "face_recognition.episode_resident_confirmations", _parse_int),
+    ("FACE_EPISODE_GAP_SECONDS", "face_recognition.episode_gap_seconds", _parse_float),
+    ("FACE_TOLERANCE", "face_recognition.tolerance", _parse_float),
     # MQTT
     ("MQTT_BROKER", "mqtt.broker_url", str),
     ("MQTT_PORT", "mqtt.port", _parse_int),

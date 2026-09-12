@@ -8,6 +8,7 @@ from datetime import date, datetime
 
 import requests
 
+from .face_result import summarise_face_labels
 from .mdns_resolver import resolve_camera_url
 
 
@@ -499,18 +500,16 @@ class StatusMonitor(threading.Thread):
             )
         face_enabled = self.runtime_config.get("face_recognition.enabled", False)
         if face_enabled:
-            known_faces = sum(
-                value
-                for (typ, label), value in counts.items()
-                if typ == "face" and label not in {"unknown", "Unknown", "No face", "Error", "Invalid frame"}
-            )
-            unknown_faces = sum(
-                value
-                for (typ, label), value in counts.items()
-                if typ == "face" and label in {"unknown", "Unknown"}
-            )
-            if known_faces or unknown_faces:
-                msg += f"\nObličeje (24h): {known_faces} known / {unknown_faces} unknown"
+            faces = summarise_face_labels(counts)
+            # Strangers and unreadable frames are reported apart on purpose: a
+            # large no_face count beside a small stranger count means the alerts
+            # are driven by frames nothing could be read from, not by people.
+            if any(faces.values()):
+                msg += (
+                    f"\nObličeje (24h): {faces['resident']} známých"
+                    f" / {faces['stranger']} cizích"
+                    f" / {faces['no_face']} bez čitelného obličeje"
+                )
         self.notifier.send_telegram(msg, bypass_cooldown=True)
         logging.info("Daily summary sent")
 

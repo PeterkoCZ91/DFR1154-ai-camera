@@ -11,6 +11,13 @@ from datetime import datetime
 import cv2
 import numpy as np
 
+from .face_result import (
+    FaceEpisode,
+    FaceResult,
+    notification_name,
+    should_run_face_check,
+)
+from .detection import crop_person_box
 from .flat_episode import FlatEpisodeState
 
 
@@ -247,6 +254,19 @@ class DetectionPipeline:
         self.pir_person_confirmations_required = max(
             1, int(runtime_config.get("yolo.pir_person_confirmations", 1))
         )
+        # Face checks are bounded per occurrence: they are only affordable, and
+        # only answerable, while the PIR says somebody is in the doorway.
+        _face_cfg = runtime_config.get("face_recognition", {}) or {}
+        self._face_require_pir_window = bool(_face_cfg.get("require_pir_window", True))
+        self._face_max_checks = max(1, int(_face_cfg.get("max_checks_per_episode", 5)))
+        self._face_min_check_interval = max(
+            0.0, float(_face_cfg.get("min_check_interval_seconds", 0.5))
+        )
+        self._face_box_margin = max(0.0, float(_face_cfg.get("person_box_margin", 0.25)))
+        self._face_episode_gap = max(1.0, float(_face_cfg.get("episode_gap_seconds", 30.0)))
+        self._face_episode = FaceEpisode(_face_cfg.get("episode_resident_confirmations", 2))
+        self._last_face_check_at = 0.0
+
         self.person_confirmation_streaks = {"camera": 0, "pir": 0}
         self.person_confirmation_boxes = {"camera": None, "pir": None}
         self.person_confirmation_seen_at = {"camera": 0.0, "pir": 0.0}
@@ -1037,6 +1057,61 @@ class DetectionPipeline:
             return True
         return bool(self.ha_monitor and self.ha_monitor.is_any_sensor_active())
 
+    def _pir_window_active(self, current_time: float) -> bool:
+        """Is somebody standing in front of the camera right now?
+
+        `external_yolo_until` is the sticky window opened by a PIR on-edge; the
+        live sensor level covers the case where the window has already lapsed
+        but the person has not left. The recording buffer is deliberately NOT
+        consulted here — it stays open long after the occurrence ends.
+        """
+        if current_time < float(self.shared_state.get("external_yolo_until", 0.0)):
+            return True
+        return bool(self.ha_monitor and self.ha_monitor.is_any_sensor_active())
+
+    def _current_face_episode(self, current_time: float) -> FaceEpisode:
+        """The episode in progress, starting a fresh one after a quiet gap.
+
+        Without this, two people a minute apart would share a verdict and the
+        second one would inherit the first one's suppression.
+        """
+        if current_time - self._last_face_check_at >= self._face_episode_gap:
+            self._face_episode.reset()
+        return self._face_episode
+
+    def _face_verdict(self, frame) -> FaceResult:
+        """Spend at most one face check on this frame, then answer for the episode.
+
+        The check only runs while somebody is actually at the door, on the
+        person box rather than the whole frame, a bounded number of times per
+        occurrence. The answer returned is always the episode's, never this
+        one frame's — a single frame's opinion is what the old code shipped
+        and what the aggregation is meant to replace.
+        """
+        now = time.time()
+        episode = self._current_face_episode(now)
+        if should_run_face_check(
+            enabled=True,
+            pir_window_active=self._pir_window_active(now),
+            require_pir_window=self._face_require_pir_window,
+            have_person_box=self.detector.last_person_box is not None,
+            checks_done=episode.checks_done,
+            max_checks=self._face_max_checks,
+            now=now,
+            last_check_at=self._last_face_check_at,
+            min_interval=self._face_min_check_interval,
+        ):
+            # The box is already computed and thrown away today; a face is a
+            # few percent of a 640x480 frame.
+            crop = crop_person_box(
+                frame, self.detector.last_person_box, self._face_box_margin
+            )
+            check = self.detector.identify_person(crop)
+            episode.record(check)
+            self._last_face_check_at = now
+            self.stats.record_face_attempt(check)
+        return episode.verdict()
+
     def _buffer_clip_frame_if_needed(self, frame, current_time: float) -> None:
         """Keep a rolling pre-event buffer at idle FPS; ramp to clip_fps during active windows.
 
@@ -1216,18 +1291,20 @@ class DetectionPipeline:
                     # notifier will send Telegram with unlock button — handled in notify call below
 
             elif self.runtime_config.get("face_recognition", {}).get("enabled", False):
-                is_known, name = self.detector.identify_person(frame)
-                person_name = name
-                self.stats.record_face_attempt(is_known, name)
-                self.db.log_event("face", name if is_known else "unknown", 1.0 if is_known else 0.0)
-                self.mqtt_client.publish("face", name if is_known else "unknown")
+                face = self._face_verdict(frame)
+                # Only a resident may put a name into the caption. Appending the
+                # raw result used to produce "Person detected (Video) (No face)".
+                person_name = notification_name(face)
+                face_label = face.name if face.is_resident else face.outcome.value
+                self.db.log_event("face", face_label, 1.0 if face.is_resident else 0.0)
+                self.mqtt_client.publish("face", face_label)
 
                 whitelist = self.runtime_config.get(
                     "face_recognition.whitelisted_names", []
                 )
-                if is_known and name in whitelist:
+                if face.is_resident and face.name in whitelist:
                     skip_telegram = True
-                    logging.info(f"Known person: {name} - Telegram skipped")
+                    logging.info(f"Known person: {face.name} - Telegram skipped")
 
             # Save & notify
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

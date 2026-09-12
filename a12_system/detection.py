@@ -11,9 +11,39 @@ import cv2
 import numpy as np
 
 from . import scorer_client
+from .face_result import _MIN_BOX_PIXELS, FaceOutcome, FaceResult
 
 face_recognition = None
 FACE_RECOGNITION_AVAILABLE = False
+
+
+def crop_person_box(frame: np.ndarray, box, margin: float = 0.25) -> np.ndarray:
+    """Narrow a frame to the detected person, with room for the head.
+
+    YOLO person boxes clip the crown, and a face detector given a headless
+    crop finds nothing — hence the margin. Falls back to the whole frame
+    rather than to nothing, so a missing or degenerate box degrades to the old
+    behaviour instead of silently skipping the check.
+    """
+    if box is None:
+        return frame
+    try:
+        x1, y1, x2, y2 = (int(v) for v in box)
+    except (TypeError, ValueError):
+        return frame
+    width, height = x2 - x1, y2 - y1
+    if width < _MIN_BOX_PIXELS or height < _MIN_BOX_PIXELS:
+        return frame
+
+    pad_x, pad_y = int(width * margin), int(height * margin)
+    frame_h, frame_w = frame.shape[:2]
+    x1 = max(0, x1 - pad_x)
+    y1 = max(0, y1 - pad_y)
+    x2 = min(frame_w, x2 + pad_x)
+    y2 = min(frame_h, y2 + pad_y)
+    if x2 - x1 < _MIN_BOX_PIXELS or y2 - y1 < _MIN_BOX_PIXELS:
+        return frame
+    return frame[y1:y2, x1:x2]
 
 
 class Detector:
@@ -320,19 +350,24 @@ class Detector:
             self.last_person_box = (x, y, x + box_width, y + box_height)
         return [(self.coco_classes[class_ids[i]], confidences[i]) for i in selected]
 
-    def identify_person(self, frame: np.ndarray) -> tuple[bool, str]:
-        """Identify person in frame using face recognition."""
+    def identify_person(self, frame: np.ndarray) -> FaceResult:
+        """Check one frame against the enrolled gallery.
+
+        Returns a FaceResult so the caller can tell "nobody was recognisable"
+        apart from "somebody was recognisable and is not a resident". Only the
+        latter says anything about who is at the door.
+        """
         if not FACE_RECOGNITION_AVAILABLE or not self.known_face_encodings:
-            return False, "Unknown"
+            return FaceResult(FaceOutcome.UNAVAILABLE)
 
         try:
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             if rgb_frame is None or rgb_frame.size == 0:
-                return False, "Invalid frame"
+                return FaceResult(FaceOutcome.ERROR)
 
             face_locations = face_recognition.face_locations(rgb_frame, model="hog")
             if not face_locations:
-                return False, "No face"
+                return FaceResult(FaceOutcome.NO_FACE)
 
             face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
             tolerance = self.config.get("face_recognition", {}).get("tolerance", 0.6)
@@ -341,9 +376,9 @@ class Detector:
                 distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
                 best_idx = int(np.argmin(distances))
                 if distances[best_idx] <= tolerance:
-                    return True, self.known_face_names[best_idx]
+                    return FaceResult(FaceOutcome.RESIDENT, self.known_face_names[best_idx])
 
-            return False, "Unknown"
+            return FaceResult(FaceOutcome.STRANGER)
         except Exception as e:
             logging.error(f"Face recognition error: {e}")
-            return False, "Error"
+            return FaceResult(FaceOutcome.ERROR)

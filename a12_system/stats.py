@@ -9,6 +9,8 @@ from datetime import datetime
 
 from . import scorer_client
 
+from .face_result import FaceOutcome, FaceResult
+
 
 class Statistics:
     def __init__(self, save_path: str = "stats.json", auto_save_interval: int = 300):
@@ -54,14 +56,21 @@ class Statistics:
         except Exception as e:
             print(f"Failed to load stats: {e}")
 
-    def record_face_attempt(self, result: bool, name: str) -> None:
+    def record_face_attempt(self, result: FaceResult) -> None:
+        """Count one check by what it established.
+
+        NO_FACE must not land in the unknown-person bucket: it is the common
+        case (78% of person frames) and it says nothing about who was there.
+        ERROR and UNAVAILABLE are counted as attempts only — crediting them to
+        anyone would overstate what the system knows.
+        """
         with self.lock:
             self.face_attempts += 1
-            if result and name not in ["Unknown", "No face", "Error", "Invalid frame"]:
+            if result.outcome is FaceOutcome.RESIDENT:
                 self.face_recognized += 1
-            elif name == "Unknown":
+            elif result.outcome is FaceOutcome.STRANGER:
                 self.face_unknown += 1
-            elif name == "No face":
+            elif result.outcome is FaceOutcome.NO_FACE:
                 self.face_no_face += 1
 
     def record_detection(self, label: str) -> None:
