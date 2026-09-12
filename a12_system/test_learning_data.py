@@ -266,7 +266,9 @@ def test_retention_days_maps_zero_to_infinity_and_respects_the_floor():
 
 def test_freeze_records_a_summary_for_persistence():
     cam = object.__new__(Camera)
+    cam.configure_stall_detection({})
     cam.log_prefix = "[test:cam]"
+    cam.configure_stall_detection({})
     resp = _StallingResponse(_jpeg_bytes())
     reason = cam.process_stream(resp, lambda frame: None, freeze_timeout=1.0)
     assert reason == "frozen"

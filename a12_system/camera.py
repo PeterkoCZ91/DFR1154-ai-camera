@@ -84,6 +84,8 @@ class Camera:
         self.stream_port = int(stream_port or config.get("stream_port", 81))
         self.audio_port = int(audio_port or config.get("audio_port", 82))
 
+        self.configure_stall_detection(config)
+
         self.session = requests.Session()
         user = config.get("camera_http_user", "admin")
         pwd = config.get("camera_http_pass", "admin")
@@ -100,6 +102,26 @@ class Camera:
         self._base_url = base_url
         self._resolved_host: str | None = None
         self._refresh_urls(force=True)
+
+    def configure_stall_detection(self, config: dict) -> None:
+        """Read the two timeouts that decide how fast a stalled stream is noticed.
+
+        These are a PAIR and their order matters: the socket read timeout must
+        be strictly shorter than the freeze heuristic, or silence can only ever
+        be caught by the heuristic and a genuine transport break is recorded as
+        an image-quality event. Until 2026-09-12 the read timeout was 30 s
+        against a 20 s heuristic — exactly inverted — which cost ~23 s of
+        blindness per stall, ~26 min/day at the observed ~75 stalls/day.
+
+        The floor for the freeze timeout is the healthy idle gap: ~0.5 s of
+        decode pacing plus the camera's own 2 s wait for a new frame.
+
+        Split out of __init__ so tests reach the real wiring instead of
+        re-declaring the attribute list by hand.
+        """
+        self.freeze_timeout = float(config.get("stream_freeze_timeout", 3.0))
+        self.stream_read_timeout = float(config.get("stream_read_timeout", 2.0))
+        self.stream_connect_timeout = float(config.get("stream_connect_timeout", 5.0))
 
     def _refresh_urls(self, *, force: bool = False) -> None:
         host = resolve_host(self._configured_host, force=force)
@@ -171,7 +193,11 @@ class Camera:
         while retries < max_retries:
             try:
                 self._refresh_urls(force=retries > 0)
-                response = self.session.get(self.stream_url, stream=True, timeout=(5, 30))
+                response = self.session.get(
+                    self.stream_url,
+                    stream=True,
+                    timeout=(self.stream_connect_timeout, self.stream_read_timeout),
+                )
                 if response.status_code != 200:
                     logging.error(f"{self.log_prefix} Bad stream status: {response.status_code}")
                     response.close()
@@ -283,7 +309,7 @@ class Camera:
 
     def process_stream(
         self, response: requests.Response, callback, target_fps_getter=None,
-        reconnect_requested=None, freeze_timeout: float = 20.0,
+        reconnect_requested=None, freeze_timeout: float | None = None,
     ) -> str:
         """Read frames from MJPEG stream and call callback for each frame.
 
@@ -291,7 +317,12 @@ class Camera:
         freeze_timeout), "forced_reconnect" (requested by caller),
         "stream_ended" (drain/decode thread died — camera closed or errored)
         or "interrupted".
+
+        ``freeze_timeout`` defaults to the configured ``stream_freeze_timeout``;
+        callers (and tests) may override it per call.
         """
+        if freeze_timeout is None:
+            freeze_timeout = self.freeze_timeout
         raw_queue: queue.Queue[bytes] = queue.Queue(maxsize=3)
         frame_queue: queue.Queue = queue.Queue(maxsize=1)
         stop_event = threading.Event()

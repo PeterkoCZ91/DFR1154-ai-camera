@@ -38,7 +38,9 @@ class _FakeResponse:
 
 def test_process_stream_returns_on_forced_reconnect():
     cam = object.__new__(Camera)
+    cam.configure_stall_detection({})
     cam.log_prefix = "[test:cam]"
+    cam.configure_stall_detection({})
 
     resp = _FakeResponse(_jpeg_bytes())
     seen = []
@@ -67,7 +69,9 @@ def test_process_stream_stashes_last_raw_jpg():
     # Forensics: keep the last raw JPEG so a flat episode can dump the actual
     # bytes A12 received (root-cause evidence, can't attach a 2nd stream client).
     cam = object.__new__(Camera)
+    cam.configure_stall_detection({})
     cam.log_prefix = "[test:cam]"
+    cam.configure_stall_detection({})
     jpeg = _jpeg_bytes()
     resp = _FakeResponse(jpeg)
     seen = []
@@ -79,7 +83,9 @@ def test_reset_session_swaps_session_and_preserves_auth():
     # A hung stream survives in-process reconnects that reuse the pooled session;
     # get_stream must start from a clean session (2026-07-10 outage evidence).
     cam = object.__new__(Camera)
+    cam.configure_stall_detection({})
     cam.log_prefix = "[test:cam]"
+    cam.configure_stall_detection({})
     old = requests.Session()
     old.auth = ("user", "secret")
     cam.session = old
@@ -105,7 +111,9 @@ class _ChunkResponse:
 
 def _test_camera():
     cam = object.__new__(Camera)
+    cam.configure_stall_detection({})
     cam.log_prefix = "[test:cam]"
+    cam.configure_stall_detection({})
     return cam
 
 

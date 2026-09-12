@@ -39,7 +39,9 @@ def _jpeg_bytes():
 
 def _cam():
     cam = object.__new__(Camera)
+    cam.configure_stall_detection({})
     cam.log_prefix = "[test:cam]"
+    cam.configure_stall_detection({})
     return cam
 
 

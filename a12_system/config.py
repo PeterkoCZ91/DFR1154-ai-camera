@@ -125,6 +125,8 @@ DEFAULT_CONFIG = {
     },
     "brightness_watchdog_threshold": 30,
     "brightness_watchdog_strikes": 1,
+    "stream_freeze_timeout": 3.0,
+    "stream_read_timeout": 2.0,
     "flat_frame_std_threshold": 1.0,
     "flat_frame_reconnect_strikes": 5,
     "flat_frame_reconnect_cooldown": 120.0,
@@ -299,6 +301,8 @@ ENV_OVERRIDES = [
     ("MOTION_THRESHOLD", "motion.threshold", _parse_int),
     ("MOTION_MIN_CONSECUTIVE_FRAMES", "motion.min_consecutive_frames", _parse_int),
     # Frame-health watchdog (hung-stream recovery)
+    ("STREAM_FREEZE_TIMEOUT", "stream_freeze_timeout", _parse_float),
+    ("STREAM_READ_TIMEOUT", "stream_read_timeout", _parse_float),
     ("FLAT_FRAME_STD_THRESHOLD", "flat_frame_std_threshold", _parse_float),
     ("FLAT_FRAME_RECONNECT_STRIKES", "flat_frame_reconnect_strikes", _parse_int),
     ("FLAT_FRAME_RECONNECT_COOLDOWN", "flat_frame_reconnect_cooldown", _parse_float),
