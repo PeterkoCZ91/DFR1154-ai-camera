@@ -52,6 +52,10 @@ Used for automatic DAY/DUSK/NIGHT camera profile switching based on real ambient
 - Auto-control: activated when lux < 5 (NIGHT profile), deactivated when lux > 10 (hysteresis)
 - Manual override via `/ir-control` API or dashboard toggle
 
+> **A manual `on`/`off` disables the night schedule permanently.** `updateIRAutoMode()` returns immediately when `auto_mode` is false, so `time_based` / `night_start_hour` / `night_end_hour` are never evaluated and the LED stays pinned to `manual_state` forever. `POST /ir-control` sets `auto_mode = false` by itself for `state: "on"` and `state: "off"` — only `state: "auto"` puts it back. One toggle from a dashboard or a Home Assistant switch therefore kills the night automation until someone notices. Check `GET /ir-status`: `auto_mode: false` with a stale `last_update_ms` is the signature.
+
+> **Turning both the IR LED and the NIGHT profile off, without a firmware change:** set `night_start_hour` equal to `night_end_hour` (e.g. both `0`). Both `updateIRAutoMode()` and `updateCameraProfile()` compute night as `(start > end) ? (h >= start || h < end) : (h >= start && h < end)`, so equal hours can never be night — the LED stays off and the profile stays on `DUSK` (full-auto AEC/AGC). Useful when the illuminator is blocked by the enclosure, or when the NIGHT profile causes more trouble than it solves. Persisted to LittleFS `/ir_config.json`, so it survives a reboot.
+
 ### Status LED
 
 | Property | Value |
@@ -90,6 +94,31 @@ Used for automatic DAY/DUSK/NIGHT camera profile switching based on real ambient
 
 ---
 
+
+### Uniform-grey frames: a wedged exposure loop, not darkness
+
+The OV3660 auto-exposure loop can wedge into a state where the sensor streams perfectly decodable JPEGs at full frame rate that are a **uniform field with no detail at all**. Because frames keep arriving, transport-level watchdogs (stream freeze, no-frame timeouts) never trip, and the camera can stay blind indefinitely — observed 2026-09-11/12 for 12 hours straight.
+
+What does **not** clear it:
+
+- re-applying the day/night profile (a `NIGHT` -> `DUSK` switch changed `brightness` 5.0 -> 64.1 and restored no detail)
+- forcing the IR LED off
+- a soft `POST /reboot` — one such wedge survived five LAN reboots
+
+What does clear it is writing the exposure registers explicitly:
+
+```bash
+curl -su admin:admin -X POST -H 'Content-Type: application/json' \
+     -d '{"aec":0,"agc":0,"agc_gain":0,"aec_value":300}' http://<camera>/settings
+# then hand control back:
+curl -su admin:admin -X POST -H 'Content-Type: application/json' \
+     -d '{"aec":1,"agc":1}' http://<camera>/settings
+```
+
+This doubles as the diagnostic. Detail appearing on the first write alone proves the sensor, the optics and the light level are all fine and the exposure loop was the problem. Note that `/settings` is behind basic auth — an unauthenticated POST returns 401.
+
+**Do not read a uniform frame as "it is dark".** A mid-grey `brightness` around 64 with `std` near 0 is a wedge; genuine darkness on this board reads `brightness` around 5. Image statistics alone cannot tell a featureless scene from a fault, which is why the rewrite above is the right response and a reboot is not: it costs two HTTP writes, no downtime, and is a no-op on a scene that really is dark.
+
 ## 4. Other Features
 
 ### SD Card
@@ -104,7 +133,24 @@ The board can operate as a USB UVC device (see official example `5.4 USBWebCamer
 
 ---
 
-## 5. Development Notes (A12 System)
+## 5. Running Two Boards on One Network
+
+`config.device_name` (default `ESP32-Camera`) is used as **both** the mDNS hostname and the MQTT topic prefix (`esp32cam/<device_name>`). A second board flashed with the stock firmware therefore does not simply appear alongside the first — it collides with it:
+
+- `<device_name>.local` starts resolving to whichever board answers, so a companion that addresses the camera by mDNS can silently talk to the wrong device.
+- mDNS conflict resolution renames a responder (you see `ESP32-Camera-2` appear in `avahi-browse`), and the *original* board can be the one that loses the name — after which the expected hostname resolves to nothing until it is rebooted.
+- Both boards publish to the same MQTT topics, so one board's motion events are consumed as the other's.
+
+Give the second board its own `device_name` before putting it on the same LAN. Note that `/config.json` on LittleFS overrides the compiled default, so changing the default in `getDefaultConfig()` is not enough on a board that already has a saved config — erase the filesystem partition as well:
+
+```bash
+# partition offsets come from firmware/partitions.csv (spiffs at 0xc10000)
+esptool --port /dev/ttyACM0 --chip esp32s3 erase-region 0xc10000 0x3F0000
+```
+
+WiFi, Telegram and HTTP credentials live in **NVS**, not in `/config.json`, so that erase does not cost the board its network connection.
+
+## 6. Development Notes (A12 System)
 
 1. **Microphone:** Use GPIO 38/39 with Arduino Core 3.0.0 (pinned in `platformio.ini`). Core 3.3.0+ has a DMA overflow regression with FOMO inference — stay on 3.0.0.
 2. **LTR-308 reads:** Always read from `captureTask` after `fb_return()`. Direct reads from other tasks cause I2C bus contention with SCCB and return stale/garbage values.

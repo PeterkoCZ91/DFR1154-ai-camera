@@ -46,42 +46,134 @@
 - [x] CI: `ruff check .` + `pytest -q` on every push, linter pinned
 - [x] Fix: `a12` wrapper addressed the wrong compose project, so every lifecycle command ran against an empty project
 
-## Next
+## Recently Completed (2026-09-12)
+- [x] A12: AEC/AGC unwedge recovery for sustained low-detail episodes — a wedged OV3660 exposure loop streams decodable but featureless JPEGs, so the freeze watchdog never trips and the camera stayed blind for 12 h (2026-09-11 21:00 -> 09-12 08:57). Bounded, persisted attempt budget; a failed write refunds its attempt and alerts separately. Replaces the reboot ladder removed in `099fa12`, which the same wedge had survived five times
+- [x] A12: low-detail alert no longer claims "low light is possible" — `brightness=64` uniform grey is not darkness (real darkness reads ~5) and the old wording sent the operator after a lighting problem
+- [x] A12: frame-health config extracted to `DetectionPipeline.configure_frame_health_watchdog()` so the wiring is testable without building the whole pipeline; test harnesses call it instead of re-declaring the attribute list
+- [x] Docs: uniform-grey-vs-darkness diagnosis, the IR `auto_mode` trap and the two-boards-on-one-LAN collision written up in `docs/DFROBOT_HARDWARE_GUIDE.md`
+- [x] Runtime: production camera's night window disabled (`night_start_hour = night_end_hour = 0`) — the enclosure seals both the LTR-308 and the IR LED, so NIGHT was optimising for an illuminator that lights only the inside of the box. Measured same-day, same firmware: boxed board reads 0.2-0.8 lux in daylight, bench board 111-132
+- [x] Bench unit: second DFR1154 recovered from storage, flashed to 3.12.49, renamed `ESP32-Cam-Test`; healthy (camera, LTR-308, PDM mic, motion + person detect all init OK, ~253 ms inference). No SD card fitted
+- [x] Hardware survey refreshed — no compelling replacement board. ESP32-P4 got its v3.x revision and the MIPI-CSI stack matured, but PlatformIO still has no official P4 support, P4-EYE is only a 2 MPx OV2710 with no IR, and nothing on the market still has an integrated IR illuminator
 
-The audit now records every decision together with the knobs that applied, and
-keeps a frame for the decisions that produce no other evidence. That changes
-what is worth doing next, and in which order — several of these are only worth
-doing after the one above them.
+## Roadmap
 
-- [ ] **1. Deploy the audit changes and let them collect.** Miss snapshots, the
-  ground-truth table and the audit→media link are in the code but not on a
-  camera until the image is rebuilt (`a12 build && a12 up`). Everything below
-  needs the data they produce. `decision_audit` gains a column on first start;
-  the migration is idempotent.
-- [ ] **2. Recognise occupants instead of tuning thresholds.** In a household
-  deployment nearly every person alert is an occupant, so alerting on "a person"
-  spends the entire notification budget on expected events and buries the one
-  that matters. The whitelist suppression path already exists
-  (`face_recognition.whitelisted_names` → `skip_telegram`); what is missing is
-  running it by default and treating **unrecognised** person as the alerting
-  event rather than *person*. Ranks above threshold work: the confidence a
-  known occupant scores is not what decides whether to alert.
-- [ ] **3. Distinguish known from unknown in the labels.** `decision_labels.truth`
-  is currently `person` / `not_person` / `unsure`. Splitting `person` into known
-  and unknown makes the labels feed (2) directly instead of only feeding
-  threshold work.
-- [ ] **4. Set thresholds from labels, not from guesses.** After a fortnight of
-  review, `a12 review --stats` shows precision per confidence band and the
-  notify threshold follows from where it collapses. Not before: with no labels
-  every threshold is still a guess.
-- [ ] **5. Re-measure the notification cooldown.** It currently drops a large
-  share of already-confirmed person events, which is either the right call or a
-  silent loss depending on (2) — with occupant recognition in place, most of what
-  it suppresses should not have been an alert at all. Measure after (2), not now.
+Measured over the 7 days to 2026-09-12, so the ordering below follows the data
+rather than the order things were thought of:
+
+| decision outcome | 7 days | per day |
+|---|---|---|
+| `no_person_candidate` (sensor fired, nothing found) | 3809 | 544 |
+| `below_notify_confidence` | 214 | 31 |
+| **`recorded_and_notified` (actual Telegram alerts)** | **112** | **16** |
+| `suppressed_by_cooldown` | 107 | 15 |
+
+433 person candidates in the week (62/day) produce 16 alerts/day — and the
+cooldown throws away almost exactly as many as it sends. That is the shape of
+the problem: the system is not short of detections, it is short of a reason to
+care about any particular one.
+
+### Tier 0 — loose ends from 2026-09-12 (hours)
+
+- [x] **Production camera answers to the wrong mDNS name.** DONE 2026-09-12 —
+  the bench board was unplugged, `mdns_cache.json` (which had cached an unrelated
+  device on the LAN) deleted, the camera rebooted to re-claim the name, A12
+  restarted. Verified `ESP32-Camera.local` resolves to the camera again and the
+  stream reconnected. Previously: While the bench board
+  was on the LAN under the stock `device_name`, mDNS conflict resolution renamed
+  the *production* responder: `ESP32-Camera-2.local` -> the production IP, and
+  `ESP32-Camera.local` resolves to nothing. A12 keeps working only because
+  `mdns_resolver.resolve_host()` falls back to its stale/persistent cache. A
+  reboot makes it re-claim the name (~25 s of stream downtime).
+- [ ] **Drill a second opening in the enclosure** over the LTR-308, and over the
+  IR LED if night vision is wanted back. Same-day measurement, same firmware:
+  the boxed board reads 0.2-0.8 lux in full daylight, the bench board 111-132.
+  Until this is done the lux reading is not a signal, the day/night profile is
+  pinned to DUSK as a workaround, and the camera has **no night illumination at
+  all** — the IR LED lights the inside of the box. No software change can
+  recover that capability.
+
+### Tier 1 — alert quality (the actual product problem)
+
+- [ ] **2. Split "no face resolvable" from "face seen, not a resident".** Today
+  both collapse into `Unknown` and alert. Measured on 300 stored person frames
+  with a YuNet detector: only **22%** contain a detectable face at all and only
+  **6.7%** carry one at the >=80px an embedding needs. So a face-based gate must
+  answer for the other ~93%, and both answers are bad — "unknown" keeps the alert
+  volume, "known" hides a stranger who never looks at the lens. Separating the
+  two is one enum value and is worth more than any model change.
+- [ ] **3. Gate recognition on the PIR window and the YOLO person box.** The PIR
+  (`binary_sensor.venkovni_senzor`) knows when somebody is standing in the
+  doorway — which is exactly where faces are large. Measured with a person
+  deliberately facing the camera: median face **99px**, max 131px, 76% of
+  detections >=80px, against a median of 35px in ordinary passage. Running
+  recognition only inside that window, on the already-computed
+  `detection.py:318-320` person box, turns an always-on cost into a few frames
+  per event — which is what the original disable was about (OOM kills at a 2GB
+  limit, `~/.codex/memories/a12_system_v2.md`, 2026-05-06).
+- [ ] **4. Decide per episode, not per frame.** `identify_person` is called once
+  (`pipeline.py:1219`) on a single full frame. The clip buffer holds dozens.
+  Literature puts frame-level aggregation at 63% -> 85%.
+- [ ] **5. If recognition is revived, replace dlib.** Benchmarked on this machine
+  (1 core, 640x480, ~110px face): the current dlib HOG+encode path costs
+  **251.9 ms**; `buffalo_s` (SCRFD-500M + ArcFace MobileFaceNet) costs **41.8 ms**
+  at 207 MB RSS with a 512-d embedding. Six times cheaper than the thing that
+  caused the OOM, and stronger. `buffalo_l` is the opposite trap: 618 ms, 669 MB.
+  YuNet+SFace (46.7 ms) needs **no new dependency at all** — OpenCV 4.12 already
+  ships both APIs. dlib publishes no wheel, so its 20-minute compile is inherent.
+  Raise `mem_limit` from 1g (currently using 398 MiB) before enabling anything.
+- [ ] **6. Derive the match threshold from data.** `tolerance = 0.6` is the
+  library default, never fitted. Measured: at 35 degrees of head pitch dlib's
+  distance for the *same person* is 0.566 against that 0.6 — the error budget is
+  spent by geometry before a stranger appears.
+- [ ] **7. Re-measure the notification cooldown.** It drops 15 events/day against
+  16 sent. Whether that is right depends entirely on (2)-(4).
+
+### Tier 2 — firmware (batch into one flash)
+
+Each flash interrupts the production camera, so these ship together, not one at
+a time.
+
+- [ ] **`updateIRAutoMode()` early-returns when `auto_mode` is false**, so the
+  `time_based` night window is never evaluated and the IR LED stays pinned to
+  `manual_state` forever. `POST /ir-control` sets `auto_mode = false` by itself
+  for `state: "on"`/`"off"`, so one Home Assistant toggle permanently kills the
+  night automation. Currently harmless only because the night window is disabled.
+- [ ] **Give `device_name` a unique default** (e.g. a MAC suffix) so two boards
+  cannot collide on mDNS and MQTT out of the box. Careful: changing the default
+  renames the production camera the next time its `/config.json` is absent,
+  which breaks the companion's mDNS lookup until its config is updated.
+
+### Tier 3 — observability, once Tier 1 is collecting
+
+- [x] **Stream stalls: detection window fixed 2026-09-12.** The socket read
+  timeout (30 s) was longer than the freeze heuristic (20 s), so it could never
+  fire first and every transport break was recorded as an image-level `frozen`
+  event ~23 s late. Now 2 s / 3 s, both configurable
+  (`STREAM_READ_TIMEOUT`, `STREAM_FREEZE_TIMEOUT`). Expected ~26 min/day of
+  blindness -> ~5 min. **Not yet demonstrated:** `frozen` events stopped on
+  their own on 2026-09-12 (117 / 62 / 46 on the preceding days, then 0) before
+  the fix shipped, for reasons not established — an IR-LED hypothesis was
+  rejected because stalls were spread evenly across all hours. Re-measure when
+  they return.
+- [ ] **Original observation, kept for context:** 447 `frozen` + 74 `stream_ended` in
+  the same 7 days (~75/day). Each one costs a reconnect. Decide whether that is
+  the expected cost of MJPEG over WiFi at this RSSI or a defect worth chasing —
+  right now nobody has decided, which is the worst of both.
 - [ ] **6. Inference latency into `events.db`.** Scorer p50/p95/max is per-process
   and resets on every restart, so "were the misses concentrated when inference
   was slow?" cannot be asked historically.
 - [ ] **7. Drop or populate `audio_stats`.** Zero rows; the audio monitor is off.
+
+### Not on the roadmap, deliberately
+
+- **Replacing the camera board.** Survey refreshed 2026-09-12: ESP32-P4 got its
+  v3.x revision and the MIPI-CSI stack matured, but PlatformIO still has no
+  official P4 support (only the pioarduino fork, which has already broken this
+  repo's platform install once — see the comment in `firmware/platformio.ini`),
+  P4-EYE is a 2 MPx OV2710 with no IR, and nothing on the market has an
+  integrated IR illuminator. Neither of the 2026-09-11/12 failures was a
+  hardware fault. Revisit when PlatformIO supports P4 officially, or when OV3660
+  resolution genuinely becomes the limit.
 
 ## Backlog
 - [ ] **Security hardening:** Disable LAB_MODE, enforce HTTPS, remove hardcoded credentials
