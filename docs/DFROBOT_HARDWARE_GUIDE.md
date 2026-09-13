@@ -156,3 +156,50 @@ WiFi, Telegram and HTTP credentials live in **NVS**, not in `/config.json`, so t
 2. **LTR-308 reads:** Always read from `captureTask` after `fb_return()`. Direct reads from other tasks cause I2C bus contention with SCCB and return stale/garbage values.
 3. **Speaker (intercom):** MAX98357 on GPIO 42/45/46 is ready to use — two-way audio is on the roadmap.
 4. **IR LED auto-control:** LTR-308 100 ms sample rate (configured in `ir_handler.cpp`) gives 5× faster reaction to sudden light changes (headlights, room lights on/off) compared to the original 500 ms setting.
+
+## Reading the camera's reboot log: which reason is the cause
+
+`/events` interleaves two different reboot reasons and they mean opposite
+things. Getting them the wrong way round costs an evening.
+
+| `boot` detail | What it is |
+|---|---|
+| `reason=PANIC(4)` | **The firmware crashed.** This is a cause. |
+| `reason=SW(3)` preceded by `reboot_cmd` | A12's transport watchdog rebooting the camera after the stream died. This is a **consequence** — cleanup, not a fault in itself. |
+
+A camera that crashes produces both, alternating, because every panic drops the
+stream and A12 then reboots what it thinks is a hung camera. Count the
+`PANIC(4)` entries, not the restarts.
+
+The same trap exists one level down in the stream statistics: a rising
+`send_fail_count` with `last_errno=104` is the camera observing A12's own
+teardown, not the camera dropping us.
+
+## Putting a bench board into the production role
+
+A board flashed for bench use does not become a production camera by pointing
+A12 at it. Measured on 2026-09-13, the day after such a swap: **45 restarts,
+four an hour**, with `PANIC(4)` between them, and stall spikes of 105-141 an
+hour. The board still had the bench configuration.
+
+In the PIR-first architecture the camera is **only a frame source** — the
+detection and the notifications belong to A12. So before the swap counts as
+done:
+
+```
+POST /settings {"motion_detection_enabled": false,
+                "person_detection_enabled": false,
+                "person_telegram_photo":    false,
+                "motion_telegram_photo":    false,
+                "motion_telegram_video":    false}
+```
+
+Turning those off on 2026-09-13 18:19 ended the crashes: zero panics and 92
+minutes of unbroken uptime in the hour that followed, against four restarts in
+the hour before. One hour is a strong signal, not proof — the panics came every
+200-700 s, so a day of clean numbers is the confirmation.
+
+**Side effect worth knowing:** disabling firmware motion silences
+`esp32cam/<device>/motion`, which A12 subscribes to as a *secondary* trigger.
+The primary trigger is the PIR (`MOTION_THRESHOLD=0`), so detection continues,
+but with one layer fewer.

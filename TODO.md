@@ -223,6 +223,20 @@ flat — and the measurements below were taken with that in mind.
   while she stood still. `tools/enroll_sface.py --capture <name> --seconds 60`,
   standing close, moving slowly so the light stays on.
 
+- [x] **13. DONE 2026-09-13. Camera crashes after the swap: bench config.** The
+  board that became the production camera on 2026-09-12 was still configured
+  for bench use — firmware motion detection, person detection and Telegram all
+  on, none of which belong in the PIR-first role where the camera is only a
+  frame source. It reached **45 restarts, four an hour**, with `PANIC(4)`
+  between them and stall spikes of 105-141 an hour. Turning those five settings
+  off at 18:19 gave zero panics and 92 minutes of unbroken uptime in the next
+  hour. Recorded in `docs/DFROBOT_HARDWARE_GUIDE.md` along with the reboot-log
+  trap: `PANIC(4)` is the cause, `SW(3)` after `reboot_cmd` is A12's watchdog
+  cleaning up after it.
+- [ ] **14. Confirm over a full day.** The panics came every 200-700 s, so one
+  clean hour is a strong signal and not proof. Compare tomorrow's
+  `stream_stall` count and `total_restarts` against today's 495 and 45.
+
 ### Tier 2 — firmware (batch into one flash)
 
 Each flash interrupts the production camera, so these ship together, not one at
