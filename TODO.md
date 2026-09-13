@@ -155,8 +155,73 @@ care about any particular one.
   library default, never fitted. Measured: at 35 degrees of head pitch dlib's
   distance for the *same person* is 0.566 against that 0.6 — the error budget is
   spent by geometry before a stranger appears.
+- [ ] **A. One database row per episode, not per frame.** A single visit
+  tonight wrote five `face` rows (`unavailable`, then 4x the name). That
+  inflates the counts and makes the daily summary read "4 known faces" for one
+  person. The verdict should be logged once, when the episode closes.
+- [ ] **B. The first row of an episode says `unavailable`, which is a lie.** It
+  means "one match so far, not enough to decide", not "the check could not
+  run". Two different facts in one value — the exact mistake item 2 fixed
+  elsewhere.
+- [ ] **C. Delete the dlib branch.** SFace works; dlib is not installed in the
+  image and never was. The branch only complicates `identify_person` and
+  invites somebody to switch it on by mistake.
+- [ ] **D. Turn off `FACE_DEBUG_CROP_DIR` when tuning ends.** It is writing
+  face crops to `${A12_DATA_DIR}/face_debug` — biometric data that should not
+  accumulate indefinitely. Capped at 200 files, but the cap is not a retention
+  policy.
 - [ ] **7. Re-measure the notification cooldown.** It drops 15 events/day against
   16 sent. Whether that is right depends entirely on (2)-(4).
+
+### Tier 1b — face unlock (new goal, 2026-09-12 evening)
+
+The goal changed mid-session: the point is not only quieter alerts but
+**unlocking the Nuki lock by face**. That inverts which error matters — a false
+accept stops being a missed notification and becomes a stranger let into the
+flat — and the measurements below were taken with that in mind.
+
+- [ ] **8. Decide it on a second camera first.** The M5Stack Unit CamS3 5MP
+  (`~/Plocha/M5Stack/CamS3-Firmware`, PY260, UXGA 1600x1200) captures at 1.56x
+  the linear resolution of the current 1024x768. Tonight's successful matches
+  had faces of 110-136px and the failures 61-76px; scaled, those failures land
+  at 95-119px, inside the range that already works. It also carries its own
+  white LED, which removes the dependency on a hallway light that goes out when
+  somebody stands still — that killed two capture attempts tonight. And it
+  already serves the same endpoint contract A12 consumes (`/detection-stream`
+  on 81, `/health`, `/frame`), so swapping is an `ESP32_IP` change, not code.
+  **Unknown and not to be assumed: the lens FOV is documented nowhere in that
+  repo**, and the PY260's low-light behaviour is unmeasured. Run the same
+  measurement as tonight and compare the two score distributions.
+- [ ] **9. Two galleries, because the two uses want opposite things.**
+  Measured tonight, and the single most important result of the session:
+  | gallery | enrolled person | non-enrolled person |
+  |---|---|---|
+  | 10 clean reference photos | 0.195 - 0.749 | 0.031 - **0.196** |
+  | + 31 door-angle samples | 0.531 - 0.879 | 0.216 - **0.620** |
+  Adding door-angle samples lifted recall to 9/9 above 0.5 — and lifted the
+  **non-enrolled** person to 0.620, above the enrolled person's worst 0.531.
+  The ranges overlap, so no threshold separates them. More data made the
+  matcher more sensitive and less discriminating. So: suppression uses the
+  wide gallery (it wants recall), unlocking uses the clean one (it wants
+  precision, and there it had zero false accepts with a 0.37 margin).
+- [ ] **10. Unlock design, when a camera is chosen.** Clean gallery, threshold
+  0.60, three confirmations, only inside the PIR window, attempt limit and
+  cooldown, and a Telegram message on every unlock so an unexpected one is
+  visible immediately. `NUKI_LOCK_ENTITY_ID` and `_trigger_nuki_unlock()`
+  already exist but hang off the dead Groq branch and never fire.
+- [ ] **11. Accepted risk, recorded not resolved: no liveness detection.**
+  SFace has none, so a photo on a phone held up to the lens produces a higher
+  similarity than the owner does in poor light. Raised, and the owner decided
+  to proceed. Nothing in the design mitigates it; a second factor would
+  (household phone present in HA, or a recent Nuki unlock), and that is the
+  cheapest real improvement if the risk ever stops being acceptable.
+- [ ] **12. Enrol the second adult.** Still the prerequisite for item 6 and for
+  any unlock threshold: without her enrolled, she is pushed towards the other
+  person's score instead of matching her own entry. Two attempts failed
+  tonight — the first because the enrolment floor (100px/0.85) was above
+  anything the door can produce, the second because the PIR light went out
+  while she stood still. `tools/enroll_sface.py --capture <name> --seconds 60`,
+  standing close, moving slowly so the light stays on.
 
 ### Tier 2 — firmware (batch into one flash)
 

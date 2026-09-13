@@ -335,3 +335,151 @@ def test_the_reported_score_is_the_closest_face_not_the_last_one():
     result = det.identify_person(_frame())
     assert result.outcome is FaceOutcome.STRANGER
     assert result.score > 0.95
+
+
+# --- collecting a gallery that spans poses ---------------------------------
+
+
+def test_the_first_capture_is_always_kept():
+    from a12_system.face_backend import is_distinct_enough
+
+    assert is_distinct_enough(_emb(1, 0), [], 0.92) is True
+
+
+def test_a_near_duplicate_pose_is_rejected():
+    """Twenty frames of one pose is one pose, not twenty samples.
+
+    A gallery has to span head angles; the measured failure mode is a resident
+    at 35 degrees of pitch scoring like a stranger.
+    """
+    from a12_system.face_backend import is_distinct_enough
+
+    assert is_distinct_enough(_emb(1, 0.01), [_emb(1, 0)], 0.92) is False
+
+
+def test_a_genuinely_different_pose_is_kept():
+    from a12_system.face_backend import is_distinct_enough
+
+    assert is_distinct_enough(_emb(1, 1), [_emb(1, 0)], 0.92) is True
+
+
+def test_distinctness_is_judged_against_every_sample_kept_so_far():
+    """Not just the previous one, or the person can drift back to an old pose."""
+    from a12_system.face_backend import is_distinct_enough
+
+    kept = [_emb(1, 0), _emb(0, 1)]
+    assert is_distinct_enough(_emb(0, 1.01), kept, 0.92) is False
+
+
+# --- what may go INTO a gallery -------------------------------------------
+# An enrolment sample is permanent: a bad one degrades every later match and
+# nothing downstream can undo it. Enrolment can therefore be far stricter than
+# runtime, because we control the conditions — the person is standing still,
+# on purpose, and a rejected frame costs a second.
+#
+# Thresholds measured 2026-09-12 on samples known to work. The ten reference
+# photos in the live gallery: face width 146-310px, detector score 0.851+.
+# Live crops that matched at 0.59-0.75: width 61-136px, score 0.655+.
+#
+# Blur was measured too and deliberately NOT used: Laplacian variance runs
+# 10-39 on the reference photos and 9-18 on good live crops, so it does not
+# separate good from bad on this camera and any threshold would either pass
+# everything or reject everything.
+
+
+def test_a_large_sharp_face_is_accepted():
+    from a12_system.face_backend import enrolment_quality_problem
+
+    assert enrolment_quality_problem(210, 0.905) is None
+
+
+def test_a_face_too_small_to_enrol_is_rejected():
+    """The sample is permanent, so the bar sits above the bottom of the range."""
+    from a12_system.face_backend import enrolment_quality_problem
+
+    problem = enrolment_quality_problem(61, 0.905)
+    assert problem is not None and "small" in problem
+
+
+def test_a_face_of_a_size_the_door_can_actually_produce_is_accepted():
+    """The first thresholds rejected every frame of a real capture.
+
+    A second person at the door measured 79-99px at detector scores of
+    0.70-0.78, so a 100px/0.85 floor collected nothing at all. Sizes in this
+    range demonstrably produce matching embeddings on this camera.
+    """
+    from a12_system.face_backend import enrolment_quality_problem
+
+    assert enrolment_quality_problem(89, 0.777) is None
+    assert enrolment_quality_problem(99, 0.80) is None
+
+
+def test_an_uncertain_detection_is_rejected():
+    """0.65 is fine at runtime but too loose to write into a gallery."""
+    from a12_system.face_backend import enrolment_quality_problem
+
+    problem = enrolment_quality_problem(210, 0.64)
+    assert problem is not None and "uncertain" in problem
+
+
+def test_the_reported_problem_names_the_measurement():
+    """The person is at the door and cannot read this; the log must explain."""
+    from a12_system.face_backend import enrolment_quality_problem
+
+    assert "61" in enrolment_quality_problem(61, 0.9)
+
+
+def test_every_reference_photo_that_works_today_would_still_be_accepted():
+    """A stricter gate that rejects the working gallery is a broken gate."""
+    from a12_system.face_backend import enrolment_quality_problem
+
+    for width, score in ((146, 0.851), (210, 0.905), (310, 0.95)):
+        assert enrolment_quality_problem(width, score) is None
+
+
+# --- flagging an odd sample, without deleting it --------------------------
+# Measured: the one sample this flags in the live gallery is a full profile
+# shot — a real outlier by similarity and the most valuable pose in the set.
+# Similarity cannot separate "somebody else" from "an extreme angle", so the
+# tool reports and a human decides.
+
+
+def test_a_consistent_set_flags_nothing():
+    from a12_system.face_backend import flag_unusual_samples
+
+    samples = [_emb(1, 0), _emb(1, 0.1), _emb(1, 0.2)]
+    assert flag_unusual_samples(samples, ["a"] * 3, floor=0.45) == []
+
+
+def test_a_sample_far_from_its_own_set_is_flagged():
+    from a12_system.face_backend import flag_unusual_samples
+
+    samples = [_emb(1, 0), _emb(1, 0.1), _emb(1, 0.2), _emb(0, 1)]
+    flagged = flag_unusual_samples(samples, ["a"] * 4, floor=0.45)
+    assert [i for i, _ in flagged] == [3]
+
+
+def test_flagging_never_removes_anything():
+    """The caller keeps every sample; this only produces a warning."""
+    from a12_system.face_backend import flag_unusual_samples
+
+    samples = [_emb(1, 0), _emb(1, 0.1), _emb(1, 0.2), _emb(0, 1)]
+    names = ["a"] * 4
+    flag_unusual_samples(samples, names, floor=0.45)
+    assert len(samples) == 4 and len(names) == 4
+
+
+def test_oddness_is_judged_per_person_not_across_the_gallery():
+    """Two enrolled people are SUPPOSED to be far apart."""
+    from a12_system.face_backend import flag_unusual_samples
+
+    samples = [_emb(1, 0), _emb(1, 0.1), _emb(0, 1), _emb(0.1, 1)]
+    assert flag_unusual_samples(samples, ["a", "a", "b", "b"], floor=0.45) == []
+
+
+def test_a_person_with_too_few_samples_is_left_alone():
+    """With two samples there is no majority to be unusual against."""
+    from a12_system.face_backend import flag_unusual_samples
+
+    samples = [_emb(1, 0), _emb(0, 1)]
+    assert flag_unusual_samples(samples, ["a", "a"], floor=0.45) == []

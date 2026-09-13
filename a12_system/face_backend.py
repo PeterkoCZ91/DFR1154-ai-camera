@@ -117,7 +117,12 @@ class SFaceBackend:
         return cls(detector, recognizer, threshold)
 
     def embed(self, frame: np.ndarray) -> list:
-        """Every face found in this frame, as a 128-d SFace feature.
+        """Every face found in this frame, as a 128-d SFace feature."""
+        return [embedding for _, embedding in self.detect_and_embed(frame)]
+
+    def detect_and_embed(self, frame: np.ndarray) -> list:
+        """(face, embedding) pairs. The face row carries the box and score,
+        which enrolment needs to refuse a sample it would be stuck with.
 
         Returns [] rather than raising: a backend failure must read as "nothing
         was established", never as a statement about who is present.
@@ -142,8 +147,94 @@ class SFaceBackend:
                 feature = self.recognizer.feature(aligned)
                 if feature is None:
                     continue
-                embeddings.append(np.asarray(feature, dtype=np.float32).ravel())
+                embeddings.append((face, np.asarray(feature, dtype=np.float32).ravel()))
             return embeddings
         except Exception as e:
             logging.error(f"SFace backend failed: {e}")
             return []
+
+
+def is_distinct_enough(embedding, kept: list, max_similarity: float) -> bool:
+    """Is this sample a new pose, or the same one again?
+
+    Twenty frames of somebody holding still is one sample, not twenty. A
+    gallery has to span head angles: the measured failure mode is the same
+    person at 35 degrees of pitch scoring like a stranger, and only enrolled
+    variety fixes that. Compared against every sample kept so far, not just the
+    previous one, because a person drifts back to a pose they already gave.
+    """
+    return all(cosine_similarity(embedding, other) < max_similarity for other in kept)
+
+
+# Measured 2026-09-12, and corrected the same evening after a live capture
+# produced ZERO usable samples.
+#
+# The first values (100px, 0.85) came from the ten reference photos, which run
+# 146-310px at scores of 0.851+ — but those were taken deliberately close. At
+# the door, where enrolment actually happens, a second person measured 79-99px
+# at scores of 0.70-0.78, so nothing passed. A floor no achievable sample can
+# clear is not strict, it is broken.
+#
+# These values come instead from what demonstrably produces usable embeddings
+# ON THIS CAMERA: live crops of 61-136px at scores of 0.655+ matched the
+# gallery at 0.59-0.75 the same evening. Enrolment still sits above the bottom
+# of that range, because a bad sample is permanent while a rejected frame only
+# costs a second of standing still.
+MIN_ENROLMENT_FACE_PIXELS = 85
+MIN_ENROLMENT_DETECTOR_SCORE = 0.75
+
+# Blur was measured as a third signal and rejected: Laplacian variance runs
+# 10-39 on the working reference photos and 9-18 on good live crops, so on this
+# camera — soft optics behind a plastic enclosure — it does not separate good
+# samples from bad, and any threshold would pass or reject everything.
+
+
+def enrolment_quality_problem(
+    face_width: int,
+    detector_score: float,
+    min_width: int = MIN_ENROLMENT_FACE_PIXELS,
+    min_score: float = MIN_ENROLMENT_DETECTOR_SCORE,
+) -> Optional[str]:
+    """Why this sample must not be enrolled, or None if it may be.
+
+    Returns the measurement, not just a verdict: the person being enrolled is
+    standing at the door and cannot read the terminal, so whoever reads it
+    afterwards needs to know whether to move closer or improve the light.
+    """
+    if face_width < min_width:
+        return f"face too small ({face_width}px, need {min_width}px)"
+    if detector_score < min_score:
+        return f"detection too uncertain ({detector_score:.3f}, need {min_score})"
+    return None
+
+
+def flag_unusual_samples(
+    encodings: list, names: list, floor: float = 0.45
+) -> list:
+    """Samples that sit far from the rest of their own person's set.
+
+    These are REPORTED, never dropped. Measured 2026-09-12 on the live gallery:
+    the one sample this flags is a full profile shot, at a median similarity of
+    0.449 against 0.744-0.848 for the rest — a real outlier by the numbers, and
+    the single most valuable pose in the set. Similarity alone cannot tell
+    "somebody else walked into frame" from "an extreme angle", and an extreme
+    angle is exactly what a gallery is collected for, so deleting on this signal
+    would remove the coverage it exists to provide.
+
+    Judged per person — two enrolled people are supposed to be far apart — and
+    only where enough samples exist for a majority to mean anything.
+
+    Returns [(index, median_similarity)], worst first.
+    """
+    flagged = []
+    for person in set(names):
+        members = [i for i, n in enumerate(names) if n == person]
+        if len(members) < 3:
+            continue
+        for i in members:
+            others = [encodings[j] for j in members if j != i]
+            similarities = sorted(cosine_similarity(encodings[i], o) for o in others)
+            median = similarities[len(similarities) // 2]
+            if median < floor:
+                flagged.append((i, median))
+    return sorted(flagged, key=lambda pair: pair[1])
