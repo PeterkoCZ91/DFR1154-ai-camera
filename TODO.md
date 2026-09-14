@@ -233,9 +233,28 @@ flat — and the measurements below were taken with that in mind.
   hour. Recorded in `docs/DFROBOT_HARDWARE_GUIDE.md` along with the reboot-log
   trap: `PANIC(4)` is the cause, `SW(3)` after `reboot_cmd` is A12's watchdog
   cleaning up after it.
-- [ ] **14. Confirm over a full day.** The panics came every 200-700 s, so one
-  clean hour is a strong signal and not proof. Compare tomorrow's
-  `stream_stall` count and `total_restarts` against today's 495 and 45.
+- [ ] **14. No hurry: confirm the stall spikes are gone.** Nothing depends on
+  this and the camera is healthy; it only settles whether the blocking MQTT
+  connect explains the daytime bursts as well as the blackouts. The suspicious
+  shape is a spike with **no people in it** — 2026-09-13 11:00 had 150 stream
+  stalls and zero detections, which no amount of load or darkness explains but
+  a broker hiccup driving the retry loop would.
+
+  Baselines to beat: 628 stalls on 09-13 and 396 on 09-14 (spikes of 105-150 an
+  hour), against 45 camera restarts on 09-13. Since firmware 3.12.50 and the
+  bench-config cleanup the camera has held 17 h+ of uptime.
+
+  ```sql
+  SELECT substr(datetime,1,13) h,
+         SUM(type='stream_stall') stalls,
+         SUM(type='detection')    detections
+  FROM events WHERE datetime >= '<a full day after 2026-09-14 16:00>'
+  GROUP BY h ORDER BY h;
+  ```
+
+  A day of single-digit hours with no people-free spikes closes it. Spikes that
+  survive mean something else is still there, and the next step would be a ping
+  log running across one so the link can be watched during it rather than after.
 
 - [x] **15. DONE 2026-09-14. The 11-15 s camera blackouts were MQTT, not radio.**
   `PubSubClient::connect()` blocks with a 15 s default socket timeout, from the
