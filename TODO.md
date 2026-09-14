@@ -237,6 +237,26 @@ flat — and the measurements below were taken with that in mind.
   clean hour is a strong signal and not proof. Compare tomorrow's
   `stream_stall` count and `total_restarts` against today's 495 and 45.
 
+- [x] **15. DONE 2026-09-14. The 11-15 s camera blackouts were MQTT, not radio.**
+  `PubSubClient::connect()` blocks with a 15 s default socket timeout, from the
+  main loop, holding `mqttLock()`, and the whole device stops answering for the
+  duration. A board whose broker credentials are rejected retries every 10 s and
+  spends a quarter of its life unreachable. Fixed with
+  `mqttClient.setSocketTimeout(2)`; verified on the same board, same position:
+  25.4 % loss with four 11-12 s blackouts before, 0.0 % and none after.
+  **This retracts the 2026-09-12 diagnosis that board .160 had a failing
+  antenna** — it has rejected credentials, nothing more.
+- [x] **16. DONE 2026-09-14. Per-board `device_name` default.** Now carries an
+  eFuse-MAC suffix, so two cameras cannot claim one mDNS name. Only applies to a
+  board with no `config.json`; an OTA preserves LittleFS, so existing names are
+  unchanged.
+- [ ] **17. `updateIRAutoMode()` early return — reconsidered, not a bug.**
+  `if (!irConfig.auto_mode) return;` reads as "manual mode, do not touch the
+  LED", which is coherent: `auto_mode` is the master switch and `time_based`
+  only selects time or sensor. Dropped from the batch rather than changed
+  blindly. If the time window is ever wanted, the fix is configuration
+  (`{"state":"auto"}` plus `time_based`), not code.
+
 ### Tier 2 — firmware (batch into one flash)
 
 Each flash interrupts the production camera, so these ship together, not one at

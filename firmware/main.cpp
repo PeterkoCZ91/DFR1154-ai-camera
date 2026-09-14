@@ -725,7 +725,12 @@ Config getDefaultConfig() {
   Config c;
   c.wifi_ssid = "";            // Credentials loaded from NVS
   c.wifi_password = "";
-  c.device_name = "ESP32-Camera";
+  // Per-board default, so two cameras on one network cannot claim the same
+  // mDNS name and MQTT topic. A collision renames the loser to
+  // "<name>-2" and leaves "<name>.local" resolving to whichever device
+  // answers first — on 2026-09-12 that was a printer, and A12 streamed from
+  // it. The suffix comes from the eFuse MAC, so it is stable per board.
+  c.device_name = "ESP32-Camera-" + String((uint32_t)ESP.getEfuseMac(), HEX);
   c.frame_size = FRAMESIZE_UXGA;  // 1600x1200 — OV3660 3MP (init sets max buffer size)
   c.jpeg_quality = 12;  // 5-63, lower = better quality; 12 keeps Telegram JPEGs smaller/stabler
   c.flip_vertical = true;   // Camera is mounted upside-down

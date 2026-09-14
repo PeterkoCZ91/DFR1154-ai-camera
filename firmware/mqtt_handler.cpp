@@ -310,6 +310,15 @@ void initMQTT() {
 
     mqttClient.setServer(config.mqtt_server.c_str(), config.mqtt_port);
     mqttClient.setBufferSize(1024);  // HA discovery payloads can be large
+    // PubSubClient::connect() is blocking and defaults to a 15 s socket
+    // timeout. mqttLoop() runs from the main loop and holds mqttLock() while
+    // it waits, and measured on 2026-09-14 the whole device stops answering
+    // for the duration — ICMP, HTTP and the detection stream alike. A board
+    // with the wrong broker credentials retries every 10 s, so it spent a
+    // quarter of its time unreachable in 11-15 s blackouts, which looked
+    // exactly like a failing radio. Two seconds is plenty for a broker on the
+    // same LAN and bounds the damage when it is unreachable.
+    mqttClient.setSocketTimeout(2);
     mqttClient.setCallback(mqttCallback);
     mqtt_initialized = true;
     Serial.printf("MQTT: Initialized (server=%s:%d, topic=%s)\n",

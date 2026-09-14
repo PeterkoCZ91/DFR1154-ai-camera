@@ -203,3 +203,53 @@ the hour before. One hour is a strong signal, not proof — the panics came ever
 `esp32cam/<device>/motion`, which A12 subscribes to as a *secondary* trigger.
 The primary trigger is the PIR (`MOTION_THRESHOLD=0`), so detection continues,
 but with one layer fewer.
+
+## A blocking MQTT connect looks exactly like a failing radio
+
+`PubSubClient::connect()` blocks, and its default socket timeout is **15 s**.
+`mqttLoop()` runs from the Arduino main loop and holds `mqttLock()` while it
+waits, and measured on 2026-09-14 **the whole device stops answering for the
+duration** — ICMP, HTTP and the detection stream alike. `mqttReconnect()`
+retries every 10 s, so a board that cannot reach or authenticate with the
+broker spends a quarter of its life unreachable, in 11-15 s blackouts.
+
+Same board, same position, 190 s of ping:
+
+| | loss | blackouts |
+|---|---|---|
+| MQTT on, credentials rejected | **25.4 %** | 11, 11, 11, 12 s |
+| MQTT disabled | **0.0 %** | none |
+| MQTT on, after `setSocketTimeout(2)` | **0.0 %** | none |
+
+Two failure codes, two very different effects: `rc=5` (not authorised) fails
+immediately and costs nothing, while **`rc=-4` (timeout) is the one that
+blocks**. Watch for `rc=-4` on the serial console followed within a second by
+the outage.
+
+**This misdiagnosis cost two days.** A board with rejected MQTT credentials was
+declared to have a failing antenna, because a second board in the same place
+was clean — that one simply had working credentials and never entered the retry
+loop. Before blaming hardware for periodic dropouts, disable MQTT and re-measure.
+
+## Bench board to production: the checklist
+
+Pointing A12 at a board does not make it a production camera. Each of these was
+missed in one swap and each caused a separate incident:
+
+```
+POST /settings    {"motion_detection_enabled": false,   # firmware detection is
+                   "person_detection_enabled": false,   # A12's job in PIR-first
+                   "person_telegram_photo":    false,
+                   "motion_telegram_photo":    false,
+                   "motion_telegram_video":    false,
+                   "mqtt_enabled":             false}   # nothing consumes it once
+                                                        # firmware detection is off
+POST /ir-control  {"state": "off"}                      # the LTR-308 is sealed
+                                                        # inside the enclosure
+```
+
+The IR one is worth spelling out: the ambient sensor is behind the same plastic
+as the lens, so it always reads dark and the LED never switches off. Measured
+2026-09-14 — with the LED on the sensor read 4.2 lux, with it off 0.2, both far
+below the 13 lux threshold. The LED was lighting its own sensor and still could
+not clear the bar.
