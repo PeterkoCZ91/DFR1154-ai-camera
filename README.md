@@ -6,14 +6,14 @@
 [![Python](https://img.shields.io/badge/A12_companion-Python_3.10+-blue?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Version](https://img.shields.io/badge/Version-3.12.49-blue)]()
+[![Version](https://img.shields.io/badge/Version-3.12.50-blue)]()
 
 Firmware for the **DFRobot DFR1154 AI Camera Module** (FireBeetle 2 ESP32-S3 + OV3660 3 MP + LTR-308 lux + PDM mic). A lock-free PSRAM ring buffer feeds MJPEG streaming, RTSP, AVI recording, on-device person detection (Edge Impulse FOMO + ByteTrack) concurrently from a single camera. MQTT auto-discovery for Home Assistant, Telegram bot, time-lapse, web dashboard with live log. No cloud required.
 
 The optional `a12_system/` Python companion is part of **A12**, a multi-camera surveillance system that pairs with this firmware (and future ESP-camera modules) for YOLOv11n inference, face recognition, and sensor fusion with Home Assistant / Zigbee.
 
 > [!TIP]
-> **Unreleased** — **A blocking MQTT connect no longer takes the whole camera offline.** `PubSubClient::connect()` blocks with a 15 s default socket timeout, called from the main loop, so a camera that cannot reach its broker stops answering ICMP, HTTP *and* the detection stream for the duration, every 10 s. One board spent a quarter of its life unreachable in 11-15 s blackouts and was misdiagnosed as a failing antenna. Now `setSocketTimeout(2)`: same board, same place, 25.4 % packet loss → 0.0 %. `device_name` also gains an eFuse-MAC suffix so two cameras cannot claim one mDNS name. A12 side: face recognition rebuilt on OpenCV YuNet + SFace (no dlib, no cloud, 64.5 ms per check), gated on the PIR window and the person box, deciding once per occurrence instead of per frame. See [CHANGELOG](CHANGELOG.md).
+> **New in v3.12.50** — **A blocking MQTT connect no longer takes the whole camera offline.** `PubSubClient::connect()` blocks with a 15 s default socket timeout, called from the main loop, so a camera that cannot reach its broker stops answering ICMP, HTTP *and* the detection stream for the duration, every 10 s. One board spent a quarter of its life unreachable in 11-15 s blackouts and was misdiagnosed as a failing antenna. Now `setSocketTimeout(2)`: same board, same place, 25.4 % packet loss → 0.0 %. `device_name` also gains an eFuse-MAC suffix so two cameras cannot claim one mDNS name. A12 side: face recognition rebuilt on OpenCV YuNet + SFace (no dlib, no cloud, 64.5 ms per check), gated on the PIR window and the person box, deciding once per occurrence instead of per frame. See [CHANGELOG](CHANGELOG.md).
 >
 > **New in v3.12.49** — **Flat-gray sensor-hang auto-recovery**: a new auth-guarded `POST /reboot` endpoint plus an escalating A12 ladder (stream reconnects → LAN camera reboot → give up + alert) with a persistent reboot budget and rate-limited notifications; commanded soft reboots no longer trip the `power_health` detector. See [CHANGELOG](CHANGELOG.md).
 >

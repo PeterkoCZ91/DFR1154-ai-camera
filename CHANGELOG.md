@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [Unreleased] - 2026-09-14
+## [3.12.50] - 2026-09-14
 
 ### Fixed (Firmware — a blocking MQTT connect took the whole camera offline)
 
