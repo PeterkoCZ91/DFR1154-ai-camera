@@ -231,6 +231,25 @@ declared to have a failing antenna, because a second board in the same place
 was clean — that one simply had working credentials and never entered the retry
 loop. Before blaming hardware for periodic dropouts, disable MQTT and re-measure.
 
+## Enabling MQTT over `/settings` does nothing until a reboot
+
+`mqttLoop()` opens with `if (!mqtt_initialized || !config.mqtt_enabled) return;`
+and `mqtt_initialized` is only ever set in `mqttInit()`, which runs at boot.
+So a camera that booted with MQTT disabled ignores a later
+`{"mqtt_enabled": true}`: the setting persists and `/settings` reports it back,
+but nothing connects and nothing publishes. Measured 2026-09-14 — 190 s of
+silence on the broker, then the topic appeared within seconds of a reboot.
+
+```
+POST /settings {"mqtt_enabled": true, "mqtt_server": "...", "mqtt_port": 1883}
+POST /reboot                                    # required, not optional
+```
+
+The same shape catches the credentials: `/credentials` writes them to NVS, but
+the client reads them when it connects, so a rejected login keeps being
+rejected until the retry loop comes round. Watch the serial console for
+`MQTT: Connected` rather than trusting the settings echo.
+
 ## Bench board to production: the checklist
 
 Pointing A12 at a board does not make it a production camera. Each of these was
