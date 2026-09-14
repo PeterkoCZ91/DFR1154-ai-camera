@@ -13,6 +13,8 @@ Firmware for the **DFRobot DFR1154 AI Camera Module** (FireBeetle 2 ESP32-S3 + O
 The optional `a12_system/` Python companion is part of **A12**, a multi-camera surveillance system that pairs with this firmware (and future ESP-camera modules) for YOLOv11n inference, face recognition, and sensor fusion with Home Assistant / Zigbee.
 
 > [!TIP]
+> **Unreleased** — **A blocking MQTT connect no longer takes the whole camera offline.** `PubSubClient::connect()` blocks with a 15 s default socket timeout, called from the main loop, so a camera that cannot reach its broker stops answering ICMP, HTTP *and* the detection stream for the duration, every 10 s. One board spent a quarter of its life unreachable in 11-15 s blackouts and was misdiagnosed as a failing antenna. Now `setSocketTimeout(2)`: same board, same place, 25.4 % packet loss → 0.0 %. `device_name` also gains an eFuse-MAC suffix so two cameras cannot claim one mDNS name. A12 side: face recognition rebuilt on OpenCV YuNet + SFace (no dlib, no cloud, 64.5 ms per check), gated on the PIR window and the person box, deciding once per occurrence instead of per frame. See [CHANGELOG](CHANGELOG.md).
+>
 > **New in v3.12.49** — **Flat-gray sensor-hang auto-recovery**: a new auth-guarded `POST /reboot` endpoint plus an escalating A12 ladder (stream reconnects → LAN camera reboot → give up + alert) with a persistent reboot budget and rate-limited notifications; commanded soft reboots no longer trip the `power_health` detector. See [CHANGELOG](CHANGELOG.md).
 >
 > *v3.12.48* — Restart-rate detection (boot-timestamp ring buffer; `/health` exposes `restarts_1h`/`restarts_24h` + self-clearing, POWERON-aware `power_health`), mDNS hostname resolver, stream reader split into drain + decode threads, and a new [data-privacy guide](docs/DATA_PRIVACY.md).
@@ -30,8 +32,8 @@ The optional `a12_system/` Python companion is part of **A12**, a multi-camera s
 | Hardware | ESP32 only | ESP32 + server / Raspberry Pi |
 | Person detection | FOMO on-device (~300–500 ms) | FOMO gates YOLOv11n via A12 (server-side) |
 | UNCERTAIN detections | Direct Telegram (low-confidence caption) | MQTT → A12 YOLO verify → Telegram only if confirmed |
-| Face recognition | No | Yes — Groq vision (LLaMA 4 Scout, free API) |
-| Auto door unlock | No | Yes — Nuki via Home Assistant on high-confidence match |
+| Face recognition | No | Yes — on-device YuNet + SFace (OpenCV, no cloud) |
+| Auto door unlock | No | Nuki via Home Assistant — wiring exists, not enabled (see caveats below) |
 | Telegram alerts | Yes — sent by ESP32 | Yes — sent by A12 (with face ID + AV clip) |
 | AV clips | No | Yes — MP4 with audio |
 | Home Assistant | MQTT (direct) | MQTT (direct + A12 enrichment) |
@@ -195,9 +197,8 @@ Once connected, open the **web dashboard** at `http://<device-ip>/`. HTTP Basic 
 
 ### Optional: A12 Companion (Enhanced mode)
 
-`a12_system/` adds server-side YOLO verification, Groq vision face recognition, AV clip
-recording, Nuki auto-unlock, daily summaries, and shared-scorer support for multi-camera
-setups. It is optional: the firmware works standalone, and Enhanced mode can be enabled
+`a12_system/` adds server-side YOLO verification, on-device face recognition, AV clip
+recording, daily summaries, and shared-scorer support for multi-camera setups. It is optional: the firmware works standalone, and Enhanced mode can be enabled
 later without changing the firmware architecture.
 
 ```bash
@@ -276,8 +277,8 @@ The OV3660 sensor captures JPEG frames into a single FreeRTOS `captureTask` runn
              Person?
             Yes |
                 v
-         Groq vision
-        (LLaMA 4 Scout)
+       Face recognition
+       (YuNet + SFace)
        /       |        \
     >=90%   65-89%      <65%
       |        |          |
@@ -477,7 +478,7 @@ Auto-switching between three camera tunings based on ambient light from the LTR-
 | **IR LED auto control** | Lux threshold + hysteresis, manual override via API |
 | **OV3660 ISP tuning** | LENC, BPC/WPC auto, SDE, 2D-NR (init-time SCCB writes) |
 | **Server-side YOLO** | Optional Python A12 system runs YOLOv11n on the MJPEG stream for full bounding-box accuracy |
-| **Face recognition** | Optional `face_recognition` library in A12 (HOG-based, configurable tolerance) |
+| **Face recognition** | OpenCV YuNet detector + SFace embeddings in A12. Runs only inside a PIR window, on the YOLO person box, and decides once per occurrence rather than per frame. No extra dependency — both APIs ship with opencv-python-headless; two model files live in the data directory beside the YOLO weights |
 | **Sensor fusion** | Confirmed alarm requires both camera detection AND external Zigbee sensor within configurable time window |
 
 ### :house: Integrations
