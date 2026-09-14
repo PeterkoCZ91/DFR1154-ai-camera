@@ -121,6 +121,24 @@ def report_separation(encodings: list, names: list) -> None:
             print(f"  {a} vs {b}: {worst:.3f}{flag}")
 
 
+def camera_auth_from_config(data_dir: str):
+    """Camera HTTP credentials from the running config, never a hardcoded pair.
+
+    Reads the same keys A12 itself uses, so the tool works out of the box
+    without a default login living in the source.
+    """
+    path = os.path.join(data_dir, "config.env")
+    user = password = ""
+    if os.path.exists(path):
+        for line in open(path):
+            key, _, value = line.strip().partition("=")
+            if key == "ESP32_HTTP_USER":
+                user = value
+            elif key == "ESP32_HTTP_PASS":
+                password = value
+    return (user, password) if user else None
+
+
 def camera_url_from_config(data_dir: str) -> str:
     """The camera A12 is actually watching, so enrolment uses the same view.
 
@@ -224,7 +242,9 @@ def main() -> int:
                              "running config, so samples come from the same "
                              "lens, angle and light that will do the matching")
     parser.add_argument("--seconds", type=float, default=30.0)
-    parser.add_argument("--auth", default="admin:admin", help="user:pass for the camera")
+    parser.add_argument("--auth", metavar="USER:PASS", default=None,
+                        help="camera HTTP auth; defaults to ESP32_HTTP_USER / "
+                             "ESP32_HTTP_PASS from the running config")
     args = parser.parse_args()
 
     faces_dir = os.path.join(args.data_dir, "known_faces")
@@ -240,10 +260,13 @@ def main() -> int:
                 "--capture needs --camera; no ESP32_IP found in "
                 f"{os.path.join(args.data_dir, 'config.env')}"
             )
-        user, _, password = args.auth.partition(":")
+        if args.auth:
+            user, _, password = args.auth.partition(":")
+            auth = (user, password) if user else None
+        else:
+            auth = camera_auth_from_config(args.data_dir)
         if not capture_from_camera(
-            backend, camera, args.capture, faces_dir, args.seconds,
-            (user, password) if user else None,
+            backend, camera, args.capture, faces_dir, args.seconds, auth,
         ):
             raise SystemExit("captured nothing usable — nothing written")
         print()

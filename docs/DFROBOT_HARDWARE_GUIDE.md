@@ -108,10 +108,11 @@ What does **not** clear it:
 What does clear it is writing the exposure registers explicitly:
 
 ```bash
-curl -su admin:admin -X POST -H 'Content-Type: application/json' \
+# $CAM_AUTH is <user>:<pass> — the values in ESP32_HTTP_USER / ESP32_HTTP_PASS
+curl -su "$CAM_AUTH" -X POST -H 'Content-Type: application/json' \
      -d '{"aec":0,"agc":0,"agc_gain":0,"aec_value":300}' http://<camera>/settings
 # then hand control back:
-curl -su admin:admin -X POST -H 'Content-Type: application/json' \
+curl -su "$CAM_AUTH" -X POST -H 'Content-Type: application/json' \
      -d '{"aec":1,"agc":1}' http://<camera>/settings
 ```
 
