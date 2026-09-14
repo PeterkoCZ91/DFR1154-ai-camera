@@ -33,8 +33,12 @@ screenshots/
 camera_photos/
 artifacts/
 
-# Groq face recognition — reference photos (private, not for public repo)
+# Face recognition — biometric data, never in a public repo.
+# Reference photos, the debug crops the pipeline writes when
+# FACE_DEBUG_CROP_DIR is set, and samples parked aside during enrolment.
 known_faces/
+face_debug/
+face_samples_aside/
 
 # OS
 .DS_Store
