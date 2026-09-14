@@ -1101,7 +1101,10 @@ class DetectionPipeline:
             return
         try:
             os.makedirs(self._face_debug_dir, exist_ok=True)
-            path = os.path.join(self._face_debug_dir, debug_crop_name(when, result))
+            path = os.path.join(
+                self._face_debug_dir,
+                debug_crop_name(when, result, seq=self._face_debug_written),
+            )
             if cv2.imwrite(path, crop):
                 self._face_debug_written += 1
                 if self._face_debug_written == self._face_debug_limit:

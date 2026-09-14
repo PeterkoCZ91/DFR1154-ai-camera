@@ -182,14 +182,21 @@ class FaceEpisode:
 _UNSAFE_IN_NAME = re.compile(r"[^A-Za-z0-9_.-]")
 
 
-def debug_crop_name(when: float, result: FaceResult) -> str:
+def debug_crop_name(when: float, result: FaceResult, seq: Optional[int] = None) -> str:
     """Filename encoding what the check saw, so a directory listing is the report.
 
     The score comes before the name so files sort by how close the match was,
     which is what you scan when deciding whether the threshold is wrong.
+
+    `seq` is what actually makes the name unique. The timestamp alone does not:
+    it carries milliseconds, and two saves inside one millisecond produced the
+    same name and silently overwrote each other — three writes, two files.
     """
     stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(when))
-    parts = [stamp, f"{when % 1:.3f}".split(".")[1], result.outcome.value]
+    parts = [stamp, f"{when % 1:.3f}".split(".")[1]]
+    if seq is not None:
+        parts.append(f"{seq:04d}")
+    parts.append(result.outcome.value)
     if result.score is not None:
         parts.append(f"{result.score:.3f}")
     if result.name:

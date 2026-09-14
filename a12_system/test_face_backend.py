@@ -483,3 +483,23 @@ def test_a_person_with_too_few_samples_is_left_alone():
 
     samples = [_emb(1, 0), _emb(0, 1)]
     assert flag_unusual_samples(samples, ["a", "a"], floor=0.45) == []
+
+
+def test_two_crops_in_the_same_millisecond_get_different_names():
+    """Timestamps do not make a filename unique, and CI proved it.
+
+    The name carried seconds plus milliseconds, so two writes inside one
+    millisecond collided and the second silently overwrote the first — three
+    saves, two files. It passed locally only because the loop happened to be
+    slower there.
+    """
+    when = 1757700000.123456
+    first = debug_crop_name(when, FR(FaceOutcome.NO_FACE), seq=1)
+    second = debug_crop_name(when, FR(FaceOutcome.NO_FACE), seq=2)
+    assert first != second
+
+
+def test_the_sequence_number_is_optional():
+    """Callers that do not care keep the old shape."""
+    name = debug_crop_name(1757700000.0, FR(FaceOutcome.NO_FACE))
+    assert name.endswith(".jpg") and "no_face" in name
