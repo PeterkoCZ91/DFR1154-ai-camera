@@ -154,7 +154,7 @@ cd a12_system
 | `a12 events [N]` | Query last N events from `events.db` (default 20) |
 | `a12 calibrate [days]` | Aggregate the local YOLO/policy audit for the selected period (default 7 days) |
 | `a12 tail` | Follow `a12.log` on the host |
-| `a12 enroll [args]` | Run `enroll_faces.py` for face whitelist enrollment |
+| `a12 enroll [args]` | Run `enroll_sface.py` in the container: build the face gallery and whitelist |
 | `a12 help` | Show this command list |
 
 Decision audit rows are retained locally for 30 days by default. Set `DECISION_AUDIT_RETENTION_DAYS=0` to keep them indefinitely.

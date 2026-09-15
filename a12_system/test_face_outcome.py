@@ -21,7 +21,6 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from a12_system import detection
 from a12_system.detection import Detector
 from a12_system.face_result import (
     FaceOutcome,
@@ -31,42 +30,40 @@ from a12_system.face_result import (
 )
 
 
-class _FakeFaceRecognition:
-    """Stands in for the dlib-backed `face_recognition` module.
+class _StubBackend:
+    """Stands in for YuNet + SFace: one embedding per face found in the frame.
 
-    dlib is deliberately not installed in the image (it is a lazy import), so
-    the real library is not available to test against even if we wanted it.
+    The real backend returns [] rather than raising when it fails internally,
+    so `raises=True` here models the case it cannot absorb itself.
     """
 
-    def __init__(self, locations, distances):
-        self._locations = locations
-        self._distances = distances
+    def __init__(self, embeddings, raises=False):
+        self._embeddings = embeddings
+        self._raises = raises
 
-    def face_locations(self, rgb, model="hog"):
-        return self._locations
-
-    def face_encodings(self, rgb, locations):
-        return [np.zeros(128) for _ in locations]
-
-    def face_distance(self, known, encoding):
-        return np.array(self._distances)
+    def embed(self, frame):
+        if self._raises:
+            raise RuntimeError("backend exploded")
+        return list(self._embeddings)
 
 
-def _detector(monkeypatch, *, gallery=("Resident",), locations=(), distances=(),
-              available=True, raises=False):
+def _emb(*values):
+    vec = np.zeros(128, dtype=np.float32)
+    for i, value in enumerate(values):
+        vec[i] = value
+    return vec
+
+
+def _detector(*, gallery=("Resident",), encodings=None, faces=(),
+              raises=False, backend=True, threshold=0.363):
     det = Detector.__new__(Detector)
-    det.config = {"face_recognition": {"tolerance": 0.6}}
+    det.config = {}
     det.known_face_names = list(gallery)
-    det.known_face_encodings = [np.zeros(128) for _ in gallery]
-
-    fake = _FakeFaceRecognition(list(locations), list(distances))
-    if raises:
-        def boom(*a, **kw):
-            raise RuntimeError("dlib exploded")
-        fake.face_locations = boom
-
-    monkeypatch.setattr(detection, "face_recognition", fake)
-    monkeypatch.setattr(detection, "FACE_RECOGNITION_AVAILABLE", available)
+    det.known_face_encodings = (
+        list(encodings) if encodings is not None else [_emb(1, 0) for _ in gallery]
+    )
+    det.face_cosine_threshold = threshold
+    det.face_backend = _StubBackend(list(faces), raises) if backend else None
     return det
 
 
@@ -74,82 +71,92 @@ def _frame():
     return np.zeros((120, 160, 3), dtype=np.uint8)
 
 
-def test_an_empty_gallery_is_unavailable_not_a_stranger(monkeypatch):
+# A face that matches the default gallery entry, and one orthogonal to it.
+_MATCHING = _emb(1, 0)
+_STRANGER = _emb(0, 1)
+
+
+def test_an_empty_gallery_is_unavailable_not_a_stranger():
     """Nothing was compared, so nothing may be claimed about the person.
 
     This is also the state a runtime MQTT toggle lands in: `enabled` is read
     from runtime config but the gallery only loads in Detector.__init__, so
     enabling the feature after boot leaves the encodings empty forever.
     """
-    det = _detector(monkeypatch, gallery=())
+    det = _detector(gallery=(), encodings=[], faces=[_MATCHING])
     assert det.identify_person(_frame()).outcome is FaceOutcome.UNAVAILABLE
 
 
-def test_a_missing_library_is_unavailable(monkeypatch):
-    det = _detector(monkeypatch, available=False)
+def test_a_missing_backend_is_unavailable():
+    """No models in the data dir: the check cannot run, so it claims nothing."""
+    det = _detector(backend=False)
     assert det.identify_person(_frame()).outcome is FaceOutcome.UNAVAILABLE
 
 
-def test_no_resolvable_face_is_not_a_stranger(monkeypatch):
+def test_no_resolvable_face_is_not_a_stranger():
     """The 78% case. It must not read as evidence about who is there."""
-    det = _detector(monkeypatch, locations=[])
+    det = _detector(faces=[])
     assert det.identify_person(_frame()).outcome is FaceOutcome.NO_FACE
 
 
-def test_a_face_matching_nobody_is_a_stranger(monkeypatch):
-    det = _detector(monkeypatch, locations=[(0, 10, 10, 0)], distances=[0.9])
+def test_a_face_matching_nobody_is_a_stranger():
+    det = _detector(faces=[_STRANGER])
     assert det.identify_person(_frame()).outcome is FaceOutcome.STRANGER
 
 
-def test_a_face_under_tolerance_is_a_resident(monkeypatch):
-    det = _detector(monkeypatch, gallery=("Resident",),
-                    locations=[(0, 10, 10, 0)], distances=[0.4])
+def test_a_face_above_the_threshold_is_a_resident():
+    det = _detector(gallery=("Resident",), faces=[_MATCHING])
     result = det.identify_person(_frame())
     assert result.outcome is FaceOutcome.RESIDENT
     assert result.name == "Resident"
 
 
-def test_a_raising_backend_is_an_error_not_a_stranger(monkeypatch):
-    det = _detector(monkeypatch, raises=True)
+def test_a_raising_backend_is_an_error_not_a_stranger():
+    """identify_person() runs inside the detection loop, so it must absorb an
+    unexpected failure and say ERROR rather than take the pipeline down."""
+    det = _detector(raises=True)
     assert det.identify_person(_frame()).outcome is FaceOutcome.ERROR
 
 
-def test_only_a_resident_carries_a_name(monkeypatch):
+def test_only_a_resident_carries_a_name():
     """No outcome but RESIDENT may put a name into the rest of the system."""
     for kwargs in (
-        {"gallery": ()},
-        {"available": False},
-        {"locations": []},
-        {"locations": [(0, 10, 10, 0)], "distances": [0.9]},
+        {"gallery": (), "encodings": [], "faces": [_MATCHING]},
+        {"backend": False},
+        {"faces": []},
+        {"faces": [_STRANGER]},
         {"raises": True},
     ):
-        det = _detector(monkeypatch, **kwargs)
+        det = _detector(**kwargs)
         result = det.identify_person(_frame())
         assert result.outcome is not FaceOutcome.RESIDENT
         assert result.name is None, f"{result.outcome} leaked a name"
 
 
-def test_the_best_match_wins_not_the_first_one_under_tolerance(monkeypatch):
-    """argmin picks the closest encoding; the gallery holds many per person."""
-    det = _detector(monkeypatch, gallery=("Other", "Resident"),
-                    locations=[(0, 10, 10, 0)], distances=[0.55, 0.2])
+def test_the_best_match_wins_not_the_first_one_over_the_threshold():
+    """The gallery holds many samples per person; the closest one decides."""
+    det = _detector(
+        gallery=("Other", "Resident"),
+        encodings=[_emb(0.9, 0.44), _emb(1, 0)],
+        faces=[_MATCHING],
+    )
     assert det.identify_person(_frame()).name == "Resident"
 
 
-def test_a_caption_never_shows_a_sentinel(monkeypatch):
+def test_a_caption_never_shows_a_sentinel():
     """The bug this replaces: Telegram literally read "(No face)"."""
     for kwargs in (
-        {"gallery": ()},
-        {"locations": []},
-        {"locations": [(0, 10, 10, 0)], "distances": [0.9]},
+        {"gallery": (), "encodings": [], "faces": [_MATCHING]},
+        {"faces": []},
+        {"faces": [_STRANGER]},
         {"raises": True},
     ):
-        det = _detector(monkeypatch, **kwargs)
+        det = _detector(**kwargs)
         assert notification_name(det.identify_person(_frame())) == ""
 
 
-def test_a_caption_shows_the_resident(monkeypatch):
-    det = _detector(monkeypatch, locations=[(0, 10, 10, 0)], distances=[0.4])
+def test_a_caption_shows_the_resident():
+    det = _detector(faces=[_MATCHING])
     assert notification_name(det.identify_person(_frame())) == "Resident"
 
 

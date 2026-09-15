@@ -1220,7 +1220,19 @@ class DetectionPipeline:
         # hides all three. Off unless a directory is configured.
         self._face_debug_dir = str(face_cfg.get("debug_crop_dir", "") or "")
         self._face_debug_limit = max(0, int(face_cfg.get("debug_crop_limit", 200)))
-        self._face_debug_written = 0
+        # Seeded from what is already on disk. A plain counter restarted at zero
+        # in every process, so each A12 restart granted a fresh quota — and a
+        # camera crash loop restarts A12 repeatedly, which is exactly when the
+        # directory would run away.
+        self._face_debug_written = self._count_face_debug_crops()
+
+    def _count_face_debug_crops(self) -> int:
+        if not self._face_debug_dir:
+            return 0
+        try:
+            return len(os.listdir(self._face_debug_dir))
+        except OSError:
+            return 0
 
     def _save_face_debug_crop(self, crop, result: FaceResult, when: float) -> None:
         """Best-effort: a debug convenience must never cost a detection."""

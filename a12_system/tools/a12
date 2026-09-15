@@ -407,8 +407,12 @@ case "${cmd}" in
     ;;
 
   enroll)
+    # Runs inside the container on purpose: the ONNX models live in the data
+    # dir the container mounts, and OpenCV is already there, so enrolling needs
+    # nothing installed on the host.
     shift
-    python3 "${A12_SYSTEM_DIR}/tools/enroll_faces.py" "$@"
+    compose exec a12 python3 -m a12_system.tools.enroll_sface \
+      --data-dir /data "$@"
     ;;
 
   help|--help|-h)
@@ -436,7 +440,7 @@ Commands:
   up | start       Start the a12 service in detached mode
   restart          Restart the a12 service
   down | stop      Stop and remove the compose stack
-  enroll [args]    Run enroll_faces.py with the given arguments
+  enroll [args]    Build the face gallery (enroll_sface.py, inside the container)
   help             Show this help text
 
 Typical flow:

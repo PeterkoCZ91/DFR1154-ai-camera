@@ -785,7 +785,7 @@ a12_system/
  +-- requirements.txt        Python dependencies (paho-mqtt v2, opencv, telebot)
  +-- tools/
       +-- a12                CLI wrapper (status, logs, restart, build, up, down, events, tail, enroll)
-      +-- enroll_faces.py    Face enrollment for whitelist recognition
+      +-- enroll_sface.py    Face enrollment (SFace gallery + whitelist)
       +-- setup.sh           First-run data directory setup
 
 tools/

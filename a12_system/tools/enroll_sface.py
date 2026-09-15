@@ -10,8 +10,8 @@ The output is tagged with the backend that produced it. dlib and SFace
 embeddings are both 128-d but live in different spaces, so nothing except that
 tag can stop them being compared; a silent mix-up would yield confident
 nonsense, and since recognition only ever SUPPRESSES alerts, that means muting
-real strangers. The existing `known_faces.pkl` is dlib-era and is deliberately
-left alone — it is not convertible, the photos have to be re-embedded.
+real strangers. A pre-2026-09 `known_faces.pkl` is dlib-era and unreadable here:
+it is not convertible, the photos have to be re-embedded.
 
 Run it wherever the models are, e.g. inside the container:
     docker compose -p a12_system exec a12 \\
@@ -20,6 +20,7 @@ Run it wherever the models are, e.g. inside the container:
 
 import argparse
 import glob
+import json
 import os
 import pickle
 import sys
@@ -229,6 +230,38 @@ def capture_from_camera(
     return saved
 
 
+def update_whitelist(data_dir: str, names: list) -> list:
+    """Point `face_recognition.whitelisted_names` at who is actually enrolled.
+
+    Recognising a resident and then alerting about them anyway is the failure
+    this prevents: the whitelist is what turns a match into a suppressed
+    notification, so it has to move with the gallery. Replaced rather than
+    merged — a name with no encodings can never match, and leaving it behind
+    only hides that the person was never really enrolled.
+
+    Raises rather than overwriting a config.json that will not parse: the
+    gallery is already on disk at this point, so the operator can fix the file
+    and re-run, which is cheaper than silently truncating their settings.
+    """
+    config_path = os.path.join(data_dir, "config.json")
+    config = {}
+    if os.path.exists(config_path):
+        with open(config_path) as handle:
+            config = json.load(handle)
+        if not isinstance(config, dict):
+            raise ValueError(f"{config_path} is not a JSON object")
+
+    unique = sorted(set(names))
+    section = config.setdefault("face_recognition", {})
+    section["whitelisted_names"] = unique
+
+    tmp = config_path + ".tmp"
+    with open(tmp, "w") as handle:
+        json.dump(config, handle, indent=2)
+    os.replace(tmp, config_path)
+    return unique
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default=os.environ.get("A12_DATA_DIR", "/data"))
@@ -303,6 +336,9 @@ def main() -> int:
         )
     print(f"\nwrote {len(encodings)} encodings for "
           f"{len(set(names))} people to {out}")
+
+    whitelisted = update_whitelist(args.data_dir, names)
+    print(f"whitelist set to {whitelisted} — restart A12 to apply")
     return 0
 
 

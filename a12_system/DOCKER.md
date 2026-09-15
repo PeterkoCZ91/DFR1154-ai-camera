@@ -45,7 +45,7 @@ The runtime directory stores secrets, logs, databases, screenshots, and model fi
 
 - `config.env`
 - `config.json`
-- `known_faces.pkl` when face recognition is enabled
+- `known_faces_sface.pkl` and the two ONNX model files when face recognition is enabled
 - `events.db`, `events.db-wal`, `events.db-shm`
 - `a12.log`, `events.log`
 - `stats.json`

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased] - 2026-09-15
+
+### Removed (A12 — the dlib path, and the traps it left behind)
+
+- **The dlib branch is gone from `identify_person`.** `face_recognition` is not in the image and never was, so the fallback could never run; it only made the function harder to read and invited somebody to switch it on. With it go the `tolerance` and `known_faces_paths` config keys, which nothing read any more.
+- **Deleting it would have removed exception safety, so that moved first.** The dlib path carried the only `try/except` around the check; the SFace path had none, and `identify_person` runs inside the detection loop. An unexpected backend fault now reads as `ERROR` instead of propagating. Proven by a test that failed before the change.
+- **`tools/enroll_faces.py` is deleted** — it wrote a `known_faces.pkl` that nothing can read any more, which is worse than useless: somebody would enrol into it and wonder why recognition never fired. `a12 enroll` now runs `enroll_sface.py` inside the container, where OpenCV and the ONNX models already are.
+- **The whitelist capability had to survive that deletion.** Only the dlib tool wrote `face_recognition.whitelisted_names`, and a resident who is recognised but not whitelisted is alerted about anyway — so `enroll_sface.py` now updates it, replacing rather than merging (a name with no encodings can never match) and refusing to overwrite a `config.json` that will not parse.
+- `tools/README.md` documented the deleted tool in detail and the live one not at all; it now documents `enroll_sface.py`, including what it refuses and why.
+
+### Fixed (A12 — the face-crop cap did not bound anything)
+
+- **`debug_crop_limit` counted per process, not per directory.** `_face_debug_written` started at zero in every `DetectionPipeline`, so each A12 restart granted a fresh quota of 200 — and a camera crash loop restarts A12 repeatedly, which is exactly when the directory would run away. It is now seeded from what is already on disk. The 46 crops that had accumulated were deleted; the feature itself has been off since 2026-09-14.
+
 ## [3.12.52] - 2026-09-15
 
 ### Added (Firmware — the broker link is finally visible from outside)

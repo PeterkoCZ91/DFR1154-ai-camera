@@ -20,10 +20,6 @@ from .face_backend import (
 )
 from .face_result import _MIN_BOX_PIXELS, FaceOutcome, FaceResult
 
-face_recognition = None
-FACE_RECOGNITION_AVAILABLE = False
-
-
 def crop_person_box(frame: np.ndarray, box, margin: float = 0.25) -> np.ndarray:
     """Narrow a frame to the detected person, with room for the head.
 
@@ -102,9 +98,8 @@ class Detector:
     def _init_face_backend(self) -> bool:
         """Wire OpenCV's YuNet + SFace, if the two model files are present.
 
-        Returns False so the caller can fall through to the historical dlib
-        path — which in this image has never been installable — rather than
-        leaving recognition half-configured.
+        Returns False when the models are missing or the backend refuses to
+        build, so recognition stays off rather than half-configured.
         """
         cfg = self.config.get("face_recognition", {})
         if cfg.get("backend", SFACE_BACKEND) != SFACE_BACKEND:
@@ -157,9 +152,9 @@ class Detector:
     def _gallery_paths(self, cfg: dict, default_dir: str) -> list:
         """Galleries for THIS backend only.
 
-        Kept apart from `known_faces_paths` on purpose: that file holds dlib
-        encodings, which read_gallery would refuse on every boot. Two backends,
-        two files, no warning spam and no chance of comparing across spaces.
+        The gallery carries the backend that produced it and `read_gallery`
+        refuses anything else, so a file from another embedding space can never
+        be compared against these — that would produce confident nonsense.
         """
         paths = []
         for filename in cfg.get("sface_gallery_paths", ["known_faces_sface.pkl"]):
@@ -173,52 +168,11 @@ class Detector:
     def _init_face_recognition(self) -> None:
         if not self.config.get("face_recognition", {}).get("enabled"):
             return
-        if self._init_face_backend():
-            return
-        global face_recognition, FACE_RECOGNITION_AVAILABLE
-        if face_recognition is None:
-            try:
-                import face_recognition as face_recognition_module
-
-                face_recognition = face_recognition_module
-                FACE_RECOGNITION_AVAILABLE = True
-            except ImportError:
-                FACE_RECOGNITION_AVAILABLE = False
-        if not FACE_RECOGNITION_AVAILABLE:
-            logging.warning("face_recognition not installed, skipping")
-            return
-
-        try:
-            paths = self.config["face_recognition"].get("known_faces_paths", [])
-
-            known_faces_dir = self.config["face_recognition"].get(
-                "known_faces_dir", os.environ.get("A12_DATA_DIR", self.script_dir)
+        if not self._init_face_backend():
+            logging.warning(
+                "Face recognition is enabled but no backend could be built; "
+                "checks will report UNAVAILABLE"
             )
-
-            for pkl_filename in paths:
-                pkl_path = (
-                    pkl_filename
-                    if os.path.isabs(pkl_filename)
-                    else os.path.join(known_faces_dir, pkl_filename)
-                )
-                if not os.path.exists(pkl_path):
-                    logging.warning(f"{pkl_path} not found")
-                    continue
-
-                with open(pkl_path, "rb") as f:
-                    data = pickle.load(f)
-                    if isinstance(data, dict):
-                        self.known_face_encodings.extend(data.get("encodings", []))
-                        self.known_face_names.extend(data.get("names", []))
-                    elif isinstance(data, list):
-                        name = os.path.splitext(os.path.basename(pkl_path))[0]
-                        self.known_face_encodings.extend(data)
-                        self.known_face_names.extend([name] * len(data))
-                logging.info(f"Loaded faces from {pkl_filename}")
-
-            logging.info(f"Total known faces: {len(self.known_face_names)}")
-        except Exception as e:
-            logging.error(f"Face recognition init failed: {e}")
 
     def detect_motion(self, frame: np.ndarray) -> bool:
         """Returns True if motion is detected via frame differencing."""
@@ -433,7 +387,7 @@ class Detector:
         return [(self.coco_classes[class_ids[i]], confidences[i]) for i in selected]
 
     def _identify_with_backend(self, backend, frame: np.ndarray) -> FaceResult:
-        """The SFace path. Same FaceOutcome contract as the dlib one."""
+        """Match every face in the frame against the enrolled gallery."""
         if not self.known_face_encodings:
             return FaceResult(FaceOutcome.UNAVAILABLE)
 
@@ -472,31 +426,13 @@ class Detector:
         latter says anything about who is at the door.
         """
         backend = getattr(self, "face_backend", None)
-        if backend is not None:
-            return self._identify_with_backend(backend, frame)
-
-        if not FACE_RECOGNITION_AVAILABLE or not self.known_face_encodings:
+        if backend is None:
             return FaceResult(FaceOutcome.UNAVAILABLE)
 
         try:
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            if rgb_frame is None or rgb_frame.size == 0:
-                return FaceResult(FaceOutcome.ERROR)
-
-            face_locations = face_recognition.face_locations(rgb_frame, model="hog")
-            if not face_locations:
-                return FaceResult(FaceOutcome.NO_FACE)
-
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-            tolerance = self.config.get("face_recognition", {}).get("tolerance", 0.6)
-
-            for face_encoding in face_encodings:
-                distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
-                best_idx = int(np.argmin(distances))
-                if distances[best_idx] <= tolerance:
-                    return FaceResult(FaceOutcome.RESIDENT, self.known_face_names[best_idx])
-
-            return FaceResult(FaceOutcome.STRANGER)
+            return self._identify_with_backend(backend, frame)
         except Exception as e:
+            # Runs inside the detection loop: a backend fault must read as
+            # "nothing was established", never take the pipeline down with it.
             logging.error(f"Face recognition error: {e}")
             return FaceResult(FaceOutcome.ERROR)

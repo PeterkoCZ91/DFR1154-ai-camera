@@ -362,6 +362,31 @@ def test_the_crop_is_written_when_debug_saving_is_on(tmp_path):
     assert "no_face" in written[0].name
 
 
+def test_the_bound_survives_a_restart(tmp_path):
+    """The counter used to start at zero in every Detector, so each A12 restart
+    granted a fresh quota — and during a camera crash loop A12 restarts a lot.
+    The cap has to be a property of the directory, not of the process."""
+    # Through the real config wiring, not by setting the attribute afterwards:
+    # the seeding happens while the pipeline is being configured.
+    cfg = {"debug_crop_dir": str(tmp_path), "debug_crop_limit": 3}
+
+    first = _pipeline(
+        _StubDetector([NO_FACE] * 50), face_cfg=dict(cfg),
+        _face_max_checks=50, _face_episode_gap=1e9,
+    )
+    for _ in range(5):
+        first._face_verdict(_frame())
+    assert len(list(tmp_path.iterdir())) == 3
+
+    restarted = _pipeline(
+        _StubDetector([NO_FACE] * 50), face_cfg=dict(cfg),
+        _face_max_checks=50, _face_episode_gap=1e9,
+    )
+    for _ in range(5):
+        restarted._face_verdict(_frame())
+    assert len(list(tmp_path.iterdir())) == 3, "a restart re-armed the quota"
+
+
 def test_saving_is_bounded_so_it_cannot_fill_the_disk(tmp_path):
     det = _StubDetector([NO_FACE] * 50)
     p = _pipeline(

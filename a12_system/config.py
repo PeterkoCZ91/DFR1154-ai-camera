@@ -47,15 +47,14 @@ DEFAULT_CONFIG = {
         # OpenCV's own YuNet detector + SFace recogniser. Both ship inside
         # opencv-python-headless and run on cv2.dnn, the engine the YOLO path
         # already uses; enabling costs two model files in the data dir and no
-        # new dependency. Set to anything else to fall back to the historical
-        # dlib path, which has never been installed in this image.
+        # new dependency. Any other value leaves recognition unavailable —
+        # there is no second backend.
         "backend": "sface",
         "yunet_model": "face_detection_yunet_2023mar.onnx",
         "sface_model": "face_recognition_sface_2021dec.onnx",
         "sface_gallery_paths": ["known_faces_sface.pkl"],
-        # Cosine similarity, higher is more similar — the opposite sense to the
-        # dlib tolerance below. 0.363 is OpenCV's published operating point and
-        # is NOT fitted to this camera.
+        # Cosine similarity, higher is more similar. 0.363 is OpenCV's
+        # published operating point and is NOT fitted to this camera.
         "cosine_threshold": 0.363,
         "detector_score_threshold": 0.6,
         # Tuning aid: write every checked crop, named by outcome and score, so
@@ -63,9 +62,6 @@ DEFAULT_CONFIG = {
         # disables it; the limit stops a forgotten flag filling the disk.
         "debug_crop_dir": "",
         "debug_crop_limit": 200,
-        # dlib only.
-        "tolerance": 0.6,
-        "known_faces_paths": ["known_faces.pkl"],
         # Names to skip Telegram notifications for (household members).
         # Populated at runtime from known_faces.pkl + user config.
         "whitelisted_names": [],

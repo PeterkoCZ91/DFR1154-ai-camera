@@ -47,136 +47,75 @@ Use unique `CAMERA_ID`, `MQTT_BASE_TOPIC`, and `ESP32_MQTT_DEVICE` in each insta
 
 ---
 
-## enroll_faces.py — Face Enrollment
+## enroll_sface.py — Face Enrollment
 
-Register people for face recognition. The script encodes faces and saves them to
-`known_faces.pkl`, then updates the whitelist in `config.json`.
+Builds the SFace gallery A12 matches against, and points the whitelist at the
+people it contains. Reads `<data-dir>/known_faces/<name>/*.jpg|png` and writes
+`<data-dir>/known_faces_sface.pkl` plus `whitelisted_names` in `config.json`.
 
-### Requirements
+Run it where the ONNX models are — normally inside the container, which already
+has OpenCV and needs no extra dependency:
 
 ```bash
-pip install face-recognition opencv-python requests numpy
+docker compose -p a12_system exec a12 \
+    python3 -m a12_system.tools.enroll_sface --data-dir /data
 ```
-
----
 
 ### Quick Start
 
 ```bash
-# 1. Capture from camera (recommended — stand in front for ~40 seconds)
-python tools/enroll_faces.py --name "John" --capture --camera http://192.168.1.100
+# 1. Capture from the live camera (recommended: same lens, angle and light
+#    that will do the matching)
+python3 -m a12_system.tools.enroll_sface --data-dir /data --capture "Alice"
 
-# 2. Enroll from a folder of photos
-python tools/enroll_faces.py --name "John" --photos ./photos/john/
+# 2. Or drop photos into /data/known_faces/Alice/ and just build
+python3 -m a12_system.tools.enroll_sface --data-dir /data
 
-# 3. List enrolled people
-python tools/enroll_faces.py --list
-
-# 4. Remove a person
-python tools/enroll_faces.py --remove "John"
+# 3. Report what would happen, write nothing
+python3 -m a12_system.tools.enroll_sface --data-dir /data --dry-run
 ```
 
-After enrollment, restart A12 to apply:
+Restart A12 afterwards — the gallery is read once in `Detector.__init__`:
+
 ```bash
-docker compose restart a12
+docker compose -p a12_system restart a12
 ```
-
----
 
 ### Arguments
 
 | Argument | Default | Description |
 |---|---|---|
-| `--name NAME` | — | Person name (required with `--capture` / `--photos`) |
-| `--capture` | — | Live capture from camera |
-| `--photos DIR` | — | Enroll from JPEG/PNG directory |
-| `--list` | — | Show enrolled people and encoding counts |
-| `--remove NAME` | — | Remove all encodings for a person |
-| `--camera URL` | `http://192.168.1.100` | Camera base URL |
-| `--auth USER:PASS` | `admin:admin` | Camera HTTP auth |
-| `--count N` | `23` | Total frames to capture |
-| `--interval SEC` | `1.5` | Seconds between captures |
-| `--data-dir PATH` | `/opt/a12-data` | A12 data directory (overrides `A12_DATA_DIR` env) |
+| `--data-dir PATH` | `$A12_DATA_DIR` or `/data` | Holds `known_faces/`, the models and `config.json` |
+| `--capture NAME` | — | Collect samples of NAME from the camera first |
+| `--camera URL` | `ESP32_IP` from `config.env` | Camera base URL |
+| `--auth USER:PASS` | from `config.env` | Camera HTTP auth |
+| `--seconds N` | `30` | How long to capture for |
+| `--out PATH` | `<data-dir>/known_faces_sface.pkl` | Gallery output |
+| `--detector-score N` | `0.6` | YuNet confidence floor |
+| `--dry-run` | — | Report only, write nothing |
 
----
+### What it refuses, and why
 
-### Live Capture — Guided Phases
+- **A face smaller than the door can produce.** Samples are checked against the
+  size an embedding actually needs; enrolling a face the camera will never see
+  again at that size fits the threshold to unreachable data.
+- **A near-duplicate pose.** Twenty frames of one head angle look like a large
+  gallery and behave like one sample.
+- **A gallery from another backend.** dlib and SFace embeddings are both 128-d
+  and mean nothing to each other, so the file carries the backend that made it
+  and a mismatch is refused rather than compared. A `known_faces.pkl` from
+  before 2026-09 is dlib-era and is not convertible — the photos have to be
+  re-embedded.
 
-The capture mode guides you through 6 poses automatically:
-
-| Phase | Instruction | Frames |
-|---|---|---|
-| Straight | Look straight at the camera | 5 |
-| Left | Turn head slightly to the left | 4 |
-| Right | Turn head slightly to the right | 4 |
-| Up | Tilt head slightly up | 3 |
-| Down | Tilt head slightly down | 3 |
-| Free | Move freely — any angle | 4 |
-
-**On-screen indicators:**
-- **Green box** — face detected, capturing
-- **Orange box** — too similar to previous frame, move more
-- **Red box** — no face detected or multiple people in frame
-- **Progress bar** — overall capture progress
-- Press **Q** or **Esc** to stop early (already captured frames are saved)
-
-**Tips for best results:**
-- Distance: 0.5–1.5 m from camera
-- Lighting: even, avoid strong backlight
-- Capture both with and without glasses if applicable
-- Keep your face centred — the green box confirms detection
-- 20–30 encodings per person gives good accuracy
-
----
-
-### Using a Custom Data Directory
-
-```bash
-# Docker default
-python tools/enroll_faces.py --list --data-dir /opt/a12-data
-
-# Or via environment variable
-export A12_DATA_DIR=/opt/a12-data
-python tools/enroll_faces.py --list
-```
-
----
+It also *reports* unusual samples without deleting them: similarity cannot tell
+an extreme angle from a different person, and an extreme angle is the most
+valuable pose in the set. A human looks at the photo and decides.
 
 ### Troubleshooting
 
 | Problem | Cause | Fix |
 |---|---|---|
-| `Camera UNREACHABLE` | Wrong URL or auth | Check `--camera` and `--auth` |
-| `No face detected` | Too far, dark, or bad angle | Move closer, improve lighting |
-| Multiple faces warning | Someone else in frame | Ensure only the enrollee is visible |
-| Orange box constantly | Interval too short | Increase `--interval` (e.g. `--interval 2.5`) |
-| Low recognition accuracy | Too few encodings | Add more with `--capture` (another 10–15 frames) |
-
----
-
-### Example: Full Enrollment Session
-
-```bash
-# First person — live capture
-python tools/enroll_faces.py \
-  --name "Alice" \
-  --capture \
-  --camera http://192.168.1.100 \
-  --auth admin:admin \
-  --count 23
-
-# Second person — from photos
-python tools/enroll_faces.py \
-  --name "Bob" \
-  --photos ./photos/bob/ \
-  --data-dir /opt/a12-data
-
-# Verify
-python tools/enroll_faces.py --list
-#   Alice: 23 encodings
-#   Bob: 18 encodings
-#   Total: 41 encodings, 2 people
-
-# Apply
-docker compose restart a12
-```
+| `no reference photos at ...` | No `known_faces/<name>/` directory | Create it, or use `--capture` |
+| `SFace backend unavailable, missing:` | ONNX models not in the data dir | Drop both model files there |
+| `captured nothing usable` | Too far, too dark, or one pose | Move closer, stand under the light, move slowly |
+| Recognition still alerts on a resident | Whitelist not applied | Restart A12 after enrolling |
