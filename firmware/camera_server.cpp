@@ -1404,9 +1404,8 @@ static esp_err_t reboot_handler(httpd_req_t *req) {
     httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"Rebooting\"}");
 
     Serial.println("🔄 /reboot requested — restarting in 500ms");
-    logEvent(EVT_UNKNOWN, "reboot_cmd");
     vTaskDelay(pdMS_TO_TICKS(500));  // let the HTTP response flush
-    ESP.restart();
+    restartWithReason("reboot_cmd");
     return ESP_OK;  // unreachable
 }
 
@@ -1834,7 +1833,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
         saveConfig();  // Persist new framesize before reboot
         Serial.println("🔄 Framesize changed, auto-rebooting in 2s...");
         vTaskDelay(pdMS_TO_TICKS(2000));
-        ESP.restart();
+        restartWithReason("framesize_change");
     }
 
     return ESP_OK;
@@ -3156,7 +3155,7 @@ static esp_err_t wifi_save_handler(httpd_req_t *req) {
 
     // Delayed restart to let HTTP response complete
     vTaskDelay(pdMS_TO_TICKS(3000));
-    ESP.restart();
+    restartWithReason("wifi_provisioned");
     return ESP_OK;  // unreachable
 }
 
@@ -3371,7 +3370,7 @@ static esp_err_t ota_update_handler(httpd_req_t *req) {
     httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"Update successful, rebooting...\"}");
 
     vTaskDelay(pdMS_TO_TICKS(500));
-    ESP.restart();
+    restartWithReason("ota_applied");
     return ESP_OK;
 }
 

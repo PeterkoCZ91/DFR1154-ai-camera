@@ -571,7 +571,8 @@ void recoverCamera() {
     sendTelegramNotification("⚠️ Camera frozen (heartbeat lost). Restarting system...");
 
     vTaskDelay(pdMS_TO_TICKS(1000));
-    ESP.restart(); // Safe restart is better than trying to hack driver deinit
+    // Safe restart is better than trying to hack driver deinit
+    restartWithReason("camera_health_fail");
     // unreachable
 }
 
@@ -641,7 +642,10 @@ void checkMemoryHealth() {
             sendTelegramNotification("❌ CRITICAL low memory! Restarting ESP32...\nFree: " + String(freeHeap/1024) + " KB");
         }
         vTaskDelay(pdMS_TO_TICKS(2000));
-        ESP.restart();  // Hard restart on sustained critical memory
+        // Hard restart on sustained critical memory
+        char why[32];
+        snprintf(why, sizeof(why), "heap_critical:%uk", freeHeap / 1024);
+        restartWithReason(why);
     } else {
         criticalLowSince = 0;
     }
@@ -657,9 +661,10 @@ void checkMemoryHealth() {
 #endif
         if (!telegramBusy && millis() - low50Since > 60000) {
             Serial.printf("⚠️ Heap below 50 KB for >60s (%u B) — planned restart\n", freeHeap);
-            logEvent(EVT_LOW_MEMORY, ("planned_restart:" + String(freeHeap/1024) + "k").c_str());
             vTaskDelay(pdMS_TO_TICKS(200));
-            esp_restart();
+            char why[32];
+            snprintf(why, sizeof(why), "heap_low_planned:%uk", freeHeap / 1024);
+            restartWithReason(why);
         }
     } else {
         low50Since = 0;
@@ -1673,7 +1678,7 @@ void handleTelegramCommand(const String& text) {
     } else if (text == "/restart") {
         sendTelegramNotificationSync("🔄 Restarting...");
         vTaskDelay(pdMS_TO_TICKS(1000));
-        ESP.restart();
+        restartWithReason("telegram_cmd");
 
     } else if (text == "/help") {
         String msg = "📋 <b>Commands:</b>\n\n";
@@ -2320,7 +2325,7 @@ void setup() {
     // OTA failed -- restart to restore all services (servers were stopped in onStart)
     Serial.println("⚠️ OTA failed, restarting to restore services...");
     vTaskDelay(pdMS_TO_TICKS(500));
-    ESP.restart();
+    restartWithReason("ota_failed");
   });
   ArduinoOTA.begin();
   Serial.println("OTA Ready");

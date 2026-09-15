@@ -338,7 +338,11 @@ a time.
   preserves. (Duplicate of item 16; left here marked done rather than deleted so
   the Tier 2 batch list stays readable.)
 
-- [ ] **Log the reason at every `ESP.restart()`.** All ten call sites in
+- [x] **DONE 2026-09-15 (3.12.53). Log the reason at every `ESP.restart()`.**
+  All nine call sites go through `restartWithReason()` now, which writes an
+  `EVT_RESTART` event and only then restarts. Verified end-to-end on both
+  boards: `restart | reboot_cmd` immediately precedes `boot | reason=SW(3)`.
+  Previously: all call sites in
   `main.cpp` and `camera_server.cpp` restart without writing anything to
   `/events`, so the reboot log can only ever say `SW(3)` — the code, never the
   cause. On 2026-09-15 a production restart could not be explained beyond a
@@ -347,6 +351,15 @@ a time.
   distinguishes a heap bailout from a camera-health bailout from an OTA. Same
   lesson as the MQTT state added to `/status` in 3.12.52: the failure was
   visible, its cause was not.
+
+- [ ] **Full firmware rebuilds intermittently hit a GCC internal compiler
+  error.** Twice on 2026-09-15, both times inside the Edge Impulse SDK
+  (`test_helpers.cpp`, then `micro_interpreter.cpp` with
+  `internal compiler error: in ggc_set_mark, at ggc-page.cc:1551`), both times
+  green on an immediate retry with no change. Only full rebuilds are affected,
+  which is what a changed `-DFIRMWARE_VERSION` forces. Harmless so far because
+  the retry works, but it would fail a CI that builds firmware — and CI does
+  not build firmware today, which is its own gap.
 
 ### Tier 3 — observability, once Tier 1 is collecting
 

@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 - **`debug_crop_limit` counted per process, not per directory.** `_face_debug_written` started at zero in every `DetectionPipeline`, so each A12 restart granted a fresh quota of 200 — and a camera crash loop restarts A12 repeatedly, which is exactly when the directory would run away. It is now seeded from what is already on disk. The 46 crops that had accumulated were deleted; the feature itself has been off since 2026-09-14.
 
+## [3.12.53] - 2026-09-15
+
+### Added (Firmware — the reboot log finally says why)
+
+- **Every restart records its reason before it happens.** All nine `ESP.restart()` call sites now go through `restartWithReason()`, which writes an `EVT_RESTART` event with a short cause and only then restarts. The reset-reason code the next boot reports separates `SW(3)` from `PANIC(4)` and nothing more — it can never say which of the firmware's own restart paths ran. On 2026-09-15 a production restart could not be explained beyond a guess for exactly that reason, on the same day two long-lived faults were traced by adding the observability that was missing rather than by reasoning harder.
+- The causes recorded are `camera_health_fail` (three consecutive failed `checkCameraHealth()` calls), `heap_critical:NNk` and `heap_low_planned:NNk`, `telegram_cmd`, `ota_failed`, `ota_applied`, `reboot_cmd`, `framesize_change` and `wifi_provisioned`. A heap bailout and a camera bailout have always looked identical in the log; now they do not.
+- `logEvent()` already appends to LittleFS synchronously, so the reason survives the restart that follows it; the helper adds a short settle delay before pulling the rug out. The event file stores the type as a string, so the new enum value cannot misread any record written before it.
+- `/reboot` used to log `reboot_cmd` under `EVT_UNKNOWN`, which is what made the A12-commanded reboots readable at all. That is now a first-class `restart` event alongside the other eight.
+
 ## [3.12.52] - 2026-09-15
 
 ### Added (Firmware — the broker link is finally visible from outside)

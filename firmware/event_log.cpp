@@ -24,6 +24,7 @@ const char* eventTypeName(EventType type) {
         case EVT_WIFI_RECONNECT:     return "wifi_reconnect";
         case EVT_LOW_MEMORY:         return "low_memory";
         case EVT_SD_FAILURE:         return "sd_failure";
+        case EVT_RESTART:            return "restart";
         default:                     return "unknown";
     }
 }
@@ -136,4 +137,13 @@ String getEventsJSON() {
     }
     out += "]";
     return out;
+}
+
+void restartWithReason(const char* reason) {
+    logEvent(EVT_RESTART, reason);
+    // logEvent() appends to LittleFS synchronously, but give the flash write
+    // room to settle before pulling the rug out — a reason that does not
+    // survive the restart is worth nothing.
+    delay(150);
+    ESP.restart();
 }
