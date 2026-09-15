@@ -282,7 +282,18 @@ flat — and the measurements below were taken with that in mind.
   hour), against 45 camera restarts on 09-13. Since firmware 3.12.50 and the
   bench-config cleanup the camera has held 17 h+ of uptime.
 
-  **2026-09-15 update — the crash explains the restarts, not the stalls.** The
+  **2026-09-15 evening — first numbers, promising but not yet an answer.**
+  Stalls per hour across today, against the two fixes that landed in the middle
+  of it: 5.8/h before the mutex fix (77 in 13.3 h), 1.5/h between it and the
+  camera-profile fix (4 in 2.7 h), 1.8/h after both (8 in ~4.5 h). Daily totals:
+  628 on 09-13, 448 on 09-14, 89 today. Hours 13:00 and 14:00 carried 20 and 40
+  detections with **zero** stalls — the shape this item was looking for.
+  **Not closed**, because today is not a clean day: it contains three firmware
+  flashes, several deliberate reboots and two container recreates, each of which
+  breaks the stream by design. A clean measurement is a full day with nothing
+  touched, and that starts now.
+
+  **The crash explains the restarts, not the stalls.** The
   morning burst splits cleanly in two: 10:13-10:52 stalls (`errno=104`,
   ECONNRESET) on a camera with 15 h of uptime and no restart at all, and only
   then the restart cluster from 10:52. So the stalls come first and the panics
