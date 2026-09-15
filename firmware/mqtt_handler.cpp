@@ -34,6 +34,16 @@ static unsigned long last_status_publish = 0;
 // the TCP write path corrupts on concurrent calls.
 static SemaphoreHandle_t mqtt_mutex = NULL;
 
+// Link state mirrored out of the locked region so /status can read it from the
+// HTTP task without touching PubSubClient, which is not thread-safe. Written
+// only where mqtt_mutex is already held; a status read may therefore be one
+// loop iteration stale, which is irrelevant at this resolution.
+static volatile bool mqtt_link_up = false;
+static volatile int mqtt_last_state = 0;
+static volatile uint32_t mqtt_connect_count = 0;
+static volatile uint32_t mqtt_fail_count = 0;
+static volatile unsigned long mqtt_connected_since_ms = 0;
+
 static inline bool mqttLock(TickType_t timeout = pdMS_TO_TICKS(200)) {
     if (!mqtt_mutex) return true;
     return xSemaphoreTake(mqtt_mutex, timeout) == pdTRUE;
@@ -110,6 +120,9 @@ static void mqttReconnect() {
     }
 
     if (connected) {
+        mqtt_connect_count++;
+        mqtt_connected_since_ms = millis();
+        mqtt_last_state = 0;
         Serial.println("MQTT: Connected");
         mqttSubscribe();
         publishHADiscovery();
@@ -118,7 +131,9 @@ static void mqttReconnect() {
         // task, time out, and trip the FreeRTOS priority-disinherit assert.
         mqttPublishStatesLocked();
     } else {
-        Serial.printf("MQTT: Failed, rc=%d\n", mqttClient.state());
+        mqtt_fail_count++;
+        mqtt_last_state = mqttClient.state();
+        Serial.printf("MQTT: Failed, rc=%d\n", mqtt_last_state);
     }
 }
 
@@ -340,7 +355,10 @@ void mqttLoop() {
     }
     mqttClient.loop();
 
-    bool need_status = mqttClient.connected() && (millis() - last_status_publish > 60000);
+    mqtt_link_up = mqttClient.connected();
+    if (!mqtt_link_up) mqtt_connected_since_ms = 0;
+
+    bool need_status = mqtt_link_up && (millis() - last_status_publish > 60000);
     if (need_status) {
         last_status_publish = millis();
     }
@@ -482,4 +500,18 @@ void mqttHandleCommands() {
     }
 
     if (stateChanged) mqttPublishStates();
+}
+
+bool mqttLinkUp() { return mqtt_link_up; }
+
+int mqttLastState() { return mqtt_last_state; }
+
+uint32_t mqttConnectCount() { return mqtt_connect_count; }
+
+uint32_t mqttFailCount() { return mqtt_fail_count; }
+
+uint32_t mqttLinkUptimeSeconds() {
+    unsigned long since = mqtt_connected_since_ms;
+    if (!mqtt_link_up || since == 0) return 0;
+    return (uint32_t)((millis() - since) / 1000);
 }

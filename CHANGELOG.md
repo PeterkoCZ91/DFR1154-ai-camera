@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.12.52] - 2026-09-15
+
+### Added (Firmware — the broker link is finally visible from outside)
+
+- **`/status` now reports the MQTT link**: `mqtt_enabled`, `mqtt_connected`, `mqtt_state` (the last PubSubClient rc — 0 connected, 5 not authorised, -4 timeout), `mqtt_connects`, `mqtt_failures` and `mqtt_link_uptime_s`. This closes the gap recorded against 3.12.51: the restarts were visible and their cause was not, and on a camera with no serial console there was no way to tell a link that holds from one that re-establishes every few minutes. `mqtt_connects > 1` says the link has dropped at least once since boot; `mqtt_link_uptime_s` resets on every reconnect, so a number that keeps returning to zero is the signature that used to be invisible.
+- The state is mirrored into plain variables inside `mqttLoop()`, where `mqtt_mutex` is already held, and the getters only read those. `/status` runs on the HTTP task and `PubSubClient` is not thread-safe, so the handler must not touch the client itself — a status read may be one loop iteration stale, which at this resolution means nothing. Costs 584 bytes of flash and 24 of RAM, and the response grew from 1339 to 1431 bytes against a 3712-byte buffer.
+- Verified by forcing reconnects (connecting to the broker with the camera's own client ID, which makes it drop the camera): `mqtt_link_uptime_s` climbed 1 → 31 s while stable and reset to single digits on each reconnect, with `mqtt_connects` tracking the count the serial console independently showed.
+
 ## [3.12.51] - 2026-09-15
 
 ### Fixed (Firmware — every successful MQTT connect crashed the camera)

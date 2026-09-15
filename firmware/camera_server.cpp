@@ -11,6 +11,7 @@
 #include "ArduinoJson.h"
 #include "config.h"
 #include "ir_control.h"
+#include "mqtt_handler.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #ifdef INCLUDE_AUDIO
@@ -1317,6 +1318,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
             "\"chip_temp_c\":%.1f,\"wifi_channel\":%d,"
             "\"stream_fps\":%d,\"psram_usage_pct\":%.1f,"
             "\"telegram_queue_depth\":%u,\"telegram_queue_ready\":%s,\"telegram_task_ready\":%s,\"telegram_uploading\":%s,\"telegram_sent\":%u,\"telegram_fail\":%u,\"telegram_drops\":%u,"
+            "\"mqtt_enabled\":%s,\"mqtt_connected\":%s,\"mqtt_state\":%d,\"mqtt_connects\":%u,\"mqtt_failures\":%u,\"mqtt_link_uptime_s\":%u,"
             "\"version\":\"%s\"}",
             ip.c_str(),
             uptime_days, uptime_hours, uptime_mins,
@@ -1355,6 +1357,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
             15,  // capture FPS (approximate)
             ESP.getPsramSize() > 0 ? (float)(ESP.getPsramSize() - ESP.getFreePsram()) / ESP.getPsramSize() * 100.0f : 0.0f,
             telegram_queue_depth, telegram_queue_ready ? "true" : "false", telegram_task_ready ? "true" : "false", telegram_uploading ? "true" : "false", telegram_sent, telegram_fail, telegram_drops,
+            config.mqtt_enabled ? "true" : "false", mqttLinkUp() ? "true" : "false",
+            mqttLastState(), mqttConnectCount(), mqttFailCount(), mqttLinkUptimeSeconds(),
             config.version.c_str()
         );
     } else {

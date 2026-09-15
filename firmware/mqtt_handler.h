@@ -17,4 +17,14 @@ void mqttPublishMotionScore(int score, float percent);
 void mqttPublishBrightness(uint8_t brightness);
 void mqttPublishStatus();
 
+// Broker-link observability for /status. A camera without a serial console had
+// no way to show that the link was flapping, which is what kept the reconnect
+// crash fixed in 3.12.51 invisible for 115 days. mqtt_connects > 1 means the
+// link has dropped and re-established at least once since boot.
+bool mqttLinkUp();
+int mqttLastState();          // last PubSubClient rc: 0 ok, 5 unauthorized, -4 timeout
+uint32_t mqttConnectCount();  // successful connects since boot
+uint32_t mqttFailCount();     // failed connect attempts since boot
+uint32_t mqttLinkUptimeSeconds();  // 0 when the link is down
+
 #endif // MQTT_HANDLER_H
