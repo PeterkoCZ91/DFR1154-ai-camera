@@ -425,7 +425,10 @@ a time.
   silent blindness rather than spam. Bound the staleness, then decide which way
   it fails — and make the state visible either way.
 
-- [ ] **Runtime config keys that publish a confirmation and change nothing.**
+- [x] **DONE 2026-09-15. Runtime config keys now take effect.** Six became
+  properties read at the point of use; `telegram_cooldown` and
+  `yolo_confidence` needed the consumers to hold the live dict rather than a
+  startup deep copy. Ten tests where there were none. Previously: 
   `update_from_mqtt` returns True and `__main__.py:201` publishes
   `camera/config/status/last_update`, but `notify_threshold`,
   `local_record_threshold`, `require_sensor`, `detection_cooldown`,
@@ -447,7 +450,9 @@ a time.
   thousands of "false positives" from checks that had no motion to be wrong
   about. In a mixed configuration the ratio can exceed 100%.
 
-- [ ] **The daily summary is marked sent before anyone checks that it was.**
+- [x] **DONE 2026-09-15. The daily summary records the day only once it is
+  delivered.** A failed send leaves the day open and the next tick retries.
+  Previously: 
   `_send_daily_summary()` discards the result of `send_telegram`
   (`status_monitor.py:513`) and `_check_daily_summary` then persists
   `_last_daily_date`. `Notifier.send_telegram` returns False inside its 429

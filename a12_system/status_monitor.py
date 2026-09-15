@@ -447,13 +447,19 @@ class StatusMonitor(threading.Thread):
         now = datetime.now()
         today = date.today()
         if now.hour >= 8 and self._last_daily_date != today:
-            self._send_daily_summary()
+            # Only record the day once it actually went out. send_telegram()
+            # returns False inside its 429 rate-limit window, and a summary
+            # marked sent is never retried — one 429 at 08:00 used to lose the
+            # day's summary permanently while the state file claimed delivery.
+            if not self._send_daily_summary():
+                return
             self._last_daily_date = today
             self._save_daily_summary_date(today)
 
-    def _send_daily_summary(self) -> None:
+    def _send_daily_summary(self) -> bool:
+        """True only if the summary was actually delivered."""
         if not self.stats:
-            return
+            return False
         summary = self.stats.get_summary()
         uptime = summary.get("session", {}).get("uptime_formatted", "?")
 
@@ -510,8 +516,14 @@ class StatusMonitor(threading.Thread):
                     f" / {faces['stranger']} cizích"
                     f" / {faces['no_face']} bez čitelného obličeje"
                 )
-        self.notifier.send_telegram(msg, bypass_cooldown=True)
+        if not self.notifier.send_telegram(msg, bypass_cooldown=True):
+            logging.warning(
+                "Daily summary could not be delivered — will retry on the next "
+                "tick rather than record the day as done"
+            )
+            return False
         logging.info("Daily summary sent")
+        return True
 
     def stop(self) -> None:
         self.running = False

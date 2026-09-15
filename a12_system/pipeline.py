@@ -263,7 +263,6 @@ class DetectionPipeline:
 
         # Cooldowns
         self.last_save_time: dict[str, float] = {}
-        self.cooldown_seconds = runtime_config.get("detection_cooldown_seconds", 5)
 
         # Counters (thread-safe)
         self._counter_lock = threading.Lock()
@@ -305,7 +304,6 @@ class DetectionPipeline:
 
         # Periodic YOLO
         self.last_periodic_yolo = 0
-        self.periodic_yolo_interval = runtime_config.get("periodic_yolo_interval", 30)
         self.external_yolo_interval = float(
             runtime_config.get("external_trigger_yolo_interval_seconds", 2.0)
         )
@@ -313,13 +311,6 @@ class DetectionPipeline:
 
         # Event scoring
         self.event_scoring_enabled = bool(runtime_config.get("event_scoring.enabled", True))
-        self.event_notify_threshold = int(runtime_config.get("event_scoring.notify_threshold", 70))
-        self.event_local_record_threshold = int(
-            runtime_config.get("event_scoring.local_record_threshold", 45)
-        )
-        self.require_sensor_for_recording = bool(
-            runtime_config.get("require_sensor_for_recording", True)
-        )
         self.pir_recording_enabled = bool(runtime_config.get("pir_recording.enabled", True))
         self.pir_recording_label = str(runtime_config.get("pir_recording.label", "motion")).strip() or "motion"
         self.pir_recording_send_telegram = bool(
@@ -330,9 +321,6 @@ class DetectionPipeline:
         )
         self.pir_recording_require_yolo = bool(
             runtime_config.get("pir_recording.require_yolo_for_telegram", False)
-        )
-        self.pir_recording_cooldown = max(
-            0, int(runtime_config.get("pir_recording.cooldown_seconds", 30))
         )
         self.last_pir_record_time = 0.0
         self.last_pir_sensor_activity_recorded = 0.0
@@ -1243,6 +1231,40 @@ class DetectionPipeline:
         if current_time < float(self.shared_state.get("external_yolo_until", 0.0)):
             return True
         return bool(self.ha_monitor and self.ha_monitor.is_any_sensor_active())
+
+    # --- runtime-config views -------------------------------------------
+    #
+    # Read at the point of use, not cached in __init__. These six keys are
+    # settable over MQTT and `update_from_mqtt` publishes a confirmation that
+    # the change landed; caching them made that confirmation a lie until the
+    # next A12 restart. `RuntimeConfig.get()` is a locked dict walk, which is
+    # nothing against a YOLO inference.
+
+    @property
+    def cooldown_seconds(self):
+        return self.runtime_config.get("detection_cooldown_seconds", 5)
+
+    @property
+    def periodic_yolo_interval(self):
+        return self.runtime_config.get("periodic_yolo_interval", 30)
+
+    @property
+    def event_notify_threshold(self) -> int:
+        return int(self.runtime_config.get("event_scoring.notify_threshold", 70))
+
+    @property
+    def event_local_record_threshold(self) -> int:
+        return int(self.runtime_config.get("event_scoring.local_record_threshold", 45))
+
+    @property
+    def require_sensor_for_recording(self) -> bool:
+        return bool(self.runtime_config.get("require_sensor_for_recording", True))
+
+    @property
+    def pir_recording_cooldown(self) -> int:
+        # The floor lived in __init__; a negative cooldown would make every
+        # comparison against it true and disable the gate entirely.
+        return max(0, int(self.runtime_config.get("pir_recording.cooldown_seconds", 30)))
 
     def _current_face_episode(self, current_time: float) -> FaceEpisode:
         """The episode in progress, starting a fresh one after a quiet gap.

@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Fixed (A12 — runtime config changes that published a confirmation and did nothing)
+
+- **Eight MQTT-settable keys reached nobody until the next restart.** `update_from_mqtt` returns True and `__main__` publishes `camera/config/status/last_update`, so an operator lowering a threshold from Home Assistant saw the confirmation land — while `notify_threshold`, `local_record_threshold`, `require_sensor`, `detection_cooldown`, `pir_cooldown` and `periodic_yolo_interval` were read once into instance attributes in `DetectionPipeline.__init__` and never read again. They are properties over `runtime_config` now, read at the point of use; `RuntimeConfig.get()` is a locked dict walk, which is nothing against a YOLO inference. The `max(0, ...)` floor on the PIR cooldown moved with it — a negative value would make every comparison against it true and disable the gate.
+- **`telegram_cooldown` and `yolo_confidence` could not have worked at all.** `Camera`, `Detector` and `Notifier` are handed `get_all()`'s deep copy at startup and hold it for the life of the process, so a runtime write was invisible to them by construction. They now receive `RuntimeConfig.live()` — the dict `set()` mutates in place — via `Application._consumer_config()`. `get_all()` keeps returning a copy, and a test pins that, because a caller mutating its own snapshot must not corrupt the real config.
+- Nothing here had a test: `grep update_from_mqtt a12_system/test_*.py` returned nothing. It has ten now, and the wiring is covered separately — swapping that one call back to `get_all()` left every other test green, which is a process where no runtime key reaches any consumer.
+
+### Fixed (A12 — the daily summary was marked sent before anyone checked)
+
+- `_send_daily_summary()` discarded the result of `send_telegram` and `_check_daily_summary` then persisted the date to disk. `Notifier.send_telegram` returns False inside its 429 rate-limit window, so a single 429 at 08:00 lost that day's summary permanently while the state file asserted delivery. The send now reports whether it landed, and a day is only recorded once it did — a failure leaves the day open and the next tick retries.
+
 ### Fixed (A12 — a reboot that never happened is no longer charged)
 
 - **`camera.reboot()`'s result was discarded, and the budget had already been charged.** Both ladders call `record_reboot()` before the request is made, and the ladder only ever fires at a camera that is already misbehaving — so a POST that does not land is the likely case, not the exception. Seen live on 2026-09-15 11:45:14: `Camera reboot request error: ... timed out`, and the ladder advanced to 2/3 anyway. After the budget drains, A12 sends "a soft restart cannot clear it — the camera needs a physical power cycle" about a camera it never rebooted. `refund_unwedge()` had existed for exactly this on the exposure path since the ladder was written; the reboot path had no equivalent.

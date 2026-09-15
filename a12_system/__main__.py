@@ -98,6 +98,17 @@ class Application:
         self.running = False
         raise KeyboardInterrupt
 
+    def _consumer_config(self) -> dict:
+        """The config dict Camera, Detector and Notifier hold for the process life.
+
+        Live, not a snapshot. A deep copy here is why `telegram_cooldown` and
+        `yolo_confidence` could be set over MQTT, confirmed on
+        `camera/config/status/last_update`, and change nothing until a restart.
+        Read-only by convention — no consumer writes to it, and writing through
+        it would skip the lock and the change callbacks.
+        """
+        return self.runtime_config.live()
+
     def run(self) -> None:
         """Main application loop with auto-restart."""
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -114,7 +125,7 @@ class Application:
         logging.info(f"OpenCV thread limit: {cv_threads}")
 
         # Initialize components
-        config = self.runtime_config.get_all()
+        config = self._consumer_config()
         camera_id = str(config.get("camera_id", "esp32_cam")).strip() or "esp32_cam"
         camera_name = str(config.get("camera_name", camera_id)).strip() or camera_id
         camera_label = str(config.get("telegram", {}).get("camera_label", camera_name)).strip()

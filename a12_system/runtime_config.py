@@ -56,6 +56,17 @@ class RuntimeConfig:
         with self._lock:
             return copy.deepcopy(self._config)
 
+    def live(self) -> dict:
+        """The config dict itself, not a copy — deliberately.
+
+        `set()` mutates this object in place, so a consumer holding it sees
+        runtime changes; one holding `get_all()`'s deep copy never can, which is
+        why `telegram_cooldown` and `yolo_confidence` published a confirmation
+        and changed nothing until 2026-09-15. Callers must treat it as
+        read-only: writing through it skips the lock and the callbacks.
+        """
+        return self._config
+
     def register_callback(self, callback) -> None:
         """Register callback function for config changes."""
         self._callbacks.append(callback)
