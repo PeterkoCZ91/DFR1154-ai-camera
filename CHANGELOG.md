@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [3.12.51] - 2026-09-15
+
+### Fixed (Firmware — every successful MQTT connect crashed the camera)
+
+- **`mqttReconnect()` re-took a mutex it was already holding.** `mqttLoop()` takes `mqtt_mutex` and then calls `mqttReconnect()`; on a successful connect that called `mqttPublishStates()`, which takes the same non-recursive mutex from the same task. The task blocked against itself, the 200 ms timeout expired, and FreeRTOS's timeout path asserted that the mutex holder is not the running task — which it was:
+
+  ```
+  assert failed: vTaskPriorityDisinheritAfterTimeout tasks.c:5424 (pxTCB != pxCurrentTCB[xPortGetCoreID()])
+  loop -> mqttLoop -> mqttReconnect -> mqttPublishStates -> mqttLock -> xQueueSemaphoreTake
+  ```
+
+  Split into `mqttPublishStatesLocked()` for callers that already hold the lock — the contract `publishHADiscovery()` next to it already had — and kept the locking wrapper for the two call sites that run outside it. It was the only nested path; the other six `mqttLock()` sites are all top-level.
+- **This was the `PANIC(4)` that had been counted for months without a cause.** The reboot log stores a reason code and the partition table has no coredump partition, so the crash was only ever visible as the number 4. The camera on the bench had a USB cable attached the whole time and nothing was reading it; the console is the native USB-CDC (`ARDUINO_USB_CDC_ON_BOOT=1`), so the backtrace above was one `cat` away.
+- **The bug hid behind a second one.** The bench board had no MQTT credentials at all (`mqtt_user` empty, not merely wrong), so `connect()` never succeeded, the crash path was never entered, and the board ran 19 h 43 min clean while the production camera — with valid credentials — restarted 16 times in 24 h. Writing the credentials to it crashed it one second later. A board that cannot log in is protected from this; a board that can is not. **That is the second hardware diagnosis this one board has falsified:** 3.12.50 retracted "failing antenna" for the same reason, that its broken credentials kept it out of a code path.
+- Why the crashes came in bursts rather than steadily: `mqttReconnect()` returns immediately while the link is up, so a camera that stays connected never re-enters the path. Each burst is one dropped MQTT connection — reconnect, crash, reboot, reconnect — until the link holds again. Fifteen hours of clean uptime followed by eight restarts in an hour is one broker or Wi-Fi wobble, not a degrading board.
+- Verified as an A/B on one board, one position, one broker: before, `MQTT: HA auto-discovery published` was followed by the assert within a second, every time; after, the same sequence is followed by nothing.
+
+### Known gaps
+
+- `/status` exposes no MQTT state, so on a camera without a serial console there is still no way to see that the broker link is flapping. The restarts are visible; their cause is not.
+
 ## [3.12.50] - 2026-09-14
 
 ### Fixed (Firmware — a blocking MQTT connect took the whole camera offline)

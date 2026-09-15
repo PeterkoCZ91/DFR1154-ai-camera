@@ -233,6 +233,29 @@ flat — and the measurements below were taken with that in mind.
   hour. Recorded in `docs/DFROBOT_HARDWARE_GUIDE.md` along with the reboot-log
   trap: `PANIC(4)` is the cause, `SW(3)` after `reboot_cmd` is A12's watchdog
   cleaning up after it.
+- [x] **13b. DONE 2026-09-15. `PANIC(4)` found: a mutex taken twice by one task.**
+  `mqttLoop()` holds `mqtt_mutex` while calling `mqttReconnect()`, which on a
+  successful connect called `mqttPublishStates()` — which takes the same
+  non-recursive mutex from the same task. Timeout, then FreeRTOS asserts the
+  holder is not the running task. Fixed in 3.12.51 by splitting out
+  `mqttPublishStatesLocked()`; the only nested path of the seven lock sites.
+
+  **Every successful MQTT connect crashed the board**, so item 13's "bench
+  config" diagnosis was a correlation: turning firmware features off reduced how
+  often the link churned, it did not remove the crash. The bug shipped with
+  `mqtt_handler.cpp` itself in v3.12.43 (`aada0a5`, 2026-05-23) — **115 days
+  live**.
+
+  Found by reading the serial console on the bench board, which had been
+  attached by USB for months with nothing reading it. There is no coredump
+  partition, so `reason=PANIC(4)` is all a board without a cable can ever say.
+  Reproduced twice, identical backtrace, both within one second of
+  `MQTT: HA auto-discovery published`; zero after the flash.
+
+  The bench board looked healthy only because it had **no MQTT credentials at
+  all** and never entered the path — the second time that board's broken login
+  has masked a bug (see 3.12.50's retracted antenna diagnosis).
+
 - [ ] **14. No hurry: confirm the stall spikes are gone.** Nothing depends on
   this and the camera is healthy; it only settles whether the blocking MQTT
   connect explains the daytime bursts as well as the blackouts. The suspicious
@@ -243,6 +266,13 @@ flat — and the measurements below were taken with that in mind.
   Baselines to beat: 628 stalls on 09-13 and 396 on 09-14 (spikes of 105-150 an
   hour), against 45 camera restarts on 09-13. Since firmware 3.12.50 and the
   bench-config cleanup the camera has held 17 h+ of uptime.
+
+  **2026-09-15 update — the crash explains the restarts, not the stalls.** The
+  morning burst splits cleanly in two: 10:13-10:52 stalls (`errno=104`,
+  ECONNRESET) on a camera with 15 h of uptime and no restart at all, and only
+  then the restart cluster from 10:52. So the stalls come first and the panics
+  follow, which means 13b removes the second half and leaves this item open on
+  its first half. Re-measure against a day on 3.12.51.
 
   ```sql
   SELECT substr(datetime,1,13) h,

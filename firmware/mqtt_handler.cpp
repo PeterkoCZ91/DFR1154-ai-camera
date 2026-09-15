@@ -50,6 +50,7 @@ static String device_topic;  // e.g. "esp32cam/ESP32-Camera"
 // Forward declarations
 static void publishHADiscovery();
 static void mqttPublishStates();
+static void mqttPublishStatesLocked();
 
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     // Called inside mqttClient.loop() — mutex is held. Only set volatile flags here.
@@ -112,7 +113,10 @@ static void mqttReconnect() {
         Serial.println("MQTT: Connected");
         mqttSubscribe();
         publishHADiscovery();
-        mqttPublishStates();
+        // Already inside mqttLock() (mqttLoop -> mqttReconnect), and mqtt_mutex
+        // is not recursive: the locking variant would block against this very
+        // task, time out, and trip the FreeRTOS priority-disinherit assert.
+        mqttPublishStatesLocked();
     } else {
         Serial.printf("MQTT: Failed, rc=%d\n", mqttClient.state());
     }
@@ -422,15 +426,19 @@ void mqttPublishStatus() {
     mqttUnlock();
 }
 
+// Caller must already hold mqtt_mutex, same contract as publishHADiscovery().
+static void mqttPublishStatesLocked() {
+    if (!mqttClient.connected()) return;
+    mqttClient.publish((device_topic + "/recording_state").c_str(),
+                       is_recording ? "ON" : "OFF", true);
+    mqttClient.publish((device_topic + "/person_detection_state").c_str(),
+                       config.person_detection_enabled ? "ON" : "OFF", true);
+}
+
 static void mqttPublishStates() {
     if (!mqtt_initialized) return;
     if (!mqttLock()) return;
-    if (mqttClient.connected()) {
-        mqttClient.publish((device_topic + "/recording_state").c_str(),
-                           is_recording ? "ON" : "OFF", true);
-        mqttClient.publish((device_topic + "/person_detection_state").c_str(),
-                           config.person_detection_enabled ? "ON" : "OFF", true);
-    }
+    mqttPublishStatesLocked();
     mqttUnlock();
 }
 
