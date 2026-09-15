@@ -536,6 +536,11 @@ class DetectionPipeline:
             # The write never reached the camera, so it says nothing about the
             # exposure loop. Give the attempt back and report the real problem.
             self.flat_state.refund_unwedge()
+            # And give back the frozen ladder's view of it too. That counter is
+            # the whole gate on rebooting, and a rewrite that was requested but
+            # never delivered is no evidence that the readout has stopped —
+            # crediting it reopens the false positive the ordering fix closed.
+            self._frozen_unwedges_seen = max(0, self._frozen_unwedges_seen - 1)
             if self.flat_state.should_notify(
                 "unwedge_failed", current_time, self._flat_notify_interval
             ):

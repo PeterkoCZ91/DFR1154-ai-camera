@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Fixed (A12 — a rewrite that never reached the camera was credited as one that did)
+
+- **The frozen ladder's gate was not refunded when the exposure write failed.** `_frozen_unwedges_seen` was incremented when the rewrite was *requested*. If the write never lands — port 80 starves while 81 keeps streaming, a documented state of this camera — the persisted budget is refunded and an alert says so, but that counter was not, so the gate believed the exposure had been rewritten and went on to reboot. That is the false positive the ordering fix closed the same evening, reached through a different door. Found by a code sweep, not by the tests.
+- The first test written for it was green against the bug. With no cooldown the rewrite is re-requested on every heartbeat and keeps resetting the frozen run, so the gate is never reached and nothing can show; the reproduction needs a real cooldown, during which the run builds while the stale credit sits there. Mutation-checked in both directions this time.
+
 ### Changed (A12 — one face row per visit, and a third answer that was missing)
 
 - **The `face` row is written once, when the episode closes, not once per check.** A single visit wrote five rows — `unavailable`, then the same name four times — so the daily summary read "4 known faces" for one person. The verdict has belonged to the episode since 2026-09-12; the row now does too. Closing happens when the next occurrence starts and, for a visit nobody follows, from the heartbeat once the quiet gap has passed — so the row carries the time the visit ended rather than whenever somebody next walks past.

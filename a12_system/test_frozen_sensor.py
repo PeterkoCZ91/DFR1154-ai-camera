@@ -486,3 +486,45 @@ def test_frames_still_identical_after_the_exposure_rewrite_do_reboot(tmp_path):
     assert p.flat_state.unwedge_count() >= 1, "exposure budget was never spent"
     assert p.shared_state.get("reboot_camera") is True
     assert p.shared_state.get("force_stream_reconnect") is True
+
+
+# --- a rewrite that never reached the camera is not a rewrite --------------
+
+
+def test_a_failed_exposure_write_does_not_unlock_the_reboot(tmp_path):
+    """Found by a code sweep the same evening the ordering was fixed.
+
+    `_frozen_unwedges_seen` was incremented when the rewrite was *requested*.
+    If the write never lands — port 80 starves while 81 keeps streaming, which
+    is a documented state of this camera — the persisted budget is refunded but
+    that counter was not, so the gate believed the exposure had been rewritten
+    and rebooted anyway. That is the false positive the ordering fix was for,
+    reached through a different door.
+    """
+    # A real cooldown matters here. Without one the rewrite is re-requested on
+    # every heartbeat and keeps resetting the frozen run, so the gate is never
+    # reached and the bug cannot show. With one, the run builds during the
+    # quiet window — which is exactly when the stale credit does its damage.
+    p = _pipeline(tmp_path, frozen_strikes=3, strikes=1, max_attempts=3,
+                  cooldown=300.0)
+
+    now = 1000.0
+    for beat in range(20):
+        p._note_flat_frame(now, frozen=True)
+        if p.shared_state.pop("unwedge_camera", None):
+            # __main__ reports back that the write could not be delivered.
+            p.shared_state["unwedge_write_failed"] = True
+        assert "reboot_camera" not in p.shared_state, (
+            f"heartbeat {beat}: rebooted on the strength of a rewrite that "
+            "never reached the camera"
+        )
+        now += 30.0   # heartbeats, still inside the 300 s cooldown
+
+
+def test_a_delivered_exposure_write_still_unlocks_the_reboot(tmp_path):
+    """The other side: a write that landed and changed nothing is evidence."""
+    p = _pipeline(tmp_path, frozen_strikes=3, strikes=1, max_attempts=1)
+    for _ in range(12):
+        p._note_flat_frame(1000.0, frozen=True)
+        p.shared_state.pop("unwedge_camera", None)
+    assert p.shared_state.get("reboot_camera") is True
