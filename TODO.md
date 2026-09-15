@@ -185,6 +185,25 @@ care about any particular one.
   A12 repeatedly. It is seeded from the directory now. The flag had already
   been commented out in `config.env`; the 46 crops that had accumulated
   (6 resident, 14 stranger, 26 no_face) were deleted.
+- [ ] **7b. Periodic YOLO costs 45% of all inferences for 2% of the alerts.**
+  Measured over the 7 days to 2026-09-15 from `decision_audit`:
+
+  | trigger | inferences | alerts | inferences per alert |
+  |---|---|---|---|
+  | `binary_sensor.venkovni_senzor` (PIR) | 2500 | 116 | 21.5 |
+  | `esp32_motion` | 565 | 35 | 16.1 |
+  | **`periodic`** | **2196** | **3** | **732** |
+
+  `PERIODIC_YOLO_INTERVAL=300` is the sweep that runs when nothing triggered,
+  and it finds nobody 2179 times out of 2196. **Do not just delete it**: it is
+  the net for everything the PIR misses, and those 3 could be the 3 that
+  mattered — the whole point of item 2 was that a cheap-looking answer can be
+  the wrong one. The measurement to run first is whether those 3 were real
+  people the sensors missed, which `a12 review` can label now that the media is
+  retained. If they were duplicates of a sensor-triggered alert, the interval
+  can go up sharply; if they were unique catches, the cost is the price of
+  coverage and this item closes as "measured, kept".
+
 - [ ] **7. Re-measure the notification cooldown.** It drops 15 events/day against
   16 sent. Whether that is right depends entirely on (2)-(4).
 
