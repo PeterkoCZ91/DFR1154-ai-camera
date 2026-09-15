@@ -478,6 +478,32 @@ a time.
   extracted precisely so a harness cannot drift from production; this one still
   can, and would stay green while the real pipeline read a default or raised.
 
+- [ ] **Every firmware update costs an extra camera reboot, and silently
+  reverts the chosen resolution.** Found within an hour of shipping the restart
+  reasons in 3.12.53 — the first restart they explained: `restart |
+  framesize_change`, where before there would have been a bare `SW(3)`.
+
+  The firmware's config migration (`main.cpp:829`) fires whenever the stored
+  version differs from the running one and forces `frame_size` back to UXGA:
+  *"ensures old config.json values don't persist across firmware updates"*. A12
+  then writes its own `camera_init_settings.frame_size` on startup
+  (`__main__.py:288`), the runtime `config.json` sets that to 10 (XGA), and a
+  `frame_size` write that differs from the sensor's current value makes the
+  firmware save and **self-reboot** (`camera_server.cpp:1582-1586`).
+
+  So each OTA is followed by a second, unannounced reboot as soon as A12 next
+  starts. Confirmed by the asymmetry between the boards: the bench board has no
+  A12 writing to it and sits at UXGA, production is at XGA and took the extra
+  restart. Not a loop — it settles after one round — but it is a self-inflicted
+  restart nobody could see before, and the operator's resolution choice is
+  reverted on every version bump and only restored by a side effect.
+
+  **Not fixed unilaterally**: the migration is deliberate and changing it
+  changes upgrade behaviour. The options are to exempt `frame_size` from the
+  migration, to have A12 skip writing a setting the camera already has (it
+  cannot know the post-migration value without reading `/status` first), or to
+  accept the extra reboot and document it.
+
 ### Tier 3 — observability, once Tier 1 is collecting
 
 - [x] **Stream stalls: classification fixed, window reverted — 2026-09-12.** The
