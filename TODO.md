@@ -51,7 +51,7 @@
 - [x] A12: low-detail alert no longer claims "low light is possible" — `brightness=64` uniform grey is not darkness (real darkness reads ~5) and the old wording sent the operator after a lighting problem
 - [x] A12: frame-health config extracted to `DetectionPipeline.configure_frame_health_watchdog()` so the wiring is testable without building the whole pipeline; test harnesses call it instead of re-declaring the attribute list
 - [x] Docs: uniform-grey-vs-darkness diagnosis, the IR `auto_mode` trap and the two-boards-on-one-LAN collision written up in `docs/DFROBOT_HARDWARE_GUIDE.md`
-- [x] Runtime: production camera's night window disabled (`night_start_hour = night_end_hour = 0`) — the enclosure seals both the LTR-308 and the IR LED, so NIGHT was optimising for an illuminator that lights only the inside of the box. Measured same-day, same firmware: boxed board reads 0.2-0.8 lux in daylight, bench board 111-132
+- [x] ~~Runtime: production camera's night window disabled (`night_start_hour = night_end_hour = 0`)~~ — **this could never have taken effect, corrected 2026-09-15.** Those hours are only read when `time_based` is true, and it was false, so `updateCameraProfile()` went on choosing from the sealed LTR-308 and pinning `PROFILE_NIGHT` (AGC off) around the clock. Found on the live camera at 16:00 in daylight: `time_based=false`, hours back at 20/7, `profile=NIGHT`, image `mean=40.00 std=0.00`. Fixed by actually switching the source: `POST /ir-control {"time_based":true,"night_start_hour":0,"night_end_hour":0}` → `profile=DUSK`, `agc=1`, `mean=163 std=28.8`, and it survives a reboot (`/ir_config.json` on LittleFS). The enclosure measurement stands: boxed board 0.2-0.8 lux in daylight, bench board 111-132
 - [x] Bench unit: second DFR1154 recovered from storage, flashed to 3.12.49, renamed `ESP32-Cam-Test`; healthy (camera, LTR-308, PDM mic, motion + person detect all init OK, ~253 ms inference). No SD card fitted
 - [x] Hardware survey refreshed — no compelling replacement board. ESP32-P4 got its v3.x revision and the MIPI-CSI stack matured, but PlatformIO still has no official P4 support, P4-EYE is only a 2 MPx OV2710 with no IR, and nothing on the market still has an integrated IR illuminator
 
@@ -85,7 +85,12 @@ care about any particular one.
   `mdns_resolver.resolve_host()` falls back to its stale/persistent cache. A
   reboot makes it re-claim the name (~25 s of stream downtime).
 - [ ] **Drill a second opening in the enclosure** over the LTR-308, and over the
-  IR LED if night vision is wanted back. Same-day measurement, same firmware:
+  IR LED if night vision is wanted back. **Promoted 2026-09-15: this is not
+  cosmetic, the sealed sensor was actively blinding the camera.** A lux reading
+  of 0.3 in daylight pins the firmware to its NIGHT profile, AGC off, which is
+  what produced every "flat grey image" episode back to 2026-09-11. Pinning
+  `time_based` to DUSK is a workaround that gives up any real day/night
+  adaptation; only the hole restores the signal. Same-day measurement, same firmware:
   the boxed board reads 0.2-0.8 lux in full daylight, the bench board 111-132.
   Until this is done the lux reading is not a signal, the day/night profile is
   pinned to DUSK as a workaround, and the camera has **no night illumination at
@@ -163,13 +168,20 @@ care about any particular one.
   means "one match so far, not enough to decide", not "the check could not
   run". Two different facts in one value — the exact mistake item 2 fixed
   elsewhere.
-- [ ] **C. Delete the dlib branch.** SFace works; dlib is not installed in the
-  image and never was. The branch only complicates `identify_person` and
-  invites somebody to switch it on by mistake.
-- [ ] **D. Turn off `FACE_DEBUG_CROP_DIR` when tuning ends.** It is writing
-  face crops to `${A12_DATA_DIR}/face_debug` — biometric data that should not
-  accumulate indefinitely. Capped at 200 files, but the cap is not a retention
-  policy.
+- [x] **C. DONE 2026-09-15. Deleted the dlib branch.** Two things had to move
+  first. It carried the only `try/except` around the check and the SFace path
+  had none, so deleting it naively would have let a backend fault propagate out
+  of `identify_person` into the detection loop. And `tools/enroll_faces.py`,
+  deleted with it, was the only writer of `face_recognition.whitelisted_names`
+  — a resident who is recognised but not whitelisted is alerted about anyway —
+  so `enroll_sface.py` took that over. `tools/README.md` documented the dead
+  tool at length and the live one not at all.
+- [x] **D. DONE 2026-09-15. Crops off and deleted — and the cap was a fiction.**
+  `_face_debug_written` started at zero in every `DetectionPipeline`, so each
+  A12 restart granted a fresh quota of 200, and a camera crash loop restarts
+  A12 repeatedly. It is seeded from the directory now. The flag had already
+  been commented out in `config.env`; the 46 crops that had accumulated
+  (6 resident, 14 stranger, 26 no_face) were deleted.
 - [ ] **7. Re-measure the notification cooldown.** It drops 15 events/day against
   16 sent. Whether that is right depends entirely on (2)-(4).
 
@@ -315,11 +327,26 @@ a time.
   `time_based` night window is never evaluated and the IR LED stays pinned to
   `manual_state` forever. `POST /ir-control` sets `auto_mode = false` by itself
   for `state: "on"`/`"off"`, so one Home Assistant toggle permanently kills the
-  night automation. Currently harmless only because the night window is disabled.
-- [ ] **Give `device_name` a unique default** (e.g. a MAC suffix) so two boards
-  cannot collide on mDNS and MQTT out of the box. Careful: changing the default
-  renames the production camera the next time its `/config.json` is absent,
-  which breaks the companion's mDNS lookup until its config is updated.
+  night automation. **Harmless for the LED — which must stay off anyway while it
+  is sealed in the box — and 2026-09-15 showed it does not touch the camera
+  profile at all: `updateCameraProfile()` reads `irConfig.time_based` directly,
+  independent of `auto_mode`. That is what made the DUSK pin possible without
+  waking the LED.**
+- [x] **DONE in 3.12.50 — `device_name` defaults to an eFuse-MAC suffix**, so two
+  boards cannot collide on mDNS and MQTT out of the box. Existing installs keep
+  their name: `device_name` lives in `/config.json` on LittleFS, which an OTA
+  preserves. (Duplicate of item 16; left here marked done rather than deleted so
+  the Tier 2 batch list stays readable.)
+
+- [ ] **Log the reason at every `ESP.restart()`.** All ten call sites in
+  `main.cpp` and `camera_server.cpp` restart without writing anything to
+  `/events`, so the reboot log can only ever say `SW(3)` — the code, never the
+  cause. On 2026-09-15 a production restart could not be explained beyond a
+  guess (`recoverCamera()` after three failed `checkCameraHealth()` calls) for
+  exactly this reason. One `logEvent()` before each restart, and the log finally
+  distinguishes a heap bailout from a camera-health bailout from an OTA. Same
+  lesson as the MQTT state added to `/status` in 3.12.52: the failure was
+  visible, its cause was not.
 
 ### Tier 3 — observability, once Tier 1 is collecting
 
