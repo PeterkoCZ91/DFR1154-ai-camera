@@ -170,6 +170,12 @@ DEFAULT_CONFIG = {
     "flat_frame_max_unwedge_attempts": 3,
     "flat_frame_unwedge_cooldown": 300.0,
     "flat_frame_notify_interval": 3600.0,
+    # A frame that repeats the previous one byte for byte proves the sensor
+    # stopped reading out — unlike uniform pixels, which darkness also produces.
+    # Heartbeats are ~30s apart, so 3 strikes is ~90s of a repeated frame.
+    "frozen_frame_strikes": 3,
+    "frozen_frame_max_reboots": 3,
+    "frozen_frame_reboot_cooldown": 120.0,
     "stream_freeze_reboot_after": 5,
     "stream_freeze_max_reboots": 3,
     "stream_freeze_healthy_gap_seconds": 600.0,

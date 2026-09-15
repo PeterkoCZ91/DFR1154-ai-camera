@@ -109,13 +109,19 @@ class FlatEpisodeState:
     def unwedge_count(self) -> int:
         return self._as_int(self._load().get("unwedges"))
 
-    def set_gaveup(self) -> bool:
-        """Latch the give-up terminal state. True exactly once per episode
-        (persisted — an A12 restart must not re-send the give-up alert)."""
+    def set_gaveup(self, key: str = "gaveup") -> bool:
+        """Latch a give-up terminal state. True exactly once per episode
+        (persisted — an A12 restart must not re-send the give-up alert).
+
+        One latch per ladder, because they reach different conclusions and ask
+        for different things. The exposure ladder gives up early in an episode
+        that a freeze may only enter hours later, and a shared latch would then
+        swallow the power-cycle alert — the one message that asks the operator
+        to go and do something physical."""
         data = self._load()
-        if data.get("gaveup"):
+        if data.get(key):
             return False
-        data["gaveup"] = True
+        data[key] = True
         self._save(data)
         return True
 
@@ -134,7 +140,8 @@ class FlatEpisodeState:
         data["episode_active"] = False
         data.pop("reboots", None)
         data.pop("unwedges", None)
-        data.pop("gaveup", None)
+        for latch in [key for key in data if key.startswith("gaveup")]:
+            data.pop(latch)
         data.pop("notified_flat_alert", None)
         # _save replaces the mirror wholesale, so the dropped keys are forgotten
         # in memory as well — but only if the DISK copy also loses them. Rewrite

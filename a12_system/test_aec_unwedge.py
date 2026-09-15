@@ -340,6 +340,16 @@ def test_run_loop_services_the_unwedge_request(monkeypatch):
     assert cam.writes, "run() must service the unwedge request"
 
 
+def test_the_giveup_alert_is_sent_once_per_episode(tmp_path):
+    # Give-up is terminal but the heartbeat keeps arriving every ~30s, so
+    # without the latch this is a Telegram message every half minute until the
+    # scene changes — the 287-message shape the state file exists to prevent.
+    p = _pipeline(tmp_path, strikes=1, max_attempts=1)
+    for tick in range(1000, 1012):
+        p._note_flat_frame(float(tick))
+    assert len([m for m in p.notifier.sent if "still has no detail" in m]) == 1
+
+
 def test_failed_write_alerts_that_it_could_not_be_applied(tmp_path):
     # Saying nothing would look identical to a rewrite that landed and did not
     # help, which is the one conclusion the evidence does not support.

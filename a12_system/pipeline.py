@@ -65,6 +65,34 @@ def classify_frame_health(
     return None
 
 
+def frames_are_identical(previous, current) -> bool:
+    """Did the sensor read out a new frame, or repeat the last one byte for byte?
+
+    Darkness and a stopped readout both produce near-zero standard deviation,
+    so the per-frame statistics above cannot separate them — on 2026-09-14 an
+    unlit hallway spent the whole AEC/AGC budget and reached CRITICAL while the
+    camera was working correctly. Frame-to-frame change does separate them:
+    silicon always carries read noise, so a live sensor never repeats a frame
+    exactly, while a hung one repeats it for minutes.
+
+    Measured that evening on this camera, at the 160x120 the heartbeat already
+    computes -- hung sensor: max|d| 0.00; the closest live case (dark hallway,
+    AGC off): max|d| 1.00. Hence equality rather than a threshold: any margin
+    would have to be fitted to a scene, and the gap is already a full
+    quantisation step.
+
+    Without a previous frame nothing is established, so the answer is False.
+    "Unknown" must never read as "frozen", or the first heartbeat after every
+    A12 start would count towards rebooting the camera.
+    """
+    if previous is None or current is None:
+        return False
+    # array_equal compares shape as well, so a resolution change mid-episode
+    # (a frame_size write reboots the camera) reads as "not identical" rather
+    # than raising.
+    return bool(np.array_equal(previous, current))
+
+
 def flat_recovery_action(
     consecutive_flat: int,
     reconnect_strikes: int,
@@ -462,14 +490,42 @@ class DetectionPipeline:
         self._flat_consecutive_count = 0
         self._flat_forced_reconnects = 0
         self._flat_nonflat_count = 0
+        # A repeated frame is proof of a stopped readout, not ambiguous evidence
+        # like uniform pixels, so this ladder may do what the unwedge one must
+        # not: reboot. On 2026-09-14 a reboot restored readout and three AEC/AGC
+        # rewrites did not.
+        self._frozen_strikes = int(runtime_config.get("frozen_frame_strikes", 3))
+        self._frozen_max_reboots = int(runtime_config.get("frozen_frame_max_reboots", 3))
+        self._frozen_reboot_cooldown = float(
+            runtime_config.get("frozen_frame_reboot_cooldown", 120.0)
+        )
+        self._frozen_consecutive_count = 0
+        self._last_frozen_reboot = 0.0
+        self._last_health_gray = None
 
-    def _note_flat_frame(self, current_time: float) -> None:
-        """Track a uniform frame and, once sustained, rewrite AEC/AGC.
+    def _frame_is_frozen(self, gray) -> bool:
+        """Is this heartbeat's frame a byte-for-byte repeat of the previous one?
 
-        Uniform pixels still cannot tell darkness from a fault, so this never
-        reboots. Rewriting the exposure registers costs two HTTP writes, no
-        downtime, and is a no-op on a genuinely dark but healthy scene — which
-        is what makes it safe to attempt on evidence this ambiguous.
+        Called on every heartbeat, not only flat ones, so the baseline stays the
+        most recent frame — comparing against a stale one would eventually call
+        a live sensor frozen.
+        """
+        frozen = frames_are_identical(self._last_health_gray, gray)
+        self._last_health_gray = gray
+        return frozen
+
+    def _note_flat_frame(self, current_time: float, frozen: bool = False) -> None:
+        """Track a uniform frame and route it to the remedy its cause needs.
+
+        ``frozen`` — the frame repeated the previous one exactly — is proof the
+        sensor stopped reading out, and takes the reboot path: the AEC/AGC
+        rewrite is the wrong tool for it and spending the budget there is what
+        produced a CRITICAL alert on 2026-09-14.
+
+        Without it, uniform pixels still cannot tell darkness from a fault, so
+        that path never reboots. Rewriting the exposure registers costs two HTTP
+        writes, no downtime, and is a no-op on a genuinely dark but healthy
+        scene — which is what makes it safe on evidence that ambiguous.
         """
         if self.shared_state.pop("unwedge_write_failed", False):
             # The write never reached the camera, so it says nothing about the
@@ -489,9 +545,20 @@ class DetectionPipeline:
 
         self._flat_consecutive_count += 1
         self._flat_nonflat_count = 0
+        self._frozen_consecutive_count = (
+            self._frozen_consecutive_count + 1 if frozen else 0
+        )
         # Ignore brief low-detail blips before opening an episode.
         if self._flat_consecutive_count == self._flat_reconnect_strikes:
             self.flat_state.mark_active()
+
+        # A proven hang takes precedence: the exposure ladder below would only
+        # spend its budget on registers that are not the problem.
+        if self._frozen_consecutive_count >= self._frozen_strikes:
+            self.flat_state.mark_active()
+            self._note_frozen_sensor(current_time)
+            return
+
         if self._flat_consecutive_count < self._flat_reconnect_strikes:
             return
 
@@ -534,8 +601,65 @@ class DetectionPipeline:
             self.notifier.send_telegram(
                 self._telegram_message(
                     "Camera image still has no detail after repeated exposure "
-                    "rewrites. The exposure loop is not the cause — could be a "
-                    "genuinely dark or featureless scene, or a blocked lens."
+                    "rewrites. The sensor is still producing new frames, so the "
+                    "readout has not stopped — what is left is the scene "
+                    "itself: a genuinely dark or featureless view, or a "
+                    "blocked lens."
+                ),
+                bypass_cooldown=True,
+            )
+
+    def _note_frozen_sensor(self, current_time: float) -> None:
+        """A repeated frame means the readout stopped; reboot to restart it.
+
+        Unlike uniform pixels this is not ambiguous, which is what allows a
+        reboot here after commit 099fa12 removed reboots from the flat path.
+        The budget is persisted so a crash-looping A12 cannot reboot the camera
+        all night.
+        """
+        action = flat_recovery_action(
+            self._frozen_consecutive_count,
+            self._frozen_strikes,
+            0,
+            self.flat_state.reboot_count(),
+            0,
+            self._frozen_max_reboots,
+            current_time,
+            self._last_frozen_reboot,
+            self._frozen_reboot_cooldown,
+        )
+
+        if action == "reboot":
+            reboots_used = self.flat_state.record_reboot()
+            self._last_frozen_reboot = current_time
+            logging.warning(
+                f"{self.log_prefix} Camera has repeated the same frame for "
+                f"{self._frozen_consecutive_count} checks — the sensor stopped "
+                f"reading out; rebooting camera over LAN "
+                f"({reboots_used}/{self._frozen_max_reboots})"
+            )
+            self.shared_state["reboot_camera"] = True
+            if self.flat_state.should_notify(
+                "frozen_alert", current_time, self._flat_notify_interval
+            ):
+                self.notifier.send_telegram(
+                    self._telegram_message(
+                        "Camera is sending the same frame over and over — the "
+                        "sensor has stopped reading out (this is not darkness). "
+                        "Rebooting it over the LAN. (rate-limited alert)"
+                    ),
+                    bypass_cooldown=True,
+                )
+        elif action == "giveup" and self.flat_state.set_gaveup("gaveup_frozen"):
+            logging.critical(
+                f"{self.log_prefix} Sensor still repeating the same frame after "
+                f"{self._frozen_max_reboots} reboots — needs a power cycle"
+            )
+            self.notifier.send_telegram(
+                self._telegram_message(
+                    "Camera sensor is still repeating the same frame after "
+                    f"{self._frozen_max_reboots} reboots. A soft restart cannot "
+                    "clear it — the camera needs a physical power cycle."
                 ),
                 bypass_cooldown=True,
             )
@@ -669,6 +793,9 @@ class DetectionPipeline:
             gray = cv2.cvtColor(cv2.resize(frame, (160, 120)), cv2.COLOR_BGR2GRAY)
             brightness = float(np.mean(gray))
             flatness = float(np.std(gray))
+            # Every heartbeat, not only the flat ones, so the baseline this
+            # compares against is always the previous frame.
+            frozen = self._frame_is_frozen(gray)
             self.shared_state["last_frame_brightness"] = brightness
             frame_fault = classify_frame_health(
                 brightness, flatness, self._dark_frame_threshold, self._flat_frame_std_threshold
@@ -684,7 +811,7 @@ class DetectionPipeline:
                 # Both black and gray uniform frames can be legitimate low-light
                 # images. Report their appearance without diagnosing a hang.
                 if flatness < self._flat_frame_std_threshold:
-                    self._note_flat_frame(current_time)
+                    self._note_flat_frame(current_time, frozen=frozen)
                 else:
                     # Texture ends the low-detail episode even on a dark night.
                     self._flat_consecutive_count = 0

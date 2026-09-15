@@ -141,7 +141,14 @@ def test_only_sustained_healthy_frames_restore_budget(tmp_path):
 def test_uniform_night_frames_never_command_disruptive_recovery(tmp_path, monkeypatch):
     """Uniform frames may trigger an AEC/AGC rewrite (cheap, no outage) but must
     never reboot the camera or tear down the stream: darkness still looks
-    exactly like a fault, and a dark night is not a hardware failure."""
+    exactly like a fault, and a dark night is not a hardware failure.
+
+    The frames carry read noise, because a real sensor's do. This fixture used
+    a constant fill, which is bit-identical frame to frame — since 2026-09-14
+    that is the signature of a sensor that has stopped reading out, and it now
+    routes to a reboot (see test_frozen_sensor.py). The claim under test is
+    unchanged; only the model of darkness was wrong.
+    """
     import queue
     from unittest.mock import Mock
 
@@ -179,9 +186,13 @@ def test_uniform_night_frames_never_command_disruptive_recovery(tmp_path, monkey
     # Stop at the motion boundary, after the real heartbeat/watchdog code ran.
     p.detector = Mock()
     p.detector.detect_motion.side_effect = EndOfWatchdog
+    rng = np.random.default_rng(11)
     for level in (0, 40, 65):
-        frame = np.full((120, 160, 3), level, dtype=np.uint8)
         for _ in range(120):
+            # Uniform to within one level — still "flat" by std, but never the
+            # same frame twice, which is what a live sensor always gives.
+            noise = rng.integers(0, 2, size=(120, 160, 1), dtype=np.uint8)
+            frame = (np.full((120, 160, 1), level, dtype=np.uint8) + noise).repeat(3, axis=2)
             clock.now += 31
             with pytest.raises(EndOfWatchdog):
                 p.process_frame(frame)
