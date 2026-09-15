@@ -440,7 +440,11 @@ a time.
   confirmation land, and nothing changes until A12 restarts. `grep
   update_from_mqtt a12_system/test_*.py` returns nothing.
 
-- [ ] **The reported motion accuracy divides two different populations.**
+- [x] **DONE 2026-09-15. The motion accuracy figure counts one population.**
+  A check with no motion is no longer recorded as a motion outcome. Note
+  for whoever needs it later: the block is not persisted by `save()` and
+  nothing reads it, so if it is ever wanted it has to be surfaced first.
+  Previously: 
   `record_motion_event` is called once per YOLO invocation
   (`pipeline.py:1025`), including `periodic` and `external_trigger`, and always
   increments a true or false positive. The denominator `motion_total`

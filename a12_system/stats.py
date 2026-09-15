@@ -78,11 +78,23 @@ class Statistics:
             self.detections[label] += 1
 
     def record_motion_event(self, esp32_detected: bool, python_detected: bool, person_found: bool) -> None:
+        """Record one motion-triggered check, and only a motion-triggered one.
+
+        This is called once per YOLO invocation, and most of those are not
+        motion events at all — the periodic sweep and the PIR window both get
+        here with nothing moving. Counting those as motion outcomes put a
+        different population in the numerator than in the denominator: the
+        accuracy figure could read 0.0% beside thousands of "false positives"
+        from checks that had no motion to be wrong about, and in a mixed
+        configuration it could exceed 100%.
+        """
         with self.lock:
             if esp32_detected:
                 self.motion_esp32_events += 1
             elif python_detected:
                 self.motion_python_fallback += 1
+            else:
+                return   # nothing moved; this check says nothing about motion
 
             if person_found:
                 self.motion_true_positives += 1
@@ -96,7 +108,10 @@ class Statistics:
 
             motion_total = self.motion_esp32_events + self.motion_python_fallback
             esp32_pct = (self.motion_esp32_events / motion_total * 100) if motion_total > 0 else 0
-            accuracy = (self.motion_true_positives / motion_total * 100) if motion_total > 0 else 0
+            # Over the outcomes themselves, so the ratio stays defined even if
+            # the two ever drift apart — an invariant test pins that they do not.
+            motion_judged = self.motion_true_positives + self.motion_false_positives
+            accuracy = (self.motion_true_positives / motion_judged * 100) if motion_judged > 0 else 0
 
             return {
                 "session": {
