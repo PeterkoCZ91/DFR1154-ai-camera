@@ -96,6 +96,26 @@ def _pipeline(tmp_path, **overrides):
     return p
 
 
+def _spend_the_exposure_rewrite(p, when=1000.0, limit=40):
+    """Drive the ladder to where the frozen path is allowed to act at all.
+
+    Identical frames alone are ambiguous — a uniformly clipped frame encodes to
+    identical JPEG bytes with the sensor reading out fine (measured on
+    production 2026-09-15) — so the cheap exposure rewrite is spent first and
+    the frozen run only counts repeats measured after it.
+    """
+    for _ in range(limit):
+        if p.flat_state.unwedge_count() > 0:
+            break
+        p._note_flat_frame(when, frozen=True)
+    else:
+        raise AssertionError("the exposure rewrite was never attempted")
+    p.shared_state.pop("unwedge_camera", None)
+    assert "reboot_camera" not in p.shared_state, (
+        "no reboot may be ordered before the cheap remedy has been tried"
+    )
+
+
 def test_first_frame_is_never_frozen(tmp_path):
     p = _pipeline(tmp_path)
     assert p._frame_is_frozen(_frame()) is False
@@ -140,7 +160,8 @@ def test_frozen_frame_knobs_reach_the_ladder():
 def test_sustained_frozen_frames_reboot_the_camera(tmp_path):
     # A reboot is what actually restored readout on 2026-09-14; three AEC/AGC
     # rewrites did not.
-    p = _pipeline(tmp_path, frozen_strikes=3)
+    p = _pipeline(tmp_path, frozen_strikes=3, max_attempts=1)
+    _spend_the_exposure_rewrite(p)
     for _ in range(3):
         p._note_flat_frame(1000.0, frozen=True)
     assert p.shared_state["reboot_camera"] is True
@@ -156,7 +177,8 @@ def test_the_reboot_request_also_tears_the_live_stream_down(tmp_path):
     other ladder is safe because it only ever runs after a teardown already
     happened; this one runs on a live connection and has to cause one.
     """
-    p = _pipeline(tmp_path, frozen_strikes=3)
+    p = _pipeline(tmp_path, frozen_strikes=3, max_attempts=1)
+    _spend_the_exposure_rewrite(p)
     for _ in range(3):
         p._note_flat_frame(1000.0, frozen=True)
     assert p.shared_state["reboot_camera"] is True
@@ -180,13 +202,17 @@ def test_a_brief_frozen_run_reboots_nothing(tmp_path):
     assert "reboot_camera" not in p.shared_state
 
 
-def test_frozen_frames_do_not_spend_the_exposure_budget(tmp_path):
-    # Rewriting AEC/AGC is the wrong remedy for a stopped readout, and spending
-    # the budget on it is what made the give-up alert fire that evening.
+def test_the_exposure_rewrite_comes_before_any_reboot(tmp_path):
+    """Reversed on 2026-09-15. Identical frames were treated as proof of a
+    stopped readout and jumped straight to a reboot; on production that was a
+    camera clipped to min=max=40 by the firmware's NIGHT profile, reading out
+    perfectly well. Two HTTP writes and no downtime settle it, so they go
+    first."""
     p = _pipeline(tmp_path, strikes=1, frozen_strikes=1)
     p._note_flat_frame(1000.0, frozen=True)
-    assert "unwedge_camera" not in p.shared_state
-    assert p.flat_state.unwedge_count() == 0
+    assert p.shared_state.get("unwedge_camera") is True
+    assert p.flat_state.unwedge_count() == 1
+    assert "reboot_camera" not in p.shared_state
 
 
 def test_changing_flat_frames_never_reboot_the_camera(tmp_path):
@@ -221,6 +247,7 @@ def test_reboots_wait_out_the_cooldown(tmp_path):
     # Heartbeats are ~30s apart, so without the cooldown a frozen sensor would
     # be rebooted on every one of them and never get the time to come back.
     p = _pipeline(tmp_path, frozen_strikes=1, max_reboots=3, reboot_cooldown=120.0)
+    _spend_the_exposure_rewrite(p)
     p._note_flat_frame(1000.0, frozen=True)
     assert p.shared_state.pop("reboot_camera") is True
 
@@ -236,6 +263,7 @@ def test_a_frozen_episode_is_marked_active(tmp_path):
     # nothing unless the episode was marked active — without this the camera
     # would get its reboots once and never again.
     p = _pipeline(tmp_path, frozen_strikes=1)
+    _spend_the_exposure_rewrite(p)
     p._note_flat_frame(1000.0, frozen=True)
     assert p.flat_state.episode_active() is True
     assert p.flat_state.clear() is True
@@ -247,6 +275,7 @@ def test_frozen_giveup_asks_for_a_power_cycle(tmp_path):
     # anything A12 can do over the LAN, and the operator has to be told which
     # physical action is left.
     p = _pipeline(tmp_path, frozen_strikes=1, max_reboots=1)
+    _spend_the_exposure_rewrite(p)
     p._note_flat_frame(1000.0, frozen=True)
     p._note_flat_frame(1000.0, frozen=True)
     assert any("power" in m.lower() for m in p.notifier.sent)
@@ -258,6 +287,7 @@ def test_the_power_cycle_alert_is_sent_once_per_episode(tmp_path):
     # 2026-07-10 episode produced 287 of them, which is why the state file
     # exists at all.
     p = _pipeline(tmp_path, frozen_strikes=1, max_reboots=1)
+    _spend_the_exposure_rewrite(p)
     p._note_flat_frame(1000.0, frozen=True)
     for tick in range(1001, 1012):
         p._note_flat_frame(float(tick), frozen=True)
@@ -316,7 +346,8 @@ def _heartbeat_pipeline(tmp_path, clock, monkeypatch):
     from unittest.mock import Mock
 
     monkeypatch.setattr("a12_system.pipeline.time.time", clock.time)
-    p = _pipeline(tmp_path, strikes=5, frozen_strikes=3, max_reboots=2)
+    p = _pipeline(tmp_path, strikes=5, frozen_strikes=3, max_reboots=2,
+                  max_attempts=1)
     p.running = True
     p.frame_count = 0
     p.last_heartbeat = 0
@@ -372,12 +403,15 @@ def test_heartbeat_reboots_on_a_repeated_frame(tmp_path, monkeypatch):
     p.detector = Mock()
     p.detector.detect_motion.side_effect = EndOfWatchdog
 
+    # 5 flat heartbeats spend the exposure rewrite, then 3 more repeats
+    # measured after it are what actually orders the reboot.
     frame = np.full((120, 160, 3), 40, dtype=np.uint8)
-    for _ in range(6):
+    for _ in range(9):
         clock.now += 31
         with pytest.raises(EndOfWatchdog):
             p.process_frame(frame)
 
+    assert p.flat_state.unwedge_count() == 1, "the cheap remedy was skipped"
     assert p.shared_state.get("reboot_camera") is True
 
 
@@ -413,3 +447,39 @@ def test_giveup_on_changing_frames_rules_out_a_hung_sensor(tmp_path):
     giveup = [m for m in p.notifier.sent if "still has no detail" in m]
     assert giveup, "the exhausted ladder must still report"
     assert "new frames" in giveup[0]
+
+
+# --- identical frames are not proof on their own --------------------------
+#
+# Measured on production 2026-09-15: the camera served min=max=40, std=0.00,
+# byte-identical frames — and the sensor was reading out the whole time. The
+# firmware was holding PROFILE_NIGHT (AGC off) because the enclosure seals the
+# LTR-308, and a uniformly clipped frame encodes to identical JPEG bytes. One
+# exposure write turned it into std=14.5, min=0, max=188.
+#
+# So the cheap, no-downtime exposure rewrite has to be spent BEFORE a reboot is
+# ordered. Only frames that stay identical after that say "the readout stopped".
+
+
+def test_identical_frames_alone_do_not_reboot(tmp_path):
+    """The clipped-exposure case. Rebooting here is wrong and it cost a real
+    camera three reboots and a pointless request to pull the plug."""
+    p = _pipeline(tmp_path, frozen_strikes=3, strikes=5)
+    for _ in range(5):
+        p._note_flat_frame(1000.0, frozen=True)
+        assert "reboot_camera" not in p.shared_state
+    assert p.shared_state.get("unwedge_camera") is True, (
+        "the cheap exposure rewrite must be tried first"
+    )
+
+
+def test_frames_still_identical_after_the_exposure_rewrite_do_reboot(tmp_path):
+    """Once the exposure has been rewritten and the bytes still do not move,
+    the readout really has stopped and only a reboot is left."""
+    p = _pipeline(tmp_path, frozen_strikes=3, strikes=5, max_attempts=1, cooldown=0.0)
+    for _ in range(10):
+        p._note_flat_frame(1000.0, frozen=True)
+        p.shared_state.pop("unwedge_camera", None)
+    assert p.flat_state.unwedge_count() >= 1, "exposure budget was never spent"
+    assert p.shared_state.get("reboot_camera") is True
+    assert p.shared_state.get("force_stream_reconnect") is True

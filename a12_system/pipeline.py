@@ -500,6 +500,7 @@ class DetectionPipeline:
             runtime_config.get("frozen_frame_reboot_cooldown", 120.0)
         )
         self._frozen_consecutive_count = 0
+        self._frozen_unwedges_seen = 0
         self._last_frozen_reboot = 0.0
         self._last_health_gray = None
 
@@ -517,10 +518,14 @@ class DetectionPipeline:
     def _note_flat_frame(self, current_time: float, frozen: bool = False) -> None:
         """Track a uniform frame and route it to the remedy its cause needs.
 
-        ``frozen`` — the frame repeated the previous one exactly — is proof the
-        sensor stopped reading out, and takes the reboot path: the AEC/AGC
-        rewrite is the wrong tool for it and spending the budget there is what
-        produced a CRITICAL alert on 2026-09-14.
+        ``frozen`` — the frame repeated the previous one exactly — narrows the
+        cause but does not settle it. A uniformly clipped frame encodes to
+        identical JPEG bytes with the sensor reading out perfectly well:
+        measured on 2026-09-15, a camera held in the firmware's NIGHT profile
+        (AGC off, because the enclosure seals the lux sensor) served
+        min=max=40, std=0.00, byte-identical — and one exposure write turned it
+        into std=14.5, min=0, max=188. So the cheap rewrite is spent first, and
+        only frames that stay identical *after* it say the readout has stopped.
 
         Without it, uniform pixels still cannot tell darkness from a fault, so
         that path never reboots. Rewriting the exposure registers costs two HTTP
@@ -552,9 +557,15 @@ class DetectionPipeline:
         if self._flat_consecutive_count == self._flat_reconnect_strikes:
             self.flat_state.mark_active()
 
-        # A proven hang takes precedence: the exposure ladder below would only
-        # spend its budget on registers that are not the problem.
-        if self._frozen_consecutive_count >= self._frozen_strikes:
+        # Escalate to a reboot only once the exposure rewrite has actually been
+        # spent and the bytes still have not moved. Two HTTP writes and no
+        # downtime is the cheaper half of the discriminator; ordering it after
+        # the reboot cost a real camera three reboots and a pointless request
+        # to pull the plug.
+        if (
+            self._frozen_consecutive_count >= self._frozen_strikes
+            and self._frozen_unwedges_seen > 0
+        ):
             self.flat_state.mark_active()
             self._note_frozen_sensor(current_time)
             return
@@ -581,6 +592,10 @@ class DetectionPipeline:
                 f"({attempts}/{self._flat_max_unwedge_attempts})"
             )
             self.shared_state["unwedge_camera"] = True
+            # Restart the frozen run: only repeats measured AFTER an exposure
+            # change are evidence that the readout itself has stopped.
+            self._frozen_consecutive_count = 0
+            self._frozen_unwedges_seen += 1
             if self.flat_state.should_notify(
                 "flat_alert", current_time, self._flat_notify_interval
             ):

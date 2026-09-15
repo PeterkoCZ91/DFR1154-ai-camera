@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Fixed (A12 — identical frames are not proof of a stopped readout)
+
+- **The discriminator shipped on 2026-09-14 had its two remedies the wrong way round.** It treated a frame that repeated the previous one byte for byte as proof the sensor had stopped reading out, and jumped straight to a reboot. A uniformly clipped frame encodes to identical JPEG bytes with the sensor reading out perfectly well — measured on the production camera the next day, serving `min=max=40, std=0.00`, byte-identical, while one exposure write turned it into `std=14.5, min=0, max=188`. The false positive cost three reboots and a request to the operator to pull the plug, for a camera that was working.
+- The cheap remedy now goes first. An exposure rewrite costs two HTTP writes and no downtime; a reboot costs ~25 s of blindness. The frozen run is reset every time the exposure is rewritten, so the repeats that order a reboot are only those measured *after* the exposure actually changed — which is what "still identical after the rewrite" has to mean to be evidence.
+- Both halves are mutation-checked: removing the gate, or removing the counter reset, fails ten tests each.
+
+### Fixed (runtime — the camera was held in the NIGHT profile all day)
+
+- **Root cause of the "flat grey image" episodes, found 2026-09-15.** `updateCameraProfile()` picks DAY/DUSK/NIGHT from the LTR-308, and this enclosure seals that sensor: it reads 0.2-0.8 lux in full daylight, so the profile is pinned to NIGHT, where **AGC is off**. In a dark hallway that is a near-black frame; in a lit one the output clips to a constant. The firmware documents this exact trap in a comment at `main.cpp:220` and offers the way out — drive the profile from the clock instead of the sensor. Applied with `POST /ir-control {"time_based":true,"night_start_hour":0,"night_end_hour":0}`, which pins DUSK (AGC on) permanently; `auto_mode` stays false so the IR LED, sealed in the same box, stays off. Persisted to `/ir_config.json` on LittleFS and verified across a reboot. Before: `mean=40.00, std=0.00`. After: `mean=163, std=28.8`, a clear picture of the stairwell.
+- This reframes the "AEC wedge" of 2026-09-11: rewriting the aec/agc registers relieved it because it overrode the profile, and the firmware took the profile back on its next evaluation. That was relief, not a fix. The permanent fix is hardware — a second opening over the LTR-308, Tier 0 in TODO.
+
 ### Fixed (A12 — the frozen-sensor ladder spent its budget without rebooting anything)
 
 - **`reboot_camera` is only drained after `process_stream()` returns, and a hung sensor never ends the stream.** Uniform grey frames are perfectly valid MJPEG and decode fine, so the connection stays up, the flag sits there, and `record_reboot()` had already counted an attempt that never happened. Measured on production the same day: `{"reboots": 2}` in the state file against `total_restarts` unchanged. The escalation now also sets `force_stream_reconnect`, the mechanism `__main__` already had and nothing used, so the stream is torn down and the reboot is executed on the same pass. A forced reconnect returns `forced_reconnect`, which `_record_stream_break` ignores, so it cannot double-escalate the transport ladder.
