@@ -365,9 +365,7 @@ class Application:
 
                     self._record_stream_break(camera, stream_end_reason, reboot_grace_until)
 
-                    if shared_state.pop("reboot_camera", False):
-                        # The transport watchdog requested a bounded recovery attempt.
-                        camera.reboot()
+                    if self._execute_reboot_request(camera, shared_state):
                         # The camera drops offline for ~15-25s now. That outage is
                         # self-inflicted: don't let the loop below count it toward
                         # STUCK alerts ("not responding!" / "back online!" spam for
@@ -401,6 +399,26 @@ class Application:
                 time.sleep(5)
 
         self._cleanup()
+
+    @staticmethod
+    def _execute_reboot_request(camera, shared_state) -> bool:
+        """Carry out a ladder's reboot request. True if one was attempted.
+
+        The budget was charged before the request was made, and it exists to
+        bound reboots that HAPPENED — the ladder only ever fires at a camera
+        that is already misbehaving, so a POST that does not land is the likely
+        case. Without the refund the budget drains on requests that never left
+        the building and A12 ends up asking for a physical power cycle for a
+        camera it never rebooted. Seen live 2026-09-15 11:45:14.
+
+        The tag says which ladder charged it; the two keep separate budgets.
+        """
+        requester = shared_state.pop("reboot_camera", False)
+        if not requester:
+            return False
+        if not camera.reboot():
+            shared_state["reboot_failed"] = requester
+        return True
 
     def _record_stream_break(self, camera, reason: str, reboot_grace_until: float) -> None:
         """Record real transport breaks, excluding the expected reboot outage."""

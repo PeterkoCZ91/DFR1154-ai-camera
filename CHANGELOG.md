@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Fixed (A12 — a reboot that never happened is no longer charged)
+
+- **`camera.reboot()`'s result was discarded, and the budget had already been charged.** Both ladders call `record_reboot()` before the request is made, and the ladder only ever fires at a camera that is already misbehaving — so a POST that does not land is the likely case, not the exception. Seen live on 2026-09-15 11:45:14: `Camera reboot request error: ... timed out`, and the ladder advanced to 2/3 anyway. After the budget drains, A12 sends "a soft restart cannot clear it — the camera needs a physical power cycle" about a camera it never rebooted. `refund_unwedge()` had existed for exactly this on the exposure path since the ladder was written; the reboot path had no equivalent.
+- `shared_state["reboot_camera"]` now carries which ladder charged it (`"flat"` or `"freeze"`) instead of a bare `True`, because the two keep separate budgets and a refund has to know whose attempt it is giving back. The cooldown is deliberately *not* refunded: an unreachable camera should not be retried every heartbeat.
+- The request handling moved out of the main loop into `Application._execute_reboot_request()` so it could be tested at all — the same reason `configure_frame_health_watchdog()` was extracted. Reverting the fix now fails two tests; before the extraction it failed none, because that line had no coverage whatsoever.
+
 ### Fixed (A12 — a rewrite that never reached the camera was credited as one that did)
 
 - **The frozen ladder's gate was not refunded when the exposure write failed.** `_frozen_unwedges_seen` was incremented when the rewrite was *requested*. If the write never lands — port 80 starves while 81 keeps streaming, a documented state of this camera — the persisted budget is refunded and an alert says so, but that counter was not, so the gate believed the exposure had been rewritten and went on to reboot. That is the false positive the ordering fix closed the same evening, reached through a different door. Found by a code sweep, not by the tests.

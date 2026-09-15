@@ -83,6 +83,20 @@ class FlatEpisodeState:
     def reboot_count(self) -> int:
         return self._as_int(self._load().get("reboots"))
 
+    def refund_reboot(self) -> None:
+        """Give back a reboot whose request never reached the camera.
+
+        Same rule as ``refund_unwedge``: the budget exists to bound reboots that
+        HAPPENED. The ladder only fires at a camera that is already misbehaving,
+        so a failed POST is the likely case — and a drained budget makes A12 ask
+        for a physical power cycle for a camera it never rebooted."""
+        data = self._load()
+        n = self._as_int(data.get("reboots"))
+        if n <= 0:
+            return
+        data["reboots"] = n - 1
+        self._save(data)
+
     def record_unwedge(self) -> int:
         """Count an AEC/AGC unwedge write; persisted for the same reason as
         ``record_reboot`` — a crash-looping A12 must not re-arm a fresh budget

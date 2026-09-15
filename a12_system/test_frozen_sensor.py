@@ -167,7 +167,7 @@ def test_sustained_frozen_frames_reboot_the_camera(tmp_path):
     _spend_the_exposure_rewrite(p)
     for _ in range(3):
         p._note_flat_frame(1000.0, frozen=True)
-    assert p.shared_state["reboot_camera"] is True
+    assert p.shared_state["reboot_camera"]
 
 
 def test_the_reboot_request_also_tears_the_live_stream_down(tmp_path):
@@ -184,7 +184,7 @@ def test_the_reboot_request_also_tears_the_live_stream_down(tmp_path):
     _spend_the_exposure_rewrite(p)
     for _ in range(3):
         p._note_flat_frame(1000.0, frozen=True)
-    assert p.shared_state["reboot_camera"] is True
+    assert p.shared_state["reboot_camera"]
     assert p.shared_state.get("force_stream_reconnect") is True, (
         "reboot_camera alone is never consumed while the stream stays up"
     )
@@ -252,13 +252,13 @@ def test_reboots_wait_out_the_cooldown(tmp_path):
     p = _pipeline(tmp_path, frozen_strikes=1, max_reboots=3, reboot_cooldown=120.0)
     _spend_the_exposure_rewrite(p)
     p._note_flat_frame(1000.0, frozen=True)
-    assert p.shared_state.pop("reboot_camera") is True
+    assert p.shared_state.pop("reboot_camera")
 
     p._note_flat_frame(1060.0, frozen=True)
     assert "reboot_camera" not in p.shared_state
 
     p._note_flat_frame(1200.0, frozen=True)
-    assert p.shared_state["reboot_camera"] is True
+    assert p.shared_state["reboot_camera"]
 
 
 def test_a_frozen_episode_is_marked_active(tmp_path):
@@ -415,7 +415,7 @@ def test_heartbeat_reboots_on_a_repeated_frame(tmp_path, monkeypatch):
             p.process_frame(frame)
 
     assert p.flat_state.unwedge_count() == 1, "the cheap remedy was skipped"
-    assert p.shared_state.get("reboot_camera") is True
+    assert p.shared_state.get("reboot_camera")
 
 
 def test_heartbeat_does_not_reboot_on_a_dark_but_live_sensor(tmp_path, monkeypatch):
@@ -484,7 +484,7 @@ def test_frames_still_identical_after_the_exposure_rewrite_do_reboot(tmp_path):
         p._note_flat_frame(1000.0, frozen=True)
         p.shared_state.pop("unwedge_camera", None)
     assert p.flat_state.unwedge_count() >= 1, "exposure budget was never spent"
-    assert p.shared_state.get("reboot_camera") is True
+    assert p.shared_state.get("reboot_camera")
     assert p.shared_state.get("force_stream_reconnect") is True
 
 
@@ -527,4 +527,71 @@ def test_a_delivered_exposure_write_still_unlocks_the_reboot(tmp_path):
     for _ in range(12):
         p._note_flat_frame(1000.0, frozen=True)
         p.shared_state.pop("unwedge_camera", None)
-    assert p.shared_state.get("reboot_camera") is True
+    assert p.shared_state.get("reboot_camera")
+
+
+# --- a reboot that never happened must not be charged ----------------------
+#
+# Seen live 2026-09-15 11:45:14: `Camera reboot request error: ... timed out`,
+# and the ladder advanced to 2/3 anyway. The ladder only ever fires at a camera
+# that is already misbehaving, so a failed POST is the likely case — and after
+# the budget runs out A12 asks for a physical power cycle for a camera it never
+# rebooted.
+
+
+def _reach_the_frozen_reboot(p, when=1000.0):
+    for _ in range(40):
+        p._note_flat_frame(when, frozen=True)
+        p.shared_state.pop("unwedge_camera", None)
+        if p.shared_state.get("reboot_camera"):
+            return
+    raise AssertionError("the frozen ladder never asked for a reboot")
+
+
+def test_the_reboot_request_says_which_ladder_charged_it(tmp_path):
+    """Two ladders share one flag and keep separate budgets, so the refund has
+    to know whose attempt it is giving back."""
+    p = _pipeline(tmp_path, frozen_strikes=3, strikes=1, max_attempts=1)
+    _reach_the_frozen_reboot(p)
+    assert p.shared_state["reboot_camera"] == "flat"
+
+
+def test_a_failed_reboot_is_given_back(tmp_path):
+    # With a cooldown, so the same heartbeat cannot refund and immediately
+    # re-charge — which is the real behaviour too: an unreachable camera is
+    # not worth hammering every 30 s.
+    p = _pipeline(tmp_path, frozen_strikes=3, strikes=1, max_attempts=1,
+                  reboot_cooldown=120.0)
+    _reach_the_frozen_reboot(p)
+    assert p.flat_state.reboot_count() == 1
+
+    # __main__ reports that the POST did not land.
+    p.shared_state.pop("reboot_camera")
+    p.shared_state["reboot_failed"] = "flat"
+    p._note_flat_frame(1000.0, frozen=True)
+    assert p.flat_state.reboot_count() == 0, "charged for a reboot that never ran"
+
+
+def test_a_delivered_reboot_is_not_given_back(tmp_path):
+    p = _pipeline(tmp_path, frozen_strikes=3, strikes=1, max_attempts=1,
+                  reboot_cooldown=120.0)
+    _reach_the_frozen_reboot(p)
+    p.shared_state.pop("reboot_camera")
+    p._note_flat_frame(1000.0, frozen=True)
+    assert p.flat_state.reboot_count() == 1
+
+
+def test_failed_reboots_never_reach_the_power_cycle_alert(tmp_path):
+    """The consequence that matters. Without the refund the budget drains on
+    requests that never left the building and the operator is sent to the wall
+    socket for a camera A12 never rebooted."""
+    p = _pipeline(tmp_path, frozen_strikes=3, strikes=1, max_attempts=1,
+                  max_reboots=2, reboot_cooldown=0.0)
+    for _ in range(60):
+        p._note_flat_frame(1000.0, frozen=True)
+        p.shared_state.pop("unwedge_camera", None)
+        if p.shared_state.pop("reboot_camera", None):
+            p.shared_state["reboot_failed"] = "flat"
+    assert not any("power" in m.lower() for m in p.notifier.sent), (
+        "asked for a power cycle after reboots that never happened"
+    )

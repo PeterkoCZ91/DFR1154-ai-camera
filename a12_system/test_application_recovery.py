@@ -75,3 +75,46 @@ def test_connect_does_not_write_exposure_or_schedule_reset(tmp_path, monkeypatch
     app.run()
     camera.set_camera_settings.assert_not_called()
     timer.assert_not_called()
+
+
+# --- a reboot that never landed must be handed back ------------------------
+
+
+def _camera(ok: bool):
+    camera = Mock()
+    camera.reboot.return_value = ok
+    return camera
+
+
+def test_a_failed_reboot_is_reported_back_to_the_ladder_that_charged_it():
+    """Seen live 2026-09-15 11:45:14: the POST timed out and the ladder went to
+    2/3 regardless. After the budget drains, A12 asks for a physical power
+    cycle for a camera it never rebooted."""
+    app = object.__new__(entry.Application)
+    state = {"reboot_camera": "flat"}
+    assert app._execute_reboot_request(_camera(False), state) is True
+    assert state["reboot_failed"] == "flat"
+
+
+def test_the_freeze_ladder_gets_its_own_attempt_back():
+    """Two ladders, two budgets, one shared flag — the tag has to survive."""
+    app = object.__new__(entry.Application)
+    state = {"reboot_camera": "freeze"}
+    app._execute_reboot_request(_camera(False), state)
+    assert state["reboot_failed"] == "freeze"
+
+
+def test_a_delivered_reboot_reports_nothing_back():
+    app = object.__new__(entry.Application)
+    state = {"reboot_camera": "flat"}
+    assert app._execute_reboot_request(_camera(True), state) is True
+    assert "reboot_failed" not in state
+
+
+def test_no_request_means_no_reboot_and_no_grace_window():
+    """The grace window suppresses STUCK alerts, so it may only open for an
+    outage we actually caused."""
+    app = object.__new__(entry.Application)
+    camera = _camera(True)
+    assert app._execute_reboot_request(camera, {}) is False
+    camera.reboot.assert_not_called()

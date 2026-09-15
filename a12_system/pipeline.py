@@ -532,6 +532,7 @@ class DetectionPipeline:
         writes, no downtime, and is a no-op on a genuinely dark but healthy
         scene — which is what makes it safe on evidence that ambiguous.
         """
+        self._refund_failed_reboot()
         if self.shared_state.pop("unwedge_write_failed", False):
             # The write never reached the camera, so it says nothing about the
             # exposure loop. Give the attempt back and report the real problem.
@@ -629,6 +630,29 @@ class DetectionPipeline:
                 bypass_cooldown=True,
             )
 
+    def _refund_failed_reboot(self) -> None:
+        """Credit back a reboot request that never reached the camera.
+
+        The cooldown is deliberately NOT refunded: an unreachable camera should
+        not be hammered every heartbeat, and the budget is the thing that must
+        only count what happened.
+        """
+        who = self.shared_state.pop("reboot_failed", None)
+        if not who:
+            return
+        # Resolved lazily: touching the other ladder's state here would drag it
+        # into every call, including paths where it does not exist yet.
+        if who == "flat":
+            self.flat_state.refund_reboot()
+        elif who == "freeze":
+            self.freeze_state.refund_reboot()
+        else:
+            return
+        logging.warning(
+            f"{self.log_prefix} Camera reboot request never landed — giving the "
+            f"attempt back to the {who} ladder rather than spending it"
+        )
+
     def _note_frozen_sensor(self, current_time: float) -> None:
         """A repeated frame means the readout stopped; reboot to restart it.
 
@@ -658,7 +682,9 @@ class DetectionPipeline:
                 f"reading out; rebooting camera over LAN "
                 f"({reboots_used}/{self._frozen_max_reboots})"
             )
-            self.shared_state["reboot_camera"] = True
+            # Tagged, not just True: two ladders share this flag and keep
+            # separate budgets, so a failure report has to say whose it was.
+            self.shared_state["reboot_camera"] = "flat"
             # A hung sensor keeps serving valid MJPEG — uniform frames decode
             # fine — so the stream never ends on its own, and __main__ only
             # drains `reboot_camera` after `process_stream()` returns. Without
@@ -733,6 +759,7 @@ class DetectionPipeline:
         ``shared_state["reboot_camera"]`` for __main__ to act on before its
         next ``get_stream()`` call.
         """
+        self._refund_failed_reboot()
         now = time.time()
         if now - self._last_freeze_time >= self._freeze_healthy_gap:
             self._freeze_consecutive_count = 0
@@ -755,7 +782,7 @@ class DetectionPipeline:
                 f"({reason}) without a healthy gap — rebooting camera over LAN "
                 f"({reboots_used}/{self._freeze_max_reboots})"
             )
-            self.shared_state["reboot_camera"] = True
+            self.shared_state["reboot_camera"] = "freeze"
             self._last_freeze_action = now
             self._freeze_consecutive_count = 0
             if self.freeze_state.should_notify("freeze_reboot", now, self._freeze_notify_interval):

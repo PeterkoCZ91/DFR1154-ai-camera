@@ -394,7 +394,12 @@ a time.
   the retry works, but it would fail a CI that builds firmware — and CI does
   not build firmware today, which is its own gap.
 
-- [ ] **A failed camera reboot still charges the reboot budget.**
+- [x] **DONE 2026-09-15. A failed camera reboot no longer charges the budget.**
+  `reboot_camera` carries the charging ladder's name, `__main__` reports a
+  failed POST back as `reboot_failed`, and each ladder refunds its own. The
+  handling moved into `Application._execute_reboot_request()` so it could be
+  covered — that line previously had none, and reverting the fix failed zero
+  tests. Previously: 
   `camera.reboot()` returns a bool (`camera.py:167`), `__main__.py:370` discards
   it, and both ladders call `record_reboot()` *before* the request
   (`pipeline.py:653`, `pipeline.py:752`). The ladder only ever fires at a camera

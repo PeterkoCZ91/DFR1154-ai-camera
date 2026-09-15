@@ -82,7 +82,7 @@ def test_burst_of_freezes_reboots_camera(tmp_path, monkeypatch):
     assert "reboot_camera" not in p.shared_state
     clock.now += 1.0
     p.note_stream_freeze("frozen")
-    assert p.shared_state.get("reboot_camera") is True
+    assert p.shared_state.get("reboot_camera")
     assert any("rebooting" in m.lower() for m in p.notifier.sent)
 
 
@@ -93,7 +93,7 @@ def test_reboot_budget_exhausted_gives_up(tmp_path, monkeypatch):
     p.note_stream_freeze("frozen")
     clock.now += 1.0
     p.note_stream_freeze("frozen")  # -> reboot (1/1 used)
-    assert p.shared_state.pop("reboot_camera") is True
+    assert p.shared_state.pop("reboot_camera")
     clock.now += 1.0
     p.note_stream_freeze("frozen")
     clock.now += 1.0
@@ -109,7 +109,7 @@ def test_quiet_gap_does_not_prove_recovery(tmp_path, monkeypatch):
     p.note_stream_freeze("frozen")
     clock.now += 1.0
     p.note_stream_freeze("frozen")  # -> reboot, episode marked active
-    assert p.shared_state.pop("reboot_camera") is True
+    assert p.shared_state.pop("reboot_camera")
     p.notifier.sent.clear()
     # Next freeze arrives 999s later — past the 600s healthy gap.
     clock.now += 999.0
