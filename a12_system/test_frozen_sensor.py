@@ -93,6 +93,9 @@ def _pipeline(tmp_path, **overrides):
         "frozen_frame_max_reboots": overrides.get("max_reboots", 2),
         "frozen_frame_reboot_cooldown": overrides.get("reboot_cooldown", 0.0),
     })
+    # Production __init__ calls both; a harness that wires only one drifts
+    # from it and passes while process_frame raises.
+    p.configure_face_checks({})
     return p
 
 

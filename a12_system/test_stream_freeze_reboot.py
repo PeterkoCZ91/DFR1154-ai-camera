@@ -176,6 +176,9 @@ def test_uniform_night_frames_never_command_disruptive_recovery(tmp_path, monkey
         "flat_frame_unwedge_cooldown": 0.0,
         "flat_frame_healthy_required": 3,
     })
+    # Production __init__ calls both; a harness that wires only one drifts
+    # from it and passes while process_frame raises.
+    p.configure_face_checks({})
     p.flat_state = FlatEpisodeState(str(tmp_path / "flat.json"))
     p.runtime_config = Mock()
     p.runtime_config.get.return_value = 50

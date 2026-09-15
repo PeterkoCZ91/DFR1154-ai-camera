@@ -160,14 +160,17 @@ care about any particular one.
   library default, never fitted. Measured: at 35 degrees of head pitch dlib's
   distance for the *same person* is 0.566 against that 0.6 — the error budget is
   spent by geometry before a stranger appears.
-- [ ] **A. One database row per episode, not per frame.** A single visit
-  tonight wrote five `face` rows (`unavailable`, then 4x the name). That
-  inflates the counts and makes the daily summary read "4 known faces" for one
-  person. The verdict should be logged once, when the episode closes.
-- [ ] **B. The first row of an episode says `unavailable`, which is a lie.** It
-  means "one match so far, not enough to decide", not "the check could not
-  run". Two different facts in one value — the exact mistake item 2 fixed
-  elsewhere.
+- [x] **A. DONE 2026-09-15. One database row per episode.** Written when the
+  episode closes — on the next occurrence, or from the heartbeat once the quiet
+  gap has passed, so a visit nobody follows still lands with its own timestamp
+  instead of the next morning's. Mutation testing earned its keep here: with
+  the first version of the tests, deleting *either* close left all 324 other
+  tests green, i.e. a pipeline that never wrote the row would have shipped.
+- [x] **B. DONE 2026-09-15. `undecided` split out of `unavailable`.** "Matched
+  a resident, but not often enough to confirm" is a real observation; "the
+  check could not run" is an absence of one. It carries no name, a resolved
+  stranger still outranks it, and rows written before today keep mapping to the
+  old value.
 - [x] **C. DONE 2026-09-15. Deleted the dlib branch.** Two things had to move
   first. It carried the only `try/except` around the check and the SFace path
   had none, so deleting it naively would have let a backend fault propagate out

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Changed (A12 — one face row per visit, and a third answer that was missing)
+
+- **The `face` row is written once, when the episode closes, not once per check.** A single visit wrote five rows — `unavailable`, then the same name four times — so the daily summary read "4 known faces" for one person. The verdict has belonged to the episode since 2026-09-12; the row now does too. Closing happens when the next occurrence starts and, for a visit nobody follows, from the heartbeat once the quiet gap has passed — so the row carries the time the visit ended rather than whenever somebody next walks past.
+- **"Matched a resident, but not often enough to say so" is now `undecided`, not `unavailable`.** Those are different facts and only one of them means "the check could not run". A resident verdict deliberately needs repeated sightings, because a false accept there hides a real stranger — so the short-of-the-bar case is common and it was reporting itself as an absence of evidence. It carries no name, and a resolved stranger still outranks it. Rows written before this carry the old value and `face_label_outcome` still maps them.
+- Both wiring points are mutation-checked. Deleting either close — the one on a new occurrence or the one in the heartbeat — left all 324 other tests green on the first attempt, which would have shipped a pipeline that never wrote the row at all.
+
 ### Fixed (A12 — identical frames are not proof of a stopped readout)
 
 - **The discriminator shipped on 2026-09-14 had its two remedies the wrong way round.** It treated a frame that repeated the previous one byte for byte as proof the sensor had stopped reading out, and jumped straight to a reboot. A uniformly clipped frame encodes to identical JPEG bytes with the sensor reading out perfectly well — measured on the production camera the next day, serving `min=max=40, std=0.00`, byte-identical, while one exposure write turned it into `std=14.5, min=0, max=188`. The false positive cost three reboots and a request to the operator to pull the plug, for a camera that was working.

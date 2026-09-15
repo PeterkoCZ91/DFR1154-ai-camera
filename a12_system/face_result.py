@@ -24,6 +24,7 @@ class FaceOutcome(enum.Enum):
 
     RESIDENT = "resident"        # a face was seen and matched an enrolled person
     STRANGER = "stranger"        # a face was seen and matched nobody
+    UNDECIDED = "undecided"      # matched a resident, but too few times to confirm
     NO_FACE = "no_face"          # no face was resolvable in this frame
     UNAVAILABLE = "unavailable"  # the check could not run (no backend, empty gallery)
     ERROR = "error"              # the backend raised
@@ -139,6 +140,12 @@ class FaceEpisode:
     Frames that resolved no face at all are the majority (78% of person frames
     measured) and never outvote anything; they are only the answer when there
     was nothing else.
+
+    Short of the bar the answer is UNDECIDED, not UNAVAILABLE: a face was
+    resolved and it did match an enrolled person, which is a real observation —
+    it simply is not enough to suppress an alert. Collapsing it into "the check
+    could not run" is the same two-facts-in-one-value mistake the RESIDENT /
+    STRANGER / NO_FACE split was made to fix.
     """
 
     def __init__(self, required_confirmations: int = 2):
@@ -170,6 +177,11 @@ class FaceEpisode:
                 return FaceResult(FaceOutcome.RESIDENT, name)
         if self._stranger:
             return FaceResult(FaceOutcome.STRANGER)
+        if self._name_hits:
+            # Seen, matched, and short of the bar — a different fact from "the
+            # check could not run", which is what this used to report. No name
+            # travels with it: only RESIDENT may name somebody.
+            return FaceResult(FaceOutcome.UNDECIDED)
         if self._no_face:
             return FaceResult(FaceOutcome.NO_FACE)
         if self._error:

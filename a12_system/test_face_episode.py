@@ -257,12 +257,35 @@ class _StubStats:
         self.recorded.append(result)
 
 
+class _StubDb:
+    def __init__(self):
+        self.events = []
+
+    def log_event(self, event_type, label, value=0.0, media_path=None):
+        self.events.append((event_type, label, value))
+
+
+class _StubMqtt:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, topic, payload, *args, **kwargs):
+        self.published.append((topic, payload))
+
+
+def _face_rows(p):
+    return [(label, value) for typ, label, value in p.db.events if typ == "face"]
+
+
 def _pipeline(detector, *, pir=True, face_cfg=None, **overrides):
     from a12_system.pipeline import DetectionPipeline
 
     p = DetectionPipeline.__new__(DetectionPipeline)
     p.detector = detector
     p.stats = _StubStats()
+    p.db = _StubDb()
+    p.mqtt_client = _StubMqtt()
+    p.log_prefix = "[test:cam]"
     p.shared_state = {"external_yolo_until": 1e12 if pir else 0.0}
     p.ha_monitor = None
     # Call the real wiring rather than re-declaring its attributes here.
@@ -403,3 +426,142 @@ def test_a_failed_write_does_not_break_the_check(tmp_path):
     det = _StubDetector([STRANGER])
     p = _pipeline(det, _face_debug_dir=str(tmp_path / "nope" / "\0bad"))
     assert p._face_verdict(_frame()).outcome is FaceOutcome.STRANGER
+
+
+# --- one row per episode, not one per frame -------------------------------
+#
+# Roadmap item A. A single visit wrote five `face` rows — `unavailable`, then
+# the name four times — so the daily summary read "4 known faces" for one
+# person. The verdict is the episode's, so the row is the episode's too.
+
+
+def _visit(p, checks):
+    """Feed one occurrence of `checks` face checks through the real path."""
+    for _ in range(checks):
+        p._face_verdict(_frame())
+
+
+def test_a_visit_writes_one_face_row_not_one_per_check(tmp_path):
+    p = _pipeline(_StubDetector([RESIDENT] * 5), _face_max_checks=5,
+                  _face_episode_gap=1e9)
+    _visit(p, 5)
+    p.close_face_episode(reason="test")
+    assert _face_rows(p) == [("Resident", 1.0)]
+
+
+def test_nothing_is_written_while_the_episode_is_still_open(tmp_path):
+    """The verdict can still change — logging early is what produced the
+    `unavailable` row that opened every visit."""
+    p = _pipeline(_StubDetector([RESIDENT] * 5), _face_max_checks=5,
+                  _face_episode_gap=1e9)
+    _visit(p, 3)
+    assert _face_rows(p) == []
+
+
+def test_an_episode_that_ran_no_checks_writes_nothing(tmp_path):
+    """Nothing was established, so there is nothing to record."""
+    p = _pipeline(_StubDetector([]), pir=False)
+    p.close_face_episode(reason="test")
+    assert _face_rows(p) == []
+
+
+def test_closing_twice_does_not_write_twice(tmp_path):
+    p = _pipeline(_StubDetector([RESIDENT] * 2), _face_max_checks=5,
+                  _face_episode_gap=1e9)
+    _visit(p, 2)
+    p.close_face_episode(reason="test")
+    p.close_face_episode(reason="test")
+    assert len(_face_rows(p)) == 1
+
+
+def test_a_second_visit_gets_its_own_row(tmp_path):
+    """Two people a minute apart must not share a verdict — or a row."""
+    p = _pipeline(_StubDetector([RESIDENT, RESIDENT, STRANGER]),
+                  _face_max_checks=5, _face_episode_gap=1e9)
+    _visit(p, 2)
+    # No manual close: starting the next occurrence must flush the previous
+    # one. Without that the row is only ever written by the heartbeat, and
+    # deleting this call would go unnoticed.
+    p._face_episode_gap = 0.0          # the quiet gap has passed
+    _visit(p, 1)
+    p.close_face_episode(reason="test")
+    assert _face_rows(p) == [("Resident", 1.0), ("stranger", 0.0)]
+
+
+def test_an_unconfirmed_sighting_is_recorded_as_undecided(tmp_path):
+    """Item B reaching the database: this row used to read `unavailable`."""
+    p = _pipeline(_StubDetector([RESIDENT]), _face_max_checks=5,
+                  _face_episode_gap=1e9,
+                  face_cfg={"episode_resident_confirmations": 2})
+    _visit(p, 1)
+    p.close_face_episode(reason="test")
+    assert _face_rows(p) == [("undecided", 0.0)]
+
+
+# --- the heartbeat has to be the one that closes a quiet episode ------------
+
+
+class _Clock:
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def time(self):
+        return self.now
+
+
+def test_the_heartbeat_closes_an_episode_that_went_quiet(tmp_path, monkeypatch):
+    """The wiring itself. A visit that is never followed by another one would
+    otherwise sit unwritten forever, and the row has to carry the time the
+    visit ended — not the next morning, when the next person shows up.
+    """
+    import queue
+    import pytest
+    from unittest.mock import Mock
+
+    clock = _Clock()
+    monkeypatch.setattr("a12_system.pipeline.time.time", clock.time)
+
+    p = _pipeline(_StubDetector([RESIDENT, RESIDENT]), _face_max_checks=5,
+                  _face_episode_gap=30.0)
+    p.running = True
+    p.frame_count = 0
+    p.last_heartbeat = 0
+    p.heartbeat_interval = 30
+    p.frame_buffer = []
+    p.notification_queue = queue.Queue()
+    p.status_monitor = None
+    p.runtime_config = Mock()
+    p.runtime_config.get.return_value = 50
+    # process_frame runs the frame-health watchdog too; production __init__
+    # wires both, so the harness has to as well or it tests a shape that
+    # never exists.
+    from a12_system.flat_episode import FlatEpisodeState
+    p.notifier = Mock()
+    # NOT p.shared_state = {} — that is the PIR window, and clearing it stops
+    # every face check from running at all.
+    p.flat_state = FlatEpisodeState(str(tmp_path / "flat_episode_state.json"))
+    p.freeze_state = FlatEpisodeState(str(tmp_path / "stream_freeze_state.json"))
+    p.telegram_label = ""
+    p.configure_frame_health_watchdog({})
+    p._freeze_consecutive_count = 0
+    p._freeze_healthy_frames = 0
+    p._last_freeze_time = 0.0
+    p._last_freeze_action = 0.0
+    p._freeze_reboot_after = 3
+    p._freeze_max_reboots = 2
+    p._freeze_healthy_gap = 600.0
+    p._freeze_action_cooldown = 0.0
+    p._freeze_notify_interval = 0.0
+
+    _visit(p, 2)
+    assert _face_rows(p) == [], "nothing may be written while the visit is live"
+
+    class EndOfHeartbeat(Exception):
+        pass
+
+    p.detector.detect_motion = Mock(side_effect=EndOfHeartbeat)
+    clock.now += 120                      # quiet for longer than the gap
+    with pytest.raises(EndOfHeartbeat):
+        p.process_frame(_frame())
+
+    assert _face_rows(p) == [("Resident", 1.0)]

@@ -788,6 +788,12 @@ class DetectionPipeline:
 
         # Heartbeat logging
         if current_time - self.last_heartbeat > self.heartbeat_interval:
+            # Close a face episode that has gone quiet, so the row carries the
+            # time the visit actually ended. Waiting for the next occurrence to
+            # recycle the episode would stamp last night's visitor with this
+            # morning's timestamp and land them in the wrong daily summary.
+            if current_time - self._last_face_check_at >= self._face_episode_gap:
+                self.close_face_episode(reason="quiet")
             elapsed = current_time - self.last_heartbeat
             fps = self.frame_count / elapsed if elapsed > 0 else 0
             if fps > 1:
@@ -1213,8 +1219,30 @@ class DetectionPipeline:
         second one would inherit the first one's suppression.
         """
         if current_time - self._last_face_check_at >= self._face_episode_gap:
+            self.close_face_episode(reason="new_occurrence")
             self._face_episode.reset()
+            self._face_episode_logged = False
         return self._face_episode
+
+    def close_face_episode(self, reason: str = "idle") -> None:
+        """Write the occurrence's verdict once, when it is over.
+
+        The verdict belongs to the episode, so the row does too. Logging every
+        check wrote one row per frame — a single visit produced `unavailable`
+        followed by the same name four times, and the daily summary read
+        "4 known faces" for one person.
+        """
+        if self._face_episode_logged or self._face_episode.checks_done == 0:
+            return
+        verdict = self._face_episode.verdict()
+        label = verdict.name if verdict.is_resident else verdict.outcome.value
+        self.db.log_event("face", label, 1.0 if verdict.is_resident else 0.0)
+        self.mqtt_client.publish("face", label)
+        self._face_episode_logged = True
+        logging.info(
+            f"{self.log_prefix} Face episode closed ({reason}): {label} "
+            f"after {self._face_episode.checks_done} checks"
+        )
 
     def configure_face_checks(self, face_cfg: dict) -> None:
         """Everything the face check needs to know, in one place.
@@ -1225,6 +1253,7 @@ class DetectionPipeline:
         """
         # The check is only affordable, and only answerable, while the PIR says
         # somebody is standing in the doorway.
+        self._face_episode_logged = False
         self._face_require_pir_window = bool(face_cfg.get("require_pir_window", True))
         self._face_max_checks = max(1, int(face_cfg.get("max_checks_per_episode", 5)))
         self._face_min_check_interval = max(
@@ -1491,10 +1520,7 @@ class DetectionPipeline:
                 # Only a resident may put a name into the caption. Appending the
                 # raw result used to produce "Person detected (Video) (No face)".
                 person_name = notification_name(face)
-                face_label = face.name if face.is_resident else face.outcome.value
-                self.db.log_event("face", face_label, 1.0 if face.is_resident else 0.0)
-                self.mqtt_client.publish("face", face_label)
-
+                # The row is written once, when the episode closes.
                 whitelist = self.runtime_config.get(
                     "face_recognition.whitelisted_names", []
                 )

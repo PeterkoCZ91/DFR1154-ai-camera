@@ -161,9 +161,18 @@ def test_a_caption_shows_the_resident():
 
 
 def test_every_outcome_has_a_distinct_stable_token():
-    """The token is written to events.db and MQTT, so it must not drift."""
+    """The token is written to events.db and MQTT, so it must not drift.
+
+    "undecided" was added 2026-09-15 and is deliberate: an episode that matched
+    a resident too few times to confirm used to report "unavailable", which
+    reads as "the check could not run". Rows written before that date carry the
+    old value and `face_label_outcome` still maps them.
+    """
     tokens = {o.value for o in FaceOutcome}
-    assert tokens == {"resident", "stranger", "no_face", "unavailable", "error"}
+    assert tokens == {
+        "resident", "stranger", "undecided", "no_face", "unavailable", "error",
+    }
+    assert len(tokens) == len(list(FaceOutcome)), "two outcomes share a token"
 
 
 # --- consumers -------------------------------------------------------------
@@ -241,3 +250,59 @@ def test_daily_summary_still_reads_rows_written_before_the_split():
     assert summary["resident"] == 1
     assert summary["stranger"] == 7, "legacy 'unknown' meant a face matched nobody"
     assert summary["no_face"] == 7
+
+
+# --- "seen once, not confirmed" is not "the check could not run" -----------
+
+
+def test_a_single_unconfirmed_sighting_is_undecided_not_unavailable():
+    """Roadmap item B. Both used to read `unavailable`, which means "nothing
+    was established". One sighting of a resident IS something established — it
+    just is not enough to suppress an alert, which is a deliberately high bar
+    because a false accept there hides a real stranger."""
+    from a12_system.face_result import FaceEpisode
+
+    episode = FaceEpisode(required_confirmations=2)
+    episode.record(FaceResult(FaceOutcome.RESIDENT, "Resident"))
+    assert episode.verdict().outcome is FaceOutcome.UNDECIDED
+
+
+def test_an_episode_that_ran_no_checks_is_unavailable():
+    """The other half of the split: nothing ran, so nothing may be claimed."""
+    from a12_system.face_result import FaceEpisode
+
+    assert FaceEpisode().verdict().outcome is FaceOutcome.UNAVAILABLE
+
+
+def test_enough_sightings_still_decide_resident():
+    from a12_system.face_result import FaceEpisode
+
+    episode = FaceEpisode(required_confirmations=2)
+    for _ in range(2):
+        episode.record(FaceResult(FaceOutcome.RESIDENT, "Resident"))
+    result = episode.verdict()
+    assert result.outcome is FaceOutcome.RESIDENT
+    assert result.name == "Resident"
+
+
+def test_undecided_carries_no_name():
+    """Only RESIDENT may put a name into the caption, the whitelist or MQTT."""
+    from a12_system.face_result import FaceEpisode
+
+    episode = FaceEpisode(required_confirmations=3)
+    episode.record(FaceResult(FaceOutcome.RESIDENT, "Resident"))
+    verdict = episode.verdict()
+    assert verdict.name is None
+    assert notification_name(verdict) == ""
+
+
+def test_a_resolved_stranger_still_outranks_an_unconfirmed_sighting():
+    """A stranger is evidence about the person; one unconfirmed hit is not, and
+    must not mute the alert by turning the episode into a softer answer."""
+    from a12_system.face_result import FaceEpisode
+
+    episode = FaceEpisode(required_confirmations=2)
+    episode.record(FaceResult(FaceOutcome.RESIDENT, "Resident"))
+    episode.record(FaceResult(FaceOutcome.STRANGER))
+    assert episode.verdict().outcome is FaceOutcome.STRANGER
+
