@@ -394,6 +394,76 @@ a time.
   the retry works, but it would fail a CI that builds firmware — and CI does
   not build firmware today, which is its own gap.
 
+- [ ] **A failed camera reboot still charges the reboot budget.**
+  `camera.reboot()` returns a bool (`camera.py:167`), `__main__.py:370` discards
+  it, and both ladders call `record_reboot()` *before* the request
+  (`pipeline.py:653`, `pipeline.py:752`). The ladder only ever fires at a camera
+  that is already misbehaving, so a failed POST is the likely case — and then
+  A12 reports "a soft restart cannot clear it, the camera needs a physical
+  power cycle" about a camera it never rebooted. **Seen live 2026-09-15
+  11:45:14**: `Camera reboot request error: ... timed out`, and the ladder went
+  to 2/3 anyway. `refund_unwedge()` exists for exactly this on the other path.
+  The work is not the refund itself but routing it: `reboot_camera` is a shared
+  flag, so the failure report has to say which ladder charged it.
+
+- [ ] **A latched PIR can never clear, and that silently disables every sensor
+  gate.** `_get_sensor_states()` returns `{}` on timeout, non-200 or any
+  exception (`ha_monitor.py:60/63/66`), and the update loop skips any state
+  equal to `"unavailable"` (`ha_monitor.py:86`). Either way `sensor_states`
+  keeps its last value, with no staleness bound anywhere. If the doorway PIR is
+  `on` when HA goes unreachable — a battery Zigbee device does this routinely —
+  `is_any_sensor_active()` returns True forever, and downstream every
+  camera-only detection scores sensor-confirmed, clips run to the maximum post
+  window and face checks believe they are inside the PIR window.
+  **The fix is a design decision, not a patch**: reading the sensor as inactive
+  instead makes `require_sensor_for_recording` block everything, which is
+  silent blindness rather than spam. Bound the staleness, then decide which way
+  it fails — and make the state visible either way.
+
+- [ ] **Runtime config keys that publish a confirmation and change nothing.**
+  `update_from_mqtt` returns True and `__main__.py:201` publishes
+  `camera/config/status/last_update`, but `notify_threshold`,
+  `local_record_threshold`, `require_sensor`, `detection_cooldown`,
+  `pir_cooldown` and `periodic_yolo_interval` are all read into instance
+  attributes in `DetectionPipeline.__init__` and never re-read.
+  `telegram_cooldown` reads the deep copy from `get_all()`, so it cannot see a
+  runtime write at all, and `register_callback` (`runtime_config.py:59`) has no
+  callers. An operator lowers a threshold from Home Assistant, sees the
+  confirmation land, and nothing changes until A12 restarts. `grep
+  update_from_mqtt a12_system/test_*.py` returns nothing.
+
+- [ ] **The reported motion accuracy divides two different populations.**
+  `record_motion_event` is called once per YOLO invocation
+  (`pipeline.py:1025`), including `periodic` and `external_trigger`, and always
+  increments a true or false positive. The denominator `motion_total`
+  (`stats.py:97`) counts only runs where motion actually fired. With the
+  shipped `MOTION_THRESHOLD=0` and firmware motion off, `motion_total` is
+  permanently 0, so the daily summary reports `accuracy: 0.0%` beside tens of
+  thousands of "false positives" from checks that had no motion to be wrong
+  about. In a mixed configuration the ratio can exceed 100%.
+
+- [ ] **The daily summary is marked sent before anyone checks that it was.**
+  `_send_daily_summary()` discards the result of `send_telegram`
+  (`status_monitor.py:513`) and `_check_daily_summary` then persists
+  `_last_daily_date`. `Notifier.send_telegram` returns False inside its 429
+  rate-limit window (`notifier.py:57`), so one 429 at 08:00 loses that day's
+  summary permanently while the state file asserts delivery.
+
+- [ ] **The heap-restart ladder has no memory across the restart it causes.**
+  `low50Since` is a per-boot `static` (`firmware/main.cpp:667`), so a board
+  whose steady-state free heap sits between 30 and 50 KB restarts every 60-90 s
+  forever. The alert path 70 lines above has a 30-minute boot grace and a
+  6-hour interval for exactly this reason, and `getRestartsInWindow()` already
+  exists but only feeds the health JSON — nothing gates a restart on it. This
+  board has already done 45 restarts in a day.
+
+- [ ] **`test_stream_freeze_reboot.py` is the last harness that hand-copies the
+  wiring.** The freeze ladder's five knobs are read inline at
+  `pipeline.py:416-420` and re-declared by hand in the test's `_pipeline()`.
+  `configure_frame_health_watchdog()` and `configure_face_checks()` were
+  extracted precisely so a harness cannot drift from production; this one still
+  can, and would stay green while the real pipeline read a default or raised.
+
 ### Tier 3 — observability, once Tier 1 is collecting
 
 - [x] **Stream stalls: classification fixed, window reverted — 2026-09-12.** The
