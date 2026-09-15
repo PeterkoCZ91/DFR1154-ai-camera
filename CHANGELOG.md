@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Fixed (A12 — the frozen-sensor ladder spent its budget without rebooting anything)
+
+- **`reboot_camera` is only drained after `process_stream()` returns, and a hung sensor never ends the stream.** Uniform grey frames are perfectly valid MJPEG and decode fine, so the connection stays up, the flag sits there, and `record_reboot()` had already counted an attempt that never happened. Measured on production the same day: `{"reboots": 2}` in the state file against `total_restarts` unchanged. The escalation now also sets `force_stream_reconnect`, the mechanism `__main__` already had and nothing used, so the stream is torn down and the reboot is executed on the same pass. A forced reconnect returns `forced_reconnect`, which `_record_stream_break` ignores, so it cannot double-escalate the transport ladder.
+- The sibling ladder was never affected: `note_stream_freeze()` runs only after a teardown has already happened, which is why it was correct to set the flag alone. The frozen-frame ladder is the one that runs on a live connection.
+- Found only because the crash fixed in 3.12.51 used to end the stream constantly, which drained the flag by accident. Fixing one fault exposed the other.
+
 ### Removed (A12 — the dlib path, and the traps it left behind)
 
 - **The dlib branch is gone from `identify_person`.** `face_recognition` is not in the image and never was, so the fallback could never run; it only made the function harder to read and invited somebody to switch it on. With it go the `tolerance` and `known_faces_paths` config keys, which nothing read any more.

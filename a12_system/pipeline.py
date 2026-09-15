@@ -639,6 +639,11 @@ class DetectionPipeline:
                 f"({reboots_used}/{self._frozen_max_reboots})"
             )
             self.shared_state["reboot_camera"] = True
+            # A hung sensor keeps serving valid MJPEG — uniform frames decode
+            # fine — so the stream never ends on its own, and __main__ only
+            # drains `reboot_camera` after `process_stream()` returns. Without
+            # this the budget is spent and the camera is never rebooted.
+            self.shared_state["force_stream_reconnect"] = True
             if self.flat_state.should_notify(
                 "frozen_alert", current_time, self._flat_notify_interval
             ):

@@ -146,6 +146,33 @@ def test_sustained_frozen_frames_reboot_the_camera(tmp_path):
     assert p.shared_state["reboot_camera"] is True
 
 
+def test_the_reboot_request_also_tears_the_live_stream_down(tmp_path):
+    """Measured on production 2026-09-15: the budget was spent and the camera
+    never rebooted.
+
+    __main__ only drains `reboot_camera` after `process_stream()` returns, and
+    a hung sensor keeps serving perfectly valid MJPEG — uniform frames decode
+    fine — so the stream never ends and the request is never acted on. The
+    other ladder is safe because it only ever runs after a teardown already
+    happened; this one runs on a live connection and has to cause one.
+    """
+    p = _pipeline(tmp_path, frozen_strikes=3)
+    for _ in range(3):
+        p._note_flat_frame(1000.0, frozen=True)
+    assert p.shared_state["reboot_camera"] is True
+    assert p.shared_state.get("force_stream_reconnect") is True, (
+        "reboot_camera alone is never consumed while the stream stays up"
+    )
+
+
+def test_nothing_tears_the_stream_down_without_an_escalation(tmp_path):
+    """A forced reconnect costs a real outage, so it may only ride an escalation."""
+    p = _pipeline(tmp_path, frozen_strikes=3)
+    for _ in range(2):
+        p._note_flat_frame(1000.0, frozen=True)
+    assert "force_stream_reconnect" not in p.shared_state
+
+
 def test_a_brief_frozen_run_reboots_nothing(tmp_path):
     p = _pipeline(tmp_path, frozen_strikes=3)
     for _ in range(2):
