@@ -47,16 +47,16 @@ def _pipeline(tmp_path, clock, **overrides):
     p.notifier = _Notifier()
     p.shared_state = {}
     p.freeze_state = FlatEpisodeState(str(tmp_path / "stream_freeze_state.json"))
-    p._freeze_reboot_after = overrides.get("reboot_after", 3)
-    p._freeze_max_reboots = overrides.get("max_reboots", 2)
-    p._freeze_healthy_gap = overrides.get("healthy_gap", 600.0)
-    p._freeze_action_cooldown = overrides.get("cooldown", 0.0)
-    p._freeze_notify_interval = overrides.get("notify_interval", 0.0)
-    p._freeze_consecutive_count = 0
-    p._last_freeze_time = 0.0
-    p._freeze_healthy_frames = 0
+    # Production wiring, not a hand-copied list: a knob renamed or dropped in
+    # __init__ now breaks this harness instead of silently passing.
+    p.configure_stream_freeze_ladder({
+        "stream_freeze_reboot_after": overrides.get("reboot_after", 3),
+        "stream_freeze_max_reboots": overrides.get("max_reboots", 2),
+        "stream_freeze_healthy_gap_seconds": overrides.get("healthy_gap", 600.0),
+        "stream_freeze_reboot_cooldown": overrides.get("cooldown", 0.0),
+        "stream_freeze_notify_interval": overrides.get("notify_interval", 0.0),
+    })
     p._flat_healthy_required = 3
-    p._last_freeze_action = 0.0
     return p
 
 
@@ -208,3 +208,45 @@ def test_uniform_night_frames_never_command_disruptive_recovery(tmp_path, monkey
     # Pinned to the exact budget, not "<= 3": that weaker form also passes when
     # the rewrite never fires at all, so it could not fail either way.
     assert p.flat_state.unwedge_count() == 3
+
+
+def test_freeze_ladder_wiring_is_read_from_runtime_config():
+    """Every knob the ladder uses comes from one place both sides can call.
+
+    A harness that re-declares the attribute list by hand stays green while
+    __init__ renames a knob, drops one, or starts reading a different default —
+    the failure then only shows up in production as an AttributeError or a
+    silently wrong budget. `configure_frame_health_watchdog()` and
+    `configure_face_checks()` exist for exactly this reason; this ladder was
+    the last one still hand-copied.
+    """
+    p = object.__new__(DetectionPipeline)
+    p.configure_stream_freeze_ladder({
+        "stream_freeze_reboot_after": 7,
+        "stream_freeze_max_reboots": 4,
+        "stream_freeze_healthy_gap_seconds": 900,
+        "stream_freeze_reboot_cooldown": 45,
+        "stream_freeze_notify_interval": 60,
+    })
+
+    assert p._freeze_reboot_after == 7
+    assert p._freeze_max_reboots == 4
+    assert p._freeze_healthy_gap == 900.0
+    assert p._freeze_action_cooldown == 45.0
+    assert p._freeze_notify_interval == 60.0
+    # Counters must start clean, or a reused object carries a stale episode in.
+    assert p._freeze_consecutive_count == 0
+    assert p._last_freeze_time == 0.0
+    assert p._last_freeze_action == 0.0
+    assert p._freeze_healthy_frames == 0
+
+
+def test_freeze_ladder_defaults_match_the_shipped_configuration():
+    p = object.__new__(DetectionPipeline)
+    p.configure_stream_freeze_ladder({})
+
+    assert p._freeze_reboot_after == 5
+    assert p._freeze_max_reboots == 3
+    assert p._freeze_healthy_gap == 600.0
+    assert p._freeze_action_cooldown == 120.0
+    assert p._freeze_notify_interval == 3600.0

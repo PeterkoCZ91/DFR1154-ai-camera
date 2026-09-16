@@ -401,15 +401,7 @@ class DetectionPipeline:
         # uptime_seconds never resetting) points at a wedged socket/heap state
         # on the ESP32 itself that reconnecting cannot clear — only a device
         # reboot does.
-        self._freeze_reboot_after = int(runtime_config.get("stream_freeze_reboot_after", 5))
-        self._freeze_max_reboots = int(runtime_config.get("stream_freeze_max_reboots", 3))
-        self._freeze_healthy_gap = float(runtime_config.get("stream_freeze_healthy_gap_seconds", 600))
-        self._freeze_action_cooldown = float(runtime_config.get("stream_freeze_reboot_cooldown", 120))
-        self._freeze_notify_interval = float(runtime_config.get("stream_freeze_notify_interval", 3600))
-        self._freeze_consecutive_count = 0
-        self._last_freeze_time = 0.0
-        self._last_freeze_action = 0.0
-        self._freeze_healthy_frames = 0
+        self.configure_stream_freeze_ladder(runtime_config)
         self.freeze_state = FlatEpisodeState(os.path.join(script_dir, "stream_freeze_state.json"))
 
     def _trigger_nuki_unlock(self, name: str):
@@ -491,6 +483,23 @@ class DetectionPipeline:
         self._frozen_unwedges_seen = 0
         self._last_frozen_reboot = 0.0
         self._last_health_gray = None
+
+    def configure_stream_freeze_ladder(self, runtime_config) -> None:
+        """Read every stream-freeze knob and reset its counters.
+
+        Same contract as configure_frame_health_watchdog(): one place both
+        __init__ and the test harnesses call, so a harness cannot keep passing
+        against an attribute list production has since changed.
+        """
+        self._freeze_reboot_after = int(runtime_config.get("stream_freeze_reboot_after", 5))
+        self._freeze_max_reboots = int(runtime_config.get("stream_freeze_max_reboots", 3))
+        self._freeze_healthy_gap = float(runtime_config.get("stream_freeze_healthy_gap_seconds", 600))
+        self._freeze_action_cooldown = float(runtime_config.get("stream_freeze_reboot_cooldown", 120))
+        self._freeze_notify_interval = float(runtime_config.get("stream_freeze_notify_interval", 3600))
+        self._freeze_consecutive_count = 0
+        self._last_freeze_time = 0.0
+        self._last_freeze_action = 0.0
+        self._freeze_healthy_frames = 0
 
     def _frame_is_frozen(self, gray) -> bool:
         """Is this heartbeat's frame a byte-for-byte repeat of the previous one?
@@ -932,7 +941,7 @@ class DetectionPipeline:
             return
 
         # YOLO inference
-        all_detections = self.detector.detect_objects(frame)
+        all_detections = self._run_inference(frame)
 
         person_candidates = [(label, confidence) for label, confidence in all_detections if label == "person"]
         is_pir_triggered = yolo_reason.startswith("external_trigger")
@@ -962,17 +971,14 @@ class DetectionPipeline:
         yolo_confidence_threshold = float(
             self.runtime_config.get("yolo.confidence_threshold", notify_confidence)
         )
-        audit_context = {
-            "trigger_source": trigger_source or yolo_reason,
-            "backend": str(getattr(self.detector, "last_backend", "local")),
-            "candidate_label": candidate_label,
-            "candidate_confidence": max_person_confidence if person_candidates else None,
-            "yolo_confidence_threshold": yolo_confidence_threshold,
-            "notify_confidence_threshold": float(notify_confidence),
-            "confirmations_required": confirmations_required,
-            "notify_threshold": self.event_notify_threshold,
-            "local_record_threshold": self.event_local_record_threshold,
-        }
+        audit_context = self._build_audit_context(
+            trigger_source=trigger_source or yolo_reason,
+            candidate_label=candidate_label,
+            candidate_confidence=max_person_confidence if person_candidates else None,
+            yolo_confidence_threshold=yolo_confidence_threshold,
+            notify_confidence=notify_confidence,
+            confirmations_required=confirmations_required,
+        )
         logging.info(
             "YOLO calibration: profile=%s reason=%s candidate=%.3f notify_threshold=%.3f accepted=%s",
             detection_profile, yolo_reason, max_person_confidence, notify_confidence, person_found,
@@ -1063,6 +1069,49 @@ class DetectionPipeline:
 
         if animal_detections:
             self._handle_animal_detections(frame, animal_detections)
+
+    def _run_inference(self, frame):
+        """Run the object detector and remember what it cost.
+
+        ScorerStats keeps p50/p95/max in memory and loses them on every
+        restart, so a slow spell could never be correlated with the decisions
+        it produced. Recorded in a `finally` because a slow *failure* — a
+        scorer timing out — is the case worth seeing afterwards.
+        """
+        started = time.perf_counter()
+        try:
+            return self.detector.detect_objects(frame)
+        finally:
+            self._last_inference_seconds = round(time.perf_counter() - started, 4)
+
+    def _build_audit_context(
+        self,
+        *,
+        trigger_source: str,
+        candidate_label: str,
+        candidate_confidence: float | None,
+        yolo_confidence_threshold: float,
+        notify_confidence: float,
+        confirmations_required: int,
+    ) -> dict:
+        """Everything about a decision that is fixed the moment YOLO answers.
+
+        Extracted so the wiring is reachable without driving a whole frame
+        through the pipeline — the same reason configure_frame_health_watchdog()
+        and configure_face_checks() exist.
+        """
+        return {
+            "trigger_source": trigger_source,
+            "backend": str(getattr(self.detector, "last_backend", "local")),
+            "candidate_label": candidate_label,
+            "candidate_confidence": candidate_confidence,
+            "yolo_confidence_threshold": yolo_confidence_threshold,
+            "notify_confidence_threshold": float(notify_confidence),
+            "confirmations_required": confirmations_required,
+            "notify_threshold": self.event_notify_threshold,
+            "local_record_threshold": self.event_local_record_threshold,
+            "inference_seconds": getattr(self, "_last_inference_seconds", None),
+        }
 
     def _log_decision_audit(
         self,

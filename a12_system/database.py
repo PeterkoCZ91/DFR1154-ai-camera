@@ -31,13 +31,6 @@ class EventDB:
             media_path TEXT
         )""")
 
-        c.execute("""CREATE TABLE IF NOT EXISTS audio_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp REAL,
-            avg_level REAL,
-            peak_level REAL
-        )""")
-
         # This table deliberately does not reference events: a decision is useful
         # for calibration even when it was rejected before an event or alert existed.
         c.execute("""CREATE TABLE IF NOT EXISTS decision_audit (
@@ -58,7 +51,8 @@ class EventDB:
             notify_threshold INTEGER NOT NULL,
             local_record_threshold INTEGER NOT NULL,
             decision_outcome TEXT NOT NULL,
-            media_path TEXT
+            media_path TEXT,
+            inference_seconds REAL
         )""")
 
         # Ground truth for the decisions above. Deliberately denormalised and
@@ -83,6 +77,9 @@ class EventDB:
         if "media_path" not in existing:
             c.execute("ALTER TABLE decision_audit ADD COLUMN media_path TEXT")
             logging.info("decision_audit: added media_path column")
+        if "inference_seconds" not in existing:
+            c.execute("ALTER TABLE decision_audit ADD COLUMN inference_seconds REAL")
+            logging.info("decision_audit: added inference_seconds column")
 
         # Indexes for common queries
         c.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
@@ -109,18 +106,6 @@ class EventDB:
             except Exception as e:
                 logging.error(f"Failed to log event: {e}")
 
-    def log_audio_stat(self, avg_level: float, peak_level: float) -> None:
-        """Log audio statistics (thread-safe)."""
-        with self.lock:
-            try:
-                self.conn.execute(
-                    "INSERT INTO audio_stats (timestamp, avg_level, peak_level) VALUES (?, ?, ?)",
-                    (time.time(), avg_level, peak_level),
-                )
-                self.conn.commit()
-            except Exception as e:
-                logging.error(f"Failed to log audio stats: {e}")
-
     def log_decision_audit(self, **audit: object) -> int | None:
         """Persist one YOLO/policy decision without changing event logging.
 
@@ -139,8 +124,8 @@ class EventDB:
                         notify_confidence_threshold, confirmations_required,
                         confirmation_streak, sensor_confirmed, active_sensors,
                         event_score, notify_threshold, local_record_threshold,
-                        decision_outcome
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        decision_outcome, inference_seconds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         timestamp, dt, audit["trigger_source"], audit["backend"],
@@ -151,6 +136,8 @@ class EventDB:
                         json.dumps(audit["active_sensors"] or []), audit["event_score"],
                         audit["notify_threshold"], audit["local_record_threshold"],
                         audit["decision_outcome"],
+                        # Optional: several audit paths never run an inference.
+                        audit.get("inference_seconds"),
                     ),
                 )
                 self.conn.commit()

@@ -37,3 +37,35 @@ jobs:
 
       - name: Test (pytest)
         run: pytest -q
+
+  firmware:
+    name: Firmware (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # The toolchain and the arduino-esp32 package are ~500 MB and change only
+      # when platformio.ini pins a different version.
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # Only the one environment: `ota` extends it and overrides nothing but
+      # upload_protocol/upload_port/upload_command, so it compiles the identical
+      # objects for twice the wall clock. If `ota` ever gains a build_flag,
+      # build it here too.
+      - name: Build
+        working-directory: firmware
+        run: ../.github/scripts/build-firmware.sh esp32-s3-devkitc-1

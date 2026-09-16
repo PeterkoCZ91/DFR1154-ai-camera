@@ -385,14 +385,22 @@ a time.
   lesson as the MQTT state added to `/status` in 3.12.52: the failure was
   visible, its cause was not.
 
-- [ ] **Full firmware rebuilds intermittently hit a GCC internal compiler
-  error.** Twice on 2026-09-15, both times inside the Edge Impulse SDK
-  (`test_helpers.cpp`, then `micro_interpreter.cpp` with
-  `internal compiler error: in ggc_set_mark, at ggc-page.cc:1551`), both times
-  green on an immediate retry with no change. Only full rebuilds are affected,
-  which is what a changed `-DFIRMWARE_VERSION` forces. Harmless so far because
-  the retry works, but it would fail a CI that builds firmware — and CI does
-  not build firmware today, which is its own gap.
+- [x] **DONE 2026-09-16. CI builds the firmware, and the GCC ICE no longer
+  blocks it.** A `firmware` job runs `pio run -e esp32-s3-devkitc-1` through
+  `.github/scripts/build-firmware.sh`, which retries exactly once and **only**
+  when the output contains `internal compiler error` — a genuine compile error
+  still fails on the first attempt at full speed. All three branches of that
+  script were exercised against stubs before it shipped (real error: 1 build,
+  exit 1; ICE then green: 2 builds, exit 0; ICE twice: 2 builds, exit 1), and
+  the script then ran the real build. `env:ota` is deliberately not built: it
+  extends the base env and overrides only `upload_protocol`/`upload_port`/
+  `upload_command`, so it compiles identical objects for twice the wall clock —
+  build it too the day it gains a `build_flag`. The underlying ICE is unfixed
+  and not ours: seen three times on 2026-09-15, always inside the Edge Impulse
+  SDK (`test_helpers.cpp`, then `micro_interpreter.cpp` with
+  `internal compiler error: in ggc_set_mark, at ggc-page.cc:1551`), always green
+  on retry, only ever on full rebuilds — which a changed `-DFIRMWARE_VERSION`
+  forces.
 
 - [x] **DONE 2026-09-15. A failed camera reboot no longer charges the budget.**
   `reboot_camera` carries the charging ladder's name, `__main__` reports a
@@ -476,12 +484,14 @@ a time.
   exists but only feeds the health JSON — nothing gates a restart on it. This
   board has already done 45 restarts in a day.
 
-- [ ] **`test_stream_freeze_reboot.py` is the last harness that hand-copies the
-  wiring.** The freeze ladder's five knobs are read inline at
-  `pipeline.py:416-420` and re-declared by hand in the test's `_pipeline()`.
-  `configure_frame_health_watchdog()` and `configure_face_checks()` were
-  extracted precisely so a harness cannot drift from production; this one still
-  can, and would stay green while the real pipeline read a default or raised.
+- [x] **DONE 2026-09-16. No harness hand-copies the wiring any more.**
+  `configure_stream_freeze_ladder()` joins `configure_frame_health_watchdog()`
+  and `configure_face_checks()`; `__init__` and the test harness now call the
+  same method. Proof it was worth doing: deleting one knob from the extracted
+  method fails 6 of the 8 tests in that file, where the hand-copied version
+  would have failed none. Previously: the five knobs were read inline in
+  `__init__` and re-declared by hand in the test's `_pipeline()`, so the test
+  stayed green while production read a default or raised.
 
 - [ ] **Every firmware update costs an extra camera reboot, and silently
   reverts the chosen resolution.** Found within an hour of shipping the restart
@@ -509,6 +519,58 @@ a time.
   cannot know the post-migration value without reading `/status` first), or to
   accept the extra reboot and document it.
 
+- [ ] **The flat-frame ladder fires every evening at dusk and ends in a false
+  alarm.** Found 2026-09-16 while reading the log from 19:00. The camera is
+  healthy; the scene simply runs out of light, and the ladder cannot tell the
+  two apart.
+
+  What the log shows, in 37 minutes: `19:07:42` first flat frame at `std=1.0`,
+  decaying smoothly to `0.5` as daylight goes (sunset ~19:15) while brightness
+  stays pinned at `64.x` — because `64` is the AEC target, so the loop holds the
+  mean while the signal underneath it collapses. Strike 5 triggers an AEC/AGC
+  rewrite, the rewrite genuinely restores detail for ~7 minutes, 10 healthy
+  frames close the episode and send *"Stream recovered — frames are healthy"*,
+  the light drops further, and a fresh episode starts from strike 1 with a fresh
+  budget. Three episodes, six rewrites, two Telegram messages, ending at
+  `19:44:35` with `CRITICAL — Image still has no detail after 3 AEC/AGC rewrites
+  — the exposure loop is not the cause`. Measured directly off `/frame` at
+  19:54: `mean=64.4 std=0.50 min=62 max=81`, frames differing by up to 13
+  levels. A 19-level spread across a megapixel is a flat field; real detail read
+  `min=0 max=188` earlier the same day.
+
+  So the persisted budget does not bound anything here: it is per-episode, and
+  dusk manufactures a new episode every ~12 minutes. Three things are tangled
+  and should be separated: (a) the budget should be bounded per *night*, not per
+  episode; (b) a rewrite that "recovers" for 7 minutes and relapses is not a
+  recovery — the healthy-frame count should have to survive longer than the
+  previous episode lasted; (c) the CRITICAL text asserts a conclusion
+  ("the exposure loop is not the cause") that the evidence does not support.
+
+  **Correction, 20:30 the same evening — it is a wedge after all, and the
+  ladder's writes work.** At 19:54 the flat field read `mean=64.4 std=0.50
+  min=62 max=81`. At 20:05 the A12 container was rebuilt, which made it write
+  its full `camera_init_settings` (`aec`, `awb`, `denoise`, contrast/saturation/
+  sharpness/brightness, `jpeg_quality`, `frame_size`) — and the same hallway
+  then read `mean=8.6 std=3.41 min=0 max=40`, with no flat-frame warning for the
+  next 25 minutes. A healthy AEC cannot produce both numbers for the same scene.
+  So the uniform 64 was the exposure loop stuck at its target with no signal
+  under it, exactly what the unwedge ladder was built for — and each of its six
+  rewrites genuinely cleared it, for about seven minutes at a time.
+
+  That makes the CRITICAL text actively wrong: *"the exposure loop is not the
+  cause"* is fired precisely when the ladder has proven three times that it is.
+
+  Open question the soak should answer: why did the ladder's AEC/AGC-only write
+  hold for ~7 minutes while the full init write has held for 25+ — is the extra
+  payload doing the work, or did the relapse simply stop when the last of the
+  daylight went? One observation, and a confounded one: the restart, the wider
+  write and the falling light all happened within minutes of each other.
+
+  **The enclosure still decides this.** The only signal that separates "dark
+  room" from "wedged exposure" without a settings write is ambient lux, and the
+  sealed LTR-308 reads 0.03-1.96 all evening. Until it is drilled, every fix
+  here is a heuristic over a missing measurement.
+
 ### Tier 3 — observability, once Tier 1 is collecting
 
 - [x] **Stream stalls: classification fixed, window reverted — 2026-09-12.** The
@@ -533,10 +595,26 @@ a time.
   the same 7 days (~75/day). Each one costs a reconnect. Decide whether that is
   the expected cost of MJPEG over WiFi at this RSSI or a defect worth chasing —
   right now nobody has decided, which is the worst of both.
-- [ ] **6. Inference latency into `events.db`.** Scorer p50/p95/max is per-process
-  and resets on every restart, so "were the misses concentrated when inference
-  was slow?" cannot be asked historically.
-- [ ] **7. Drop or populate `audio_stats`.** Zero rows; the audio monitor is off.
+- [x] **6. DONE 2026-09-16. Inference latency is on the decision row.**
+  `decision_audit.inference_seconds` (additive `ALTER TABLE`, so the 20 544
+  existing rows survive and read NULL), measured in `_run_inference()` inside a
+  `finally` so a slow *failure* is recorded too, and reported by
+  `a12 review --stats` split by outcome — which is the shape the original
+  question needs: were the misses the slow ones? Verified live: the first row
+  after the rebuild reads 0.33 s. Building the audit context moved into
+  `_build_audit_context()` so the wiring is testable without driving a frame
+  through the whole pipeline; four mutants (drop the key, move the timing out
+  of `finally`, stop writing the column, skip the migration) each kill a test.
+- [x] **7. DONE 2026-09-16. `audio_stats` dropped.** Zero rows in production
+  after months, and `log_audio_stat()` had no caller anywhere in the tree — the
+  audio monitor it was written for never touched the database. Table creation
+  and the dead writer are gone; the empty table in the installed `events.db` is
+  left in place rather than dropped, since nothing reads it either way.
+  `test_db_schema.py` now enforces the invariant: every table the schema creates
+  must have a writer that something outside `database.py` and outside the tests
+  actually calls. The first version of that test passed against the bug — it
+  matched `INSERT INTO` statements, and a dead writer still contains one, so it
+  answered "is there code?" instead of "is it reached?".
 
 ### Not on the roadmap, deliberately
 

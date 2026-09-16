@@ -115,6 +115,57 @@ def stats_report(db, data_dir):
     return "\n".join(lines)
 
 
+def latency_report(db):
+    """How long inference took, split by what the decision turned out to be.
+
+    Scorer p50/p95/max live in one process and reset with it, so the question
+    "were the misses concentrated when inference was slow?" could not be asked
+    about last week. Each audit row now carries the duration of the inference
+    that produced it, which makes the comparison a query.
+    """
+    rows = db.conn.execute(
+        """SELECT decision_outcome, inference_seconds
+           FROM decision_audit"""
+    ).fetchall()
+    measured = [(outcome, seconds) for outcome, seconds in rows if seconds is not None]
+    if not measured:
+        return (
+            "Inference latency\n" + "-" * 57 + "\n"
+            f"No inference timings recorded yet ({len(rows)} audit rows). "
+            "Rows written before the column existed stay empty."
+        )
+
+    by_outcome = {}
+    for outcome, seconds in measured:
+        by_outcome.setdefault(outcome, []).append(seconds)
+
+    lines = [
+        "Inference latency",
+        "-" * 57,
+        f"{'outcome':<28}{'n':>5}{'p50':>8}{'p95':>8}{'max':>8}",
+    ]
+    for outcome in sorted(by_outcome, key=lambda o: -len(by_outcome[o])):
+        samples = sorted(by_outcome[outcome])
+        lines.append(
+            f"{outcome[:27]:<28}{len(samples):>5}"
+            f"{_percentile(samples, 0.50):>8.2f}"
+            f"{_percentile(samples, 0.95):>8.2f}"
+            f"{max(samples):>8.2f}"
+        )
+    unmeasured = len(rows) - len(measured)
+    if unmeasured:
+        lines.append(f"({unmeasured} unmeasured — written before the column existed,")
+        lines.append(" or by a path that runs no inference)")
+    return "\n".join(lines)
+
+
+def _percentile(sorted_samples, fraction):
+    if not sorted_samples:
+        return 0.0
+    index = min(len(sorted_samples) - 1, int(round(fraction * (len(sorted_samples) - 1))))
+    return sorted_samples[index]
+
+
 def label(db, audit_id, truth, image_path=None):
     """Write one verdict, carrying the audit context along for survival."""
     context = db.decision_audit_rows([audit_id]).get(audit_id, {})
@@ -208,6 +259,8 @@ def main():
             return 0 if ok else 1
         if args.stats:
             print(stats_report(db, args.data_dir))
+            print()
+            print(latency_report(db))
             return 0
         if args.list:
             for item in discover(args.data_dir, db.labeled_audit_ids()):
