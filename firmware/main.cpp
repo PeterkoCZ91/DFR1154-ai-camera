@@ -652,7 +652,19 @@ void checkMemoryHealth() {
 
     // Planned restart: heap consistently below 50 KB for >60s but above 30 KB floor.
     // Catches slow leaks before they hit the emergency threshold.
+    //
+    // Two guards, both of which this ladder lacked until 3.12.54. `low50Since`
+    // is a per-boot static, so the restart it causes erases the ladder's entire
+    // memory — a board whose steady-state heap sits inside this band restarted
+    // every 60-90 s indefinitely and nothing noticed. The boot grace keeps a
+    // restart from immediately following the last one; the hourly budget stops
+    // the loop, because a planned restart is a bet that a fresh boot clears a
+    // leak and after a couple of tries that bet has demonstrably been lost.
+    // The alert path above already had both, for the same reason.
     static unsigned long low50Since = 0;
+    static unsigned long lastPlannedSuppressedLog = 0;
+    const unsigned long PLANNED_BOOT_GRACE_MS = 10UL * 60UL * 1000UL;  // 10 min
+    const uint8_t PLANNED_MAX_PER_HOUR = 2;
     if (freeHeap < 50000 && freeHeap >= 30000) {
         if (low50Since == 0) low50Since = millis();
         bool telegramBusy = false;
@@ -660,11 +672,30 @@ void checkMemoryHealth() {
         telegramBusy = telegram_upload_in_progress;
 #endif
         if (!telegramBusy && millis() - low50Since > 60000) {
-            Serial.printf("⚠️ Heap below 50 KB for >60s (%u B) — planned restart\n", freeHeap);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            char why[32];
-            snprintf(why, sizeof(why), "heap_low_planned:%uk", freeHeap / 1024);
-            restartWithReason(why);
+            if (millis() < PLANNED_BOOT_GRACE_MS) {
+                // Still settling after boot. Restarting here would be the
+                // shortest possible loop.
+            } else if (getRestartsInWindow(3600) >= PLANNED_MAX_PER_HOUR) {
+                // Restarting is not working. Say so, once an hour, and leave
+                // the board up: a camera that is merely low on heap is worth
+                // more than one that reboots on a cycle.
+                if (lastPlannedSuppressedLog == 0 ||
+                    millis() - lastPlannedSuppressedLog > 3600000UL) {
+                    lastPlannedSuppressedLog = millis();
+                    Serial.printf("⚠️ Heap low (%u B) but already restarted %u times this "
+                                  "hour — planned restart suppressed\n",
+                                  freeHeap, getRestartsInWindow(3600));
+                    char evDetail[EVENT_DETAIL_LEN];
+                    snprintf(evDetail, sizeof(evDetail), "planned_suppressed:%uk", freeHeap / 1024);
+                    logEvent(EVT_LOW_MEMORY, evDetail);
+                }
+            } else {
+                Serial.printf("⚠️ Heap below 50 KB for >60s (%u B) — planned restart\n", freeHeap);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                char why[32];
+                snprintf(why, sizeof(why), "heap_low_planned:%uk", freeHeap / 1024);
+                restartWithReason(why);
+            }
         }
     } else {
         low50Since = 0;

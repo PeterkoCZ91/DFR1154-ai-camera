@@ -463,7 +463,12 @@ a time.
   rate-limit window (`notifier.py:57`), so one 429 at 08:00 loses that day's
   summary permanently while the state file asserts delivery.
 
-- [ ] **The heap-restart ladder has no memory across the restart it causes.**
+- [x] **DONE 2026-09-15 (3.12.54). The heap-restart ladder is bounded.** A
+  10-minute boot grace and two per hour, gated on `getRestartsInWindow()`,
+  which survives the restart the per-boot static could not. Caveat: the
+  trigger path is reviewed, not measured — forcing it needs the heap to
+  sit in a narrow band for a minute, and the probe build that widened the
+  band left the bench board in AP mode with no WiFi. Previously: 
   `low50Since` is a per-boot `static` (`firmware/main.cpp:667`), so a board
   whose steady-state free heap sits between 30 and 50 KB restarts every 60-90 s
   forever. The alert path 70 lines above has a 30-minute boot grace and a

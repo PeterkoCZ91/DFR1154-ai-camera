@@ -70,6 +70,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 - **`debug_crop_limit` counted per process, not per directory.** `_face_debug_written` started at zero in every `DetectionPipeline`, so each A12 restart granted a fresh quota of 200 — and a camera crash loop restarts A12 repeatedly, which is exactly when the directory would run away. It is now seeded from what is already on disk. The 46 crops that had accumulated were deleted; the feature itself has been off since 2026-09-14.
 
+## [3.12.54] - 2026-09-15
+
+### Fixed (Firmware — the planned heap restart could loop forever)
+
+- **The ladder's memory was erased by the restart it caused.** `low50Since` is a per-boot `static`, so a board whose steady-state free heap sits between 30 and 50 KB restarted roughly every 60-90 s indefinitely, and nothing in the firmware noticed: each boot started the 60 s timer from scratch. The alert path seventy lines above already had a 30-minute boot grace and a 6-hour interval for exactly this reason, and `getRestartsInWindow()` already existed — it just fed the health JSON and gated nothing.
+- Two guards now. A 10-minute boot grace keeps a restart from immediately following the last one, and a budget of two per hour stops the loop: a planned restart is a bet that a fresh boot clears a leak, and after a couple of attempts that bet has demonstrably been lost. Past the budget the board stays up and says so once an hour, as an `EVT_LOW_MEMORY` event with `planned_suppressed:NNk` — a camera merely low on heap is worth more than one that reboots on a cycle. The restart counter is the boot-timestamp ring in LittleFS, which survives the restart the per-boot static could not.
+- **Verification is partial and worth stating.** The release build runs clean on both boards, but the guard's trigger path was not exercised: forcing it needs the heap to sit inside a narrow band for a minute, which a healthy board never does. A probe build with a widened band was flashed to the bench board and the board came up in AP mode with no WiFi, so the run produced nothing; the guard is reviewed, not measured. There is no native test environment for the firmware, which is the underlying reason.
+
 ## [3.12.53] - 2026-09-15
 
 ### Added (Firmware — the reboot log finally says why)

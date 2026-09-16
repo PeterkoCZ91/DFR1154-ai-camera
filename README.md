@@ -6,13 +6,15 @@
 [![Python](https://img.shields.io/badge/A12_companion-Python_3.10+-blue?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Version](https://img.shields.io/badge/Version-3.12.53-blue)]()
+[![Version](https://img.shields.io/badge/Version-3.12.54-blue)]()
 
 Firmware for the **DFRobot DFR1154 AI Camera Module** (FireBeetle 2 ESP32-S3 + OV3660 3 MP + LTR-308 lux + PDM mic). A lock-free PSRAM ring buffer feeds MJPEG streaming, RTSP, AVI recording, on-device person detection (Edge Impulse FOMO + ByteTrack) concurrently from a single camera. MQTT auto-discovery for Home Assistant, Telegram bot, time-lapse, web dashboard with live log. No cloud required.
 
 The optional `a12_system/` Python companion is part of **A12**, a multi-camera surveillance system that pairs with this firmware (and future ESP-camera modules) for YOLOv11n inference, face recognition, and sensor fusion with Home Assistant / Zigbee.
 
 > [!TIP]
+> **New in v3.12.54** — **The planned heap restart can no longer loop.** `low50Since` was a per-boot static, so the restart it caused erased the ladder's own memory: a board sitting between 30 and 50 KB of free heap restarted every 60-90 s forever. A 10-minute boot grace and a budget of two per hour now bound it, and past the budget the board stays up and reports instead. See [CHANGELOG](CHANGELOG.md).
+>
 > **New in v3.12.53** — **The reboot log says why.** All nine restart paths now record a cause (`camera_health_fail`, `heap_critical`, `ota_applied`, `reboot_cmd`, …) to `/events` before restarting. The reset-reason code a board reports afterwards only separates `SW` from `PANIC`; it can never say which of the firmware's own paths ran, which is why a production restart could not be explained on 2026-09-15. See [CHANGELOG](CHANGELOG.md).
 >
 > **New in v3.12.52** — **`/status` reports the MQTT link**: `mqtt_connected`, `mqtt_state`, `mqtt_connects`, `mqtt_failures` and `mqtt_link_uptime_s`. A camera with no serial console could show that it was restarting but never why; a link that re-establishes every few minutes now reads as `mqtt_connects` climbing while `mqtt_link_uptime_s` keeps returning to zero. See [CHANGELOG](CHANGELOG.md).
