@@ -329,8 +329,12 @@ def test_daily_summary_reports_stalls_and_dates_the_scorer_counters():
         }
     )
     monitor.runtime_config = SimpleNamespace(get=lambda *_args: False)
+    # language() as well as send_telegram(): the summary is assembled from
+    # translated parts, so a stub that only knows how to send drifts from the
+    # real Notifier and fails in production rather than here.
     monitor.notifier = SimpleNamespace(
-        send_telegram=lambda msg, **_kwargs: sent.append(msg)
+        send_telegram=lambda msg, **_kwargs: sent.append(msg),
+        language=lambda: "cz",
     )
 
     monitor._send_daily_summary()

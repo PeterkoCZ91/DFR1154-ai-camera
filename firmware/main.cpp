@@ -767,6 +767,7 @@ Config getDefaultConfig() {
   // answers first — on 2026-09-12 that was a printer, and A12 streamed from
   // it. The suffix comes from the eFuse MAC, so it is stable per board.
   c.device_name = "ESP32-Camera-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  c.ui_language = "cz";
   c.frame_size = FRAMESIZE_UXGA;  // 1600x1200 — OV3660 3MP (init sets max buffer size)
   c.jpeg_quality = 12;  // 5-63, lower = better quality; 12 keeps Telegram JPEGs smaller/stabler
   c.flip_vertical = true;   // Camera is mounted upside-down
@@ -830,6 +831,7 @@ bool loadConfig() {
 
   // NOTE: Credentials (wifi, telegram, http auth, ota, ap) are loaded from NVS, not JSON
   config.device_name = doc["device_name"] | "ESP32-Camera";
+  config.ui_language = doc["ui_language"] | "cz";
   config.frame_size = doc["frame_size"] | FRAMESIZE_UXGA;
   config.jpeg_quality = doc["jpeg_quality"] | 12;
   config.flip_vertical = doc["flip_vertical"] | false;
@@ -904,6 +906,7 @@ bool saveConfig() {
   // NOTE: Credentials are stored in NVS, not in config.json
   StaticJsonDocument<1024> doc;
   doc["device_name"] = config.device_name;
+  doc["ui_language"] = config.ui_language;
   doc["frame_size"] = config.frame_size;
   doc["jpeg_quality"] = config.jpeg_quality;
   doc["flip_vertical"] = config.flip_vertical;

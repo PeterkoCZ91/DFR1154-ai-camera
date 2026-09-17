@@ -11,6 +11,8 @@ import time
 import cv2
 from PIL import Image
 
+from .messages import translate_outgoing
+
 try:
     import telebot
     TELEGRAM_AVAILABLE = True
@@ -34,6 +36,10 @@ class Notifier:
         # which stalled the status monitor's watchdog or backed up the notification
         # queue until events were dropped.
         self._rate_limited_until = 0.0
+        # Returns "cz" or "en". Set by the application once the camera exists,
+        # because the camera is where the operator's choice is stored. Left
+        # None the messages go out as written, which is English.
+        self.language_source = None
 
         if config["telegram"]["enabled"] and TELEGRAM_AVAILABLE:
             try:
@@ -42,6 +48,19 @@ class Notifier:
                 logging.info("Telegram bot initialized")
             except Exception as e:
                 logging.error(f"Telegram init failed: {e}")
+
+    def language(self) -> str:
+        """The operator's language, or Czech if nothing has said otherwise.
+
+        Never raises: losing an alert because the camera went away mid-send
+        would be a far worse failure than sending it in the wrong language.
+        """
+        try:
+            if self.language_source is None:
+                return "cz"
+            return self.language_source() or "cz"
+        except Exception:
+            return "cz"
 
     def send_telegram(self, message: str, media_path: str = None, bypass_cooldown: bool = False) -> bool:
         """Send Telegram message/photo/video/GIF with cooldown.
@@ -75,6 +94,11 @@ class Notifier:
             # slip through the same cooldown window.
             if not bypass_cooldown:
                 self.last_telegram_time = current_time
+
+        # Rendered here rather than at the call sites, so the pipeline keeps
+        # producing English and the tests that pin down what an alert says stay
+        # about the sentence, not the language.
+        message = translate_outgoing(message, self.language())
 
         try:
             if media_path and os.path.exists(media_path):

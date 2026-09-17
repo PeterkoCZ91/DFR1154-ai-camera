@@ -46,9 +46,11 @@ SKIPPED_DIRS = {
 # Python file the Czech must additionally sit inside a string literal: a label
 # the operator reads is output, a comment in Czech is not.
 ALLOWED = {
-    "a12_system/status_monitor.py": "labels of the daily summary sent to the operator",
     "a12_system/test_learning_data.py": "asserts on that summary's text verbatim",
     "a12_system/test_language_split.py": "names the characters it searches for",
+    # The catalogue itself: the Czech half of every operator-visible message.
+    # This is the file the rule exists to permit, not an exception to it.
+    "a12_system/messages.py": "the Czech translation of every operator-visible message",
     "README.md": "quotes the dashboard's own Czech button labels",
     "CHANGELOG.md": "quotes the daily summary's own Czech line",
     # The GUI's own translation tables. Both files carry a symmetric cz/en

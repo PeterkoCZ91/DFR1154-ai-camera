@@ -10,6 +10,7 @@ import requests
 
 from .face_result import summarise_face_labels
 from .mdns_resolver import resolve_camera_url
+from .messages import translate
 
 
 class StatusMonitor(threading.Thread):
@@ -470,25 +471,31 @@ class StatusMonitor(threading.Thread):
         def count_type(event_type: str) -> int:
             return sum(value for (typ, _label), value in counts.items() if typ == event_type)
 
+        # The summary is assembled from parts, so it cannot be looked up as one
+        # sentence on the way out like an alert can — each label is rendered
+        # here instead. Source text is English; messages.py holds the Czech.
+        def t(text: str) -> str:
+            return translate(text, self.notifier.language())
+
         summary_items = [
-            ("PIR/HA spuštění", count_type("ha_sensor")),
-            ("Lokální klipy", counts.get(("detection", "motion"), 0)),
-            ("Potvrzená osoba", counts.get(("detection", "person"), 0)),
-            ("Pes", counts.get(("detection", "dog"), 0)),
-            ("Audio alerty", counts.get(("audio", "LOUD_NOISE"), 0)),
+            ("PIR/HA triggers", count_type("ha_sensor")),
+            ("Local clips", counts.get(("detection", "motion"), 0)),
+            ("Confirmed person", counts.get(("detection", "person"), 0)),
+            ("Dog", counts.get(("detection", "dog"), 0)),
+            ("Audio alerts", counts.get(("audio", "LOUD_NOISE"), 0)),
             # Stalls are persisted to the events DB precisely because the docker
             # log rotates them away; leaving them out of the summary would mean
             # nobody ever sees them without querying SQLite by hand.
-            ("Přerušení streamu", count_type("stream_stall")),
+            ("Stream interruptions", count_type("stream_stall")),
         ]
         event_lines = "\n".join(
-            f"  {label}: {value}x" for label, value in summary_items if value > 0
-        ) or "  (žádné)"
+            f"  {t(label)}: {value}x" for label, value in summary_items if value > 0
+        ) or f"  {t('(none)')}"
 
         msg = (
-            "A12 denní přehled\n"
+            f"{t('A12 daily summary')}\n"
             f"Uptime: {uptime}\n"
-            f"Události (24h):\n{event_lines}"
+            f"{t('Events (24h):')}\n{event_lines}"
         )
         scorer_summary = summary.get("scorer", {})
         if scorer_summary.get("requests", 0) or scorer_summary.get("fallbacks", 0):
@@ -497,12 +504,13 @@ class StatusMonitor(threading.Thread):
             failures = scorer_summary.get("transport_failures", 0) + scorer_summary.get(
                 "http_errors", 0
             )
-            msg += (
-                "\nScorer (od startu): "
-                f"{scorer_summary.get('successes', 0)} OK / "
-                f"{failures} chyb / "
-                f"{scorer_summary.get('fallbacks', 0)} fallbacků"
-                f", p95 {scorer_summary.get('request_seconds_p95', 0):.2f}s"
+            msg += "\n" + t(
+                "Scorer (since start): {} OK / {} errors / {} fallbacks, p95 {}s"
+            ).format(
+                scorer_summary.get("successes", 0),
+                failures,
+                scorer_summary.get("fallbacks", 0),
+                f"{scorer_summary.get('request_seconds_p95', 0):.2f}",
             )
         face_enabled = self.runtime_config.get("face_recognition.enabled", False)
         if face_enabled:
@@ -511,11 +519,9 @@ class StatusMonitor(threading.Thread):
             # large no_face count beside a small stranger count means the alerts
             # are driven by frames nothing could be read from, not by people.
             if any(faces.values()):
-                msg += (
-                    f"\nObličeje (24h): {faces['resident']} známých"
-                    f" / {faces['stranger']} cizích"
-                    f" / {faces['no_face']} bez čitelného obličeje"
-                )
+                msg += "\n" + t(
+                    "Faces (24h): {} known / {} strangers / {} with no readable face"
+                ).format(faces["resident"], faces["stranger"], faces["no_face"])
         if not self.notifier.send_telegram(msg, bypass_cooldown=True):
             logging.warning(
                 "Daily summary could not be delivered — will retry on the next "

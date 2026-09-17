@@ -86,6 +86,12 @@ class Camera:
 
         self.configure_stall_detection(config)
 
+        # Which language the operator picked in the camera's web UI. The camera
+        # is the single store of it — /config.json on LittleFS — and reports it
+        # on /health, which this class polls anyway. Czech until a camera says
+        # otherwise, matching the firmware default.
+        self.ui_language = "cz"
+
         self.session = requests.Session()
         user = config.get("camera_http_user", "admin")
         pwd = config.get("camera_http_pass", "admin")
@@ -232,15 +238,29 @@ class Camera:
         return None
 
     def get_health(self) -> dict | None:
-        """Fetch health status."""
+        """Fetch health status, and note the UI language it reports."""
         try:
             self._refresh_urls()
             response = self.session.get(self.status_url, timeout=3)
             if response.status_code == 200:
-                return response.json()
+                health = response.json()
+                self._note_ui_language(health.get("ui_language"))
+                return health
         except Exception as e:
             logging.debug(f"{self.log_prefix} Health check failed: {e}")
         return None
+
+    def _note_ui_language(self, reported) -> None:
+        """Adopt a language the camera reports, and only a language it reports.
+
+        Anything else leaves the current value alone: firmware older than
+        3.12.55 does not send the field at all, and an unreachable camera or a
+        garbled one is no reason to switch every alert to a language nobody
+        chose.
+        """
+        if reported in ("cz", "en") and reported != self.ui_language:
+            logging.info(f"{self.log_prefix} UI language is now {reported}")
+            self.ui_language = reported
 
     def set_camera_settings(self, settings: dict, retries: int = 3) -> bool:
         """Configure camera settings via POST."""

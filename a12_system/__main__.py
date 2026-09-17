@@ -138,6 +138,11 @@ class Application:
         camera = Camera(config)
         detector = Detector(config, SCRIPT_DIR)
         notifier = Notifier(config)
+        # The camera stores the operator's language choice and reports it on
+        # /health, which this process polls anyway. Reading it through a
+        # callable rather than copying the value means a change made in the web
+        # UI reaches the next alert, without a restart.
+        notifier.language_source = lambda: camera.ui_language
         self.stats = Statistics(save_path=os.path.join(DATA_DIR, "stats.json"))
         self.db = EventDB(os.path.join(DATA_DIR, "events.db"))
 

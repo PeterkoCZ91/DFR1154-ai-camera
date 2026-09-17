@@ -61,6 +61,10 @@ struct Config {
   String wifi_password;
   String device_name;
   String version;
+  // Which language the web UI and the A12 alerts speak. The pages carry a
+  // full cz/en table each; before this the choice lived in the browser's
+  // localStorage, so nothing outside that one tab could act on it.
+  String ui_language;      // "cz" or "en"
 
   // Telegram
   String telegram_bot_token;

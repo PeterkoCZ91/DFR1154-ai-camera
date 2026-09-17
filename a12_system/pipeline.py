@@ -20,6 +20,7 @@ from .face_result import (
 )
 from .detection import crop_person_box
 from .flat_episode import FlatEpisodeState
+from .messages import translate
 
 
 def retention_days(value: float, floor: float = 0.0) -> float:
@@ -446,9 +447,22 @@ class DetectionPipeline:
                 timeout=5,
             )
             logging.info(f"{self.log_prefix} Nuki unlock triggered for '{name}'")
-            self.notifier.send_telegram(f"Odemknuto pro {name}", bypass_cooldown=True)
+            self.notifier.send_telegram(
+                "Unlocked for {}".format(name), bypass_cooldown=True
+            )
         except Exception as e:
             logging.error(f"{self.log_prefix} Nuki unlock failed: {e}")
+
+    def _caption(self, template: str, value) -> str:
+        """Render one piece of a clip caption in the operator's language.
+
+        Captions are built by concatenation — "Person detected (Video)", then
+        " (Alice)", then " - local MP4 saved" — so the finished sentence is
+        never a catalogue key and cannot be translated on the way out like a
+        standalone alert. Each piece is rendered as it is added instead.
+        """
+        language = getattr(self.notifier, "language", None)
+        return translate(template, language() if language else "cz").format(value)
 
     def _telegram_message(self, message: str) -> str:
         if self.telegram_label:
@@ -1994,7 +2008,10 @@ class DetectionPipeline:
                 # the fallback so Telegram still gets a motion preview.
                 mp4_created = False
                 mp4_path = os.path.join(label_folder, self._media_name(label, timestamp, ".mp4"))
-                msg = f"{label.title()} detected (AV Clip)" if audio_data else f"{label.title()} detected (Video)"
+                msg = self._caption(
+                    "{} detected (AV Clip)" if audio_data else "{} detected (Video)",
+                    label.title(),
+                )
                 if person_name:
                     msg += f" ({person_name})"
 
@@ -2034,26 +2051,26 @@ class DetectionPipeline:
                             min_size=1_000,
                         ):
                             self.notifier.send_telegram(
-                                self._telegram_message(f"{msg} - local MP4 saved"),
+                                self._telegram_message(self._caption("{} - local MP4 saved", msg)),
                                 preview_path,
                                 bypass_cooldown=bypass_telegram_cooldown,
                             )
                             self.db.log_event("media", "mp4_preview", 0.0, preview_path)
                         else:
                             self.notifier.send_telegram(
-                                self._telegram_message(f"{msg} - local MP4 saved"),
+                                self._telegram_message(self._caption("{} - local MP4 saved", msg)),
                                 bypass_cooldown=bypass_telegram_cooldown,
                             )
                     elif media_mode == "snapshot":
                         jpg_path = os.path.join(label_folder, self._media_name(label, timestamp, ".jpg"))
                         self.notifier.send_telegram(
-                            self._telegram_message(f"{msg} - local MP4 saved"),
+                            self._telegram_message(self._caption("{} - local MP4 saved", msg)),
                             jpg_path,
                             bypass_cooldown=bypass_telegram_cooldown,
                         )
                     elif media_mode == "text":
                         self.notifier.send_telegram(
-                            self._telegram_message(f"{msg} - local MP4 saved"),
+                            self._telegram_message(self._caption("{} - local MP4 saved", msg)),
                             bypass_cooldown=bypass_telegram_cooldown,
                         )
                     elif media_mode == "none":
@@ -2061,7 +2078,7 @@ class DetectionPipeline:
                     else:
                         logging.warning(f"Unknown telegram.media_mode={media_mode}; sending text only")
                         self.notifier.send_telegram(
-                            self._telegram_message(f"{msg} - local MP4 saved"),
+                            self._telegram_message(self._caption("{} - local MP4 saved", msg)),
                             bypass_cooldown=bypass_telegram_cooldown,
                         )
 
@@ -2070,7 +2087,7 @@ class DetectionPipeline:
                 if not mp4_created:
                     gif_path = os.path.join(label_folder, self._media_name(label, timestamp, ".gif"))
                     if self.notifier.create_gif(frames, gif_path):
-                        msg = f"{label.title()} detected"
+                        msg = self._caption("{} detected", label.title())
                         if person_name:
                             msg += f" ({person_name})"
                         if send_telegram:
@@ -2089,7 +2106,7 @@ class DetectionPipeline:
                 if not mp4_created and not gif_created:
                     jpg_path = os.path.join(label_folder, self._media_name(label, timestamp, ".jpg"))
                     if os.path.exists(jpg_path) and send_telegram:
-                        msg = f"{label.title()} detected"
+                        msg = self._caption("{} detected", label.title())
                         if person_name:
                             msg += f" ({person_name})"
                         self.notifier.send_telegram(

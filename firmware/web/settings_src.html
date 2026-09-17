@@ -512,9 +512,9 @@
 
         var lang = localStorage.getItem('lang') || 'cz';
 
-        function applyLang(l) {
+        function applyLang(l, fromCamera) {
             lang = l;
-            localStorage.setItem('lang', l);
+            if (!fromCamera) localStorage.setItem('lang', l);
             document.querySelectorAll('[data-t]').forEach(function(el) {
                 var k = el.getAttribute('data-t');
                 if (T[l][k]) el.textContent = T[l][k];
@@ -528,7 +528,39 @@
             }
         }
 
-        function toggleLang() { applyLang(lang === 'cz' ? 'en' : 'cz'); }
+        function toggleLang() {
+            var next = lang === 'cz' ? 'en' : 'cz';
+            applyLang(next);
+            pushLang(next);
+        }
+
+        // The camera stores the installation's language in /config.json, so a
+        // choice made here survives a reboot and reaches A12, which answers its
+        // Telegram alerts in the same language. Before this it lived only in
+        // this browser's localStorage and nothing outside the tab could see it.
+        //
+        // Precedence: an explicit toggle in THIS browser wins locally, and the
+        // camera's value is the default for a browser that has not chosen. That
+        // way a viewer who cannot authenticate still gets the language they
+        // picked, instead of having it snap back on every reload.
+        function pushLang(l) {
+            var headers = { 'Content-Type': 'application/json' };
+            var cred = sessionStorage.getItem('camAuth');
+            if (cred) headers['Authorization'] = 'Basic ' + cred;
+            // Best effort, and deliberately silent: changing the language must
+            // never pop a password prompt. A 401 just means this browser's
+            // choice stays local, which is already true and already applied.
+            fetch('/settings', {
+                method: 'POST', headers: headers,
+                body: JSON.stringify({ ui_language: l })
+            }).catch(function() {});
+        }
+
+        function adoptCameraLang(l) {
+            if (l !== 'cz' && l !== 'en') return;
+            if (localStorage.getItem('lang')) return;  // this browser has chosen
+            if (l !== lang) applyLang(l, true);
+        }
 
         function showToast(text, type) {
             var t = document.getElementById('toast');
@@ -556,6 +588,7 @@
             fetch('/status')
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
+                    adoptCameraLang(data.ui_language);
                     if (data.jpeg_quality !== undefined) document.getElementById('quality').value = data.jpeg_quality;
                     if (data.frame_size !== undefined) document.getElementById('framesize').value = data.frame_size;
                     if (data.vflip !== undefined) document.getElementById('vflip').checked = (data.vflip === 1);
