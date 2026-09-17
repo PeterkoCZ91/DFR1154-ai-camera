@@ -200,7 +200,7 @@ whether the frame actually held a person. `a12 review` is that something:
 
 ```bash
 a12 review              # interactive pass: [p] person [n] not a person [u] unsure
-a12 review --stats      # coverage plus precision per confidence band
+a12 review --stats      # coverage, precision per confidence band, inference latency by outcome
 a12 review --list       # unlabeled snapshot paths, for an external viewer
 a12 review --set 8697 person
 ```

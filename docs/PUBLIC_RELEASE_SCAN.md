@@ -27,16 +27,25 @@ ruff check .
 pytest -q
 ```
 
-`ruff check .` and `pytest -q` are the same two steps `.github/workflows/ci.yml`
-runs on every push, with the linter pinned in `a12_system/requirements-dev.txt`
-so a new ruff release cannot fail the build on unchanged code. A green local run
-is what CI will report.
+`ruff check .` and `pytest -q` are the first CI job in
+`.github/workflows/ci.yml`, with the linter pinned in
+`a12_system/requirements-dev.txt` so a new ruff release cannot fail the build on
+unchanged code. A green local run is what CI will report.
 
-If firmware code changed and PlatformIO is available, also run:
+Since 2026-09-16 CI has a second job that compiles the firmware, so a change
+under `firmware/` can no longer reach `main` uncompiled. Reproduce it locally
+when firmware code changed:
 
 ```bash
-pio run -d firmware
+cd firmware && ../.github/scripts/build-firmware.sh esp32-s3-devkitc-1
 ```
+
+That script is what CI runs. It retries once, and only when the output contains
+`internal compiler error` — full rebuilds intermittently hit one inside the Edge
+Impulse SDK, always green on retry, while a genuine compile error still fails on
+the first attempt. Only `env:esp32-s3-devkitc-1` is built: `env:ota` extends it
+and overrides nothing but the upload settings, so it compiles identical objects.
+Build it too the day it gains a `build_flag`.
 
 ## Secret and PII Scan
 

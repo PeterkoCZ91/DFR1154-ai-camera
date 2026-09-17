@@ -785,7 +785,7 @@ a12_system/
  +-- logging_setup.py        Colored console + rotating file handlers
  +-- config.py               Configuration loading (DEFAULT_CONFIG + ENV overrides)
  +-- config.env.example      Configuration template
- +-- test_config.py          Smoke tests (6 tests passing)
+ +-- test_*.py               28 test modules, 379 tests
  +-- requirements.txt        Python dependencies (paho-mqtt v2, opencv, telebot)
  +-- tools/
       +-- a12                CLI wrapper (status, logs, restart, build, up, down, events, tail, enroll)
@@ -799,6 +799,8 @@ tools/
  +-- telegram_monitor.py     Telegram message log
  +-- brightness_test.py      Automated brightness analysis tool
  +-- stress_test.py          Load testing
+ +-- serial_watch.sh         Persistent USB console capture, reopens across panics
+ +-- soak_sample.sh          One CSV row per minute: camera health + A12 counters
 ```
 
 ### Data Flow
@@ -1218,7 +1220,7 @@ The full command table and multi-instance examples live in
 |---------|--------|-------------|
 | Occupant-aware alerting | :bulb: Planned | Treat an **unrecognised** person as the alerting event rather than any person. In a household deployment nearly every person alert is an occupant, so alerting on "person" spends the whole notification budget on expected events. The whitelist suppression path already exists; running it by default does not. |
 | Known/unknown in ground truth | :bulb: Planned | Split the `person` verdict so labels feed occupant recognition, not only threshold tuning |
-| Inference latency in `events.db` | :bulb: Planned | Scorer latency is per-process today and resets on restart, so slow-inference periods cannot be correlated with misses after the fact |
+| Inference latency in `events.db` | :white_check_mark: Done | `decision_audit.inference_seconds` records how long the inference behind each decision took, so a slow spell can be correlated with the decisions it produced. `a12 review --stats` reports p50/p95/max split by outcome |
 | ESP-DL YOLOv11n pedestrian | :warning: Attempted, blocked | PlatformIO `custom_component_add` is a no-op under `framework = arduino`. Needs hybrid `arduino, espidf`. See `firmware/MIGRATION_ESP_DL.md`. Effort: 5-8 days. |
 | Lux-gate for FOMO | :bulb: Planned | Skip FOMO inference when ambient lux is below threshold — camera already reads LTR-308 every frame. Reduces false positives at night without time-based active hours. |
 | Dedicated YOLO stream endpoint | :bulb: Planned | `/yolo-stream` serving SVGA/VGA MJPEG for A12, reducing A12 CPU decode overhead vs. full-res stream. |
