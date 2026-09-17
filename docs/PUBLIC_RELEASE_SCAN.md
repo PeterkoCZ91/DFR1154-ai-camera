@@ -85,6 +85,29 @@ rg -n "PROJECT_OWNER|project_owner|PROJECT_ID|project_id" \
   firmware/lib/ei-person-detection-fomo/src/model-parameters/
 ```
 
+## Pre-push checks
+
+The account-wide hook (`~/.config/git/hooks/pre-push`) guards identity and
+credentials in every repository and hands control to a repo-local hook first.
+This project's checks hang off that chain:
+
+```bash
+ln -sf ../../tools/pre_push_checks.sh .git/hooks/pre-push
+```
+
+**Do not point `core.hooksPath` at this repository.** That replaces the
+account-wide scan rather than adding to it, and the account-wide scan is the one
+that catches real names and paths.
+
+`tools/pre_push_checks.sh` runs two things, both of which exist because the
+mistake they catch already reached a public repository:
+
+- `build_web_assets.py --check` — the compiled UI must match `firmware/web/`.
+- `scan_ui_secrets.py` — no real value may pose as an example in that UI.
+
+CI runs both as well, so a push from a machine without the hook installed still
+fails rather than shipping.
+
 ## Web UI
 
 The dashboard and the settings page are served from gzip arrays compiled into
@@ -105,6 +128,23 @@ both pages hash identically to what the running firmware serves.
 `--check` runs in CI before the firmware build, because the array is what ships:
 an edit to `firmware/web/` that is not re-embedded would otherwise compile green
 and serve the old page.
+
+### The leak this pair of checks exists for
+
+The settings page shipped the owner's real Telegram chat ID as the placeholder
+of its Chat ID field. It was published on 2026-05-23 and found on 2026-09-17 —
+four months inside the compressed array, in seven versions of the file. The
+scan in this document lists `chat_id` among its patterns and never fired: a gzip
+byte array is not text, so nothing that greps the tree could reach it.
+
+Scanning the recovered HTML is only worth anything because `--check` proves the
+compiled array still matches it. Neither half is sufficient alone: the source
+could be clean while a stale array ships, or the array could match a source
+nobody scanned.
+
+The value itself was an identifier, not a credential — a bot token is what
+grants access to that chat, and the token was never in the repository. It was
+removed from the source, from the compiled array, and from published history.
 
 ## Language
 

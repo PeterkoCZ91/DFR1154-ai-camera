@@ -801,6 +801,8 @@ firmware/web/
 
 tools/
  +-- build_web_assets.py     Embed firmware/web/ into the firmware, or --check it
+ +-- scan_ui_secrets.py      Reject real values posing as examples in the UI
+ +-- pre_push_checks.sh      Project pre-push checks, chained from the global hook
  +-- serial_telemetry.py     Serial -> SQLite logger (37 regex patterns, 9 tables, WAL mode)
  +-- esp_monitor.py          HTTP health check + alerting
  +-- telegram_download.py    HTTP photo collector from /frame

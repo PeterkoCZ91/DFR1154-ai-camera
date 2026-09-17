@@ -72,6 +72,12 @@ jobs:
       - name: Web assets match their source
         run: python3 tools/build_web_assets.py --check
 
+      # Scanning the HTML only means something because the step above proves
+      # the compiled array still matches it. A real chat ID once shipped inside
+      # that array for four months, invisible to every scan of the tree.
+      - name: No real values posing as examples in the UI
+        run: python3 tools/scan_ui_secrets.py
+
       - name: Build
         working-directory: firmware
         run: ../.github/scripts/build-firmware.sh esp32-s3-devkitc-1
