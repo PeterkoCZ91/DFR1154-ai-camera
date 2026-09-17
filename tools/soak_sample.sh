@@ -21,7 +21,7 @@ A12="${A12:-1}"
 
 HEADER="ts,uptime_s,free_heap,max_alloc,restarts_1h,restarts_24h,profile,aec,agc,lux,mqtt_up,mqtt_connects,mqtt_fails,mqtt_link_s,rssi,heap_health,power_health"
 if [ "$A12" = "1" ]; then
-    HEADER="${HEADER},flat_1m,unwedge_1m,stall_1m,reboot_1m,audit_rows,timed_rows"
+    HEADER="${HEADER},dark_1m,flat_1m,unwedge_1m,stall_1m,reboot_1m,audit_rows,timed_rows"
 fi
 if [ ! -s "$OUT" ]; then
     echo "$HEADER" >> "$OUT"
@@ -83,6 +83,10 @@ PY
     # What A12 did in the last minute. Counted from the log, because these are
     # the events that have no counter anywhere else.
     a12log="$(docker compose -p a12_system logs --since 1m a12 2>/dev/null | sed -e 's/\x1b\[[0-9;]*m//g')"
+    # Two distinct log lines, and counting only one of them hid a whole night:
+    # on 2026-09-16 flat_1m read 0 for 15 hours while 20 exposure rewrites fired,
+    # because the watchdog was logging "Dark frame detected" the whole time.
+    dark="$(printf '%s' "$a12log" | grep -c "Dark frame detected")"
     flat="$(printf '%s' "$a12log" | grep -c "Flat frame detected")"
     unwedge="$(printf '%s' "$a12log" | grep -c "rewriting AEC/AGC")"
     stall="$(printf '%s' "$a12log" | grep -cE "Stream frozen|stream_ended|Stream stall")"
@@ -103,6 +107,6 @@ except Exception:
 PY
 )"
 
-    echo "${now},${device},${flat},${unwedge},${stall},${reboot},${rows}" >> "$OUT"
+    echo "${now},${device},${dark},${flat},${unwedge},${stall},${reboot},${rows}" >> "$OUT"
     sleep "$INTERVAL"
 done

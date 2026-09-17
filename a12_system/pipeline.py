@@ -65,6 +65,35 @@ def classify_frame_health(
     return None
 
 
+def route_low_detail_frame(
+    frame_fault: str | None, std: float, flat_std_threshold: float
+) -> str:
+    """Decide what a low-detail frame is evidence of: a wedge, nothing, or health.
+
+    Returns "unwedge" (mid-grey with no detail — the exposure loop is holding
+    its target with no signal under it, which two register writes can clear),
+    "hold" (black with no detail — there is simply no light; no action, and
+    crucially no claim that the camera is faulty), or "healthy" (the image has
+    texture, whatever its brightness).
+
+    "hold" is not the same as "healthy": a dark frame is no more evidence that
+    the camera recovered than that it broke, so it must not feed the healthy
+    run that closes an episode either.
+
+    The trade-off, stated because it is real: a camera whose AEC wedged at
+    minimum gain in a lit room also reads black, and this rule will no longer
+    try to clear it. Separating that from an unlit room needs ambient lux, and
+    the production enclosure seals the LTR-308. Measured against the remedy
+    being given up: over the night of 2026-09-16/17 the rewrite ran 20 times
+    against a black image and changed nothing — dawn ended the episode.
+    """
+    if frame_fault == "flat":
+        return "unwedge"
+    if std < flat_std_threshold:
+        return "hold"
+    return "healthy"
+
+
 def frames_are_identical(previous, current) -> bool:
     """Did the sensor read out a new frame, or repeat the last one byte for byte?
 
@@ -865,12 +894,16 @@ class DetectionPipeline:
                 )
                 # Both black and gray uniform frames can be legitimate low-light
                 # images. Report their appearance without diagnosing a hang.
-                if flatness < self._flat_frame_std_threshold:
+                route = route_low_detail_frame(
+                    frame_fault, flatness, self._flat_frame_std_threshold
+                )
+                if route == "unwedge":
                     self._note_flat_frame(current_time, frozen=frozen)
-                else:
+                elif route == "healthy":
                     # Texture ends the low-detail episode even on a dark night.
                     self._flat_consecutive_count = 0
                     self._flat_ladder_note_nonflat(current_time)
+                # route == "hold": an unlit room. Logged above, acted on nowhere.
             else:
                 self._dark_consecutive_count = 0
                 self._flat_consecutive_count = 0

@@ -519,57 +519,46 @@ a time.
   cannot know the post-migration value without reading `/status` first), or to
   accept the extra reboot and document it.
 
-- [ ] **The flat-frame ladder fires every evening at dusk and ends in a false
-  alarm.** Found 2026-09-16 while reading the log from 19:00. The camera is
-  healthy; the scene simply runs out of light, and the ladder cannot tell the
-  two apart.
+- [x] **DONE 2026-09-17. Darkness is no longer treated as a wedged exposure
+  loop.** Found by reading the 19:00 log on 09-16, settled by a 15.7 h soak.
 
-  What the log shows, in 37 minutes: `19:07:42` first flat frame at `std=1.0`,
-  decaying smoothly to `0.5` as daylight goes (sunset ~19:15) while brightness
-  stays pinned at `64.x` — because `64` is the AEC target, so the loop holds the
-  mean while the signal underneath it collapses. Strike 5 triggers an AEC/AGC
-  rewrite, the rewrite genuinely restores detail for ~7 minutes, 10 healthy
-  frames close the episode and send *"Stream recovered — frames are healthy"*,
-  the light drops further, and a fresh episode starts from strike 1 with a fresh
-  budget. Three episodes, six rewrites, two Telegram messages, ending at
-  `19:44:35` with `CRITICAL — Image still has no detail after 3 AEC/AGC rewrites
-  — the exposure loop is not the cause`. Measured directly off `/frame` at
-  19:54: `mean=64.4 std=0.50 min=62 max=81`, frames differing by up to 13
-  levels. A 19-level spread across a megapixel is a flat field; real detail read
-  `min=0 max=188` earlier the same day.
+  What the night measured on the production camera: **1397 dark frames, median
+  brightness 4.7, 20 AEC/AGC rewrites, 13 Telegram alerts — and none of it did
+  anything.** The last rewrite was 05:09; the last "recovered" 06:09; brightness
+  then climbed on its own from 10.3 (06:57) to 29.9 (08:14). Dawn ended the
+  episode, not the ladder. Of the night's 30 Telegram messages, **19 were about
+  the room being dark** (13 alarms + 6 "frames are healthy again") against 9
+  real detections.
 
-  So the persisted budget does not bound anything here: it is per-episode, and
-  dusk manufactures a new episode every ~12 minutes. Three things are tangled
-  and should be separated: (a) the budget should be bounded per *night*, not per
-  episode; (b) a rewrite that "recovers" for 7 minutes and relapses is not a
-  recovery — the healthy-frame count should have to survive longer than the
-  previous episode lasted; (c) the CRITICAL text asserts a conclusion
-  ("the exposure loop is not the cause") that the evidence does not support.
+  `classify_frame_health()` had already labelled every one of those frames
+  `"dark"` rather than `"flat"`. The verdict reached the wording of the log line
+  and was then discarded: `pipeline.py` entered the ladder on standard deviation
+  alone, so a black image took the same path as a wedged grey one. The docstring
+  of `frames_are_identical()` had recorded the same failure on 2026-09-14 —
+  "an unlit hallway spent the whole AEC/AGC budget and reached CRITICAL" —
+  which is how long the diagnosis sat in the tree without reaching the code.
 
-  **Correction, 20:30 the same evening — it is a wedge after all, and the
-  ladder's writes work.** At 19:54 the flat field read `mean=64.4 std=0.50
-  min=62 max=81`. At 20:05 the A12 container was rebuilt, which made it write
-  its full `camera_init_settings` (`aec`, `awb`, `denoise`, contrast/saturation/
-  sharpness/brightness, `jpeg_quality`, `frame_size`) — and the same hallway
-  then read `mean=8.6 std=3.41 min=0 max=40`, with no flat-frame warning for the
-  next 25 minutes. A healthy AEC cannot produce both numbers for the same scene.
-  So the uniform 64 was the exposure loop stuck at its target with no signal
-  under it, exactly what the unwedge ladder was built for — and each of its six
-  rewrites genuinely cleared it, for about seven minutes at a time.
+  Fixed by `route_low_detail_frame()`: `"unwedge"` for mid-grey with no detail
+  (the measured wedge signature — brightness ~64 is the AEC target held with no
+  signal under it), `"hold"` for black with no detail (no light; no write, no
+  budget, no alert, no claim of a fault), `"healthy"` for anything textured
+  whatever its brightness, so dawn still closes an episode. `"hold"` is
+  deliberately not `"healthy"`: nightfall over a genuinely wedged camera must
+  not read as a recovery.
 
-  That makes the CRITICAL text actively wrong: *"the exposure loop is not the
-  cause"* is fired precisely when the ladder has proven three times that it is.
+  **The trade-off, taken knowingly:** a camera whose AEC wedges at minimum gain
+  in a *lit* room also reads black, and this rule will no longer try to clear
+  it. Separating that case from an unlit room needs ambient lux, and the
+  production enclosure seals the LTR-308. Weighed against a remedy that ran 20
+  times against a black image and changed nothing.
 
-  Open question the soak should answer: why did the ladder's AEC/AGC-only write
-  hold for ~7 minutes while the full init write has held for 25+ — is the extra
-  payload doing the work, or did the relapse simply stop when the last of the
-  daylight went? One observation, and a confounded one: the restart, the wider
-  write and the falling light all happened within minutes of each other.
+  Three mutants confirm the tests bite: reverting the call site to the std test
+  fails 1, making `"hold"` count as healthy fails 3, and switching the ladder
+  off entirely under the guise of the fix fails 7.
 
-  **The enclosure still decides this.** The only signal that separates "dark
-  room" from "wedged exposure" without a settings write is ambient lux, and the
-  sealed LTR-308 reads 0.03-1.96 all evening. Until it is drilled, every fix
-  here is a heuristic over a missing measurement.
+  Also fixed: `tools/soak_sample.sh` counted only `"Flat frame detected"`, so
+  its `flat_1m` column read 0 for fifteen hours while twenty rewrites fired.
+  A `dark_1m` column now counts the other line.
 
 ### Tier 3 — observability, once Tier 1 is collecting
 
