@@ -1,0 +1,694 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Camera settings</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{
+            font-family:'Inter',system-ui,-apple-system,sans-serif;
+            background:#0f0f23;color:#e0e0e0;
+            min-height:100vh;padding:24px 16px 100px;
+        }
+        .wrap{max-width:600px;margin:0 auto}
+
+        .pg-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;gap:8px}
+        .pg-header h1{font-size:1.3em;font-weight:700;color:#fff}
+        .hdr-right{display:flex;align-items:center;gap:8px}
+        .back-link{
+            color:#00d4ff;text-decoration:none;font-size:.85em;
+            padding:6px 14px;border:1px solid rgba(0,212,255,.25);border-radius:8px;
+            transition:all .2s;
+        }
+        .back-link:hover{background:rgba(0,212,255,.1)}
+        .lang-btn{
+            background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);
+            border-radius:8px;padding:6px 12px;cursor:pointer;
+            font-size:.8em;color:#a0a0b8;transition:all .2s;
+        }
+        .lang-btn:hover{background:rgba(255,255,255,.13);color:#fff}
+
+        details{
+            background:rgba(255,255,255,.04);
+            border:1px solid rgba(255,255,255,.08);
+            border-radius:14px;margin-bottom:12px;
+            overflow:hidden;
+        }
+        details[open]{border-color:rgba(255,255,255,.12)}
+        summary{
+            padding:14px 18px;cursor:pointer;
+            font-weight:600;font-size:.92em;color:#fff;
+            list-style:none;display:flex;align-items:center;gap:8px;
+            user-select:none;
+        }
+        summary::-webkit-details-marker{display:none}
+        summary::before{
+            content:'';display:inline-block;width:6px;height:6px;
+            border-right:2px solid #606078;border-bottom:2px solid #606078;
+            transform:rotate(-45deg);transition:transform .2s;flex-shrink:0;
+        }
+        details[open]>summary::before{transform:rotate(45deg)}
+        summary .sec-color{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+        .sec-body{padding:4px 18px 18px}
+
+        .fg{margin-bottom:16px}
+        .fg label{display:block;margin-bottom:5px;font-size:.82em;color:#a0a0b8;font-weight:500}
+        .fg small{display:block;margin-top:4px;font-size:.75em;color:#606078}
+
+        input[type="number"],input[type="text"],input[type="password"],select{
+            width:100%;padding:10px 12px;
+            background:rgba(255,255,255,.06);
+            border:1px solid rgba(255,255,255,.1);
+            border-radius:8px;color:#fff;font-size:.9em;
+            transition:border-color .2s;
+        }
+        input[type="number"]:focus,input[type="text"]:focus,input[type="password"]:focus,select:focus{
+            outline:none;border-color:#00d4ff;
+            box-shadow:0 0 0 2px rgba(0,212,255,.15);
+        }
+        select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23606078'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+        select option{background:#1a1a2e;color:#e0e0e0}
+
+        .toggle-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+        .toggle-row span{font-size:.85em;color:#c0c0d0}
+        .toggle{position:relative;width:44px;height:24px;flex-shrink:0}
+        .toggle input{opacity:0;width:0;height:0}
+        .toggle .slider{
+            position:absolute;inset:0;cursor:pointer;
+            background:rgba(255,255,255,.12);border-radius:24px;
+            transition:all .25s;
+        }
+        .toggle .slider::before{
+            content:'';position:absolute;left:3px;top:3px;
+            width:18px;height:18px;border-radius:50%;
+            background:#606078;transition:all .25s;
+        }
+        .toggle input:checked+.slider{background:rgba(0,212,255,.3)}
+        .toggle input:checked+.slider::before{transform:translateX(20px);background:#00d4ff}
+
+        .range-wrap{display:flex;align-items:center;gap:10px}
+        .range-wrap input[type="range"]{
+            flex:1;-webkit-appearance:none;appearance:none;
+            height:6px;border-radius:3px;
+            background:rgba(255,255,255,.1);outline:none;
+        }
+        .range-wrap input[type="range"]::-webkit-slider-thumb{
+            -webkit-appearance:none;width:18px;height:18px;
+            border-radius:50%;background:#00d4ff;cursor:pointer;
+            box-shadow:0 0 8px rgba(0,212,255,.3);
+        }
+        .range-wrap input[type="range"]::-moz-range-thumb{
+            width:18px;height:18px;border:none;
+            border-radius:50%;background:#00d4ff;cursor:pointer;
+        }
+        .range-badge{
+            min-width:32px;text-align:center;padding:2px 8px;
+            background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.2);
+            border-radius:6px;font-size:.82em;color:#00d4ff;font-weight:600;
+        }
+
+        .save-bar{
+            position:fixed;bottom:0;left:0;right:0;
+            background:rgba(15,15,35,.95);
+            backdrop-filter:blur(12px);
+            border-top:1px solid rgba(255,255,255,.08);
+            padding:14px 16px;z-index:100;
+        }
+        .save-bar-inner{max-width:600px;margin:0 auto;display:flex;gap:10px}
+        .btn-save{
+            flex:1;padding:12px;border:none;border-radius:10px;
+            font-size:.92em;font-weight:600;cursor:pointer;
+            color:#0f0f23;background:#00d4ff;
+            transition:all .2s;
+        }
+        .btn-save:hover{background:#33dfff;box-shadow:0 0 20px rgba(0,212,255,.3)}
+        .btn-back{
+            padding:12px 20px;border:1px solid rgba(255,255,255,.12);
+            border-radius:10px;background:transparent;
+            color:#a0a0b8;font-size:.92em;cursor:pointer;
+            transition:all .2s;
+        }
+        .btn-back:hover{border-color:rgba(255,255,255,.25);color:#fff}
+
+        .tg-save-btn{
+            margin-bottom:12px;padding:8px 16px;
+            background:#3b82f6;color:#fff;border:none;
+            border-radius:6px;cursor:pointer;font-size:.9em;
+            transition:background .2s;
+        }
+        .tg-save-btn:hover{background:#2563eb}
+
+        .toast{
+            position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);
+            padding:10px 24px;border-radius:10px;
+            font-size:.88em;font-weight:500;
+            opacity:0;transition:all .3s;z-index:200;
+            pointer-events:none;
+        }
+        .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+        .toast.success{background:rgba(34,197,94,.2);border:1px solid rgba(34,197,94,.4);color:#22c55e}
+        .toast.error{background:rgba(239,68,68,.2);border:1px solid rgba(239,68,68,.4);color:#ef4444}
+
+        @media(max-width:500px){
+            .pg-header h1{font-size:1.1em}
+            .sec-body{padding:4px 14px 14px}
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="pg-header">
+            <h1 data-t="page_title">Camera settings</h1>
+            <div class="hdr-right">
+                <button class="lang-btn" id="lang-btn" onclick="toggleLang()">EN</button>
+                <a href="/" class="back-link" data-t="back">Back</a>
+            </div>
+        </div>
+
+        <form id="settingsForm">
+
+            <details open>
+                <summary><span class="sec-color" style="background:#00d4ff"></span> <span data-t="sec_basic">Basic</span></summary>
+                <div class="sec-body">
+                    <div class="fg">
+                        <label for="quality" data-t="lbl_quality">JPEG quality (0-63, lower = better)</label>
+                        <input type="number" id="quality" name="quality" min="0" max="63" value="10">
+                    </div>
+                    <div class="fg">
+                        <label for="framesize" data-t="lbl_framesize">Frame size</label>
+                        <select id="framesize" name="framesize">
+                            <option value="5">QVGA (320×240)</option>
+                            <option value="6">CIF (400×296)</option>
+                            <option value="8">VGA (640×480)</option>
+                            <option value="9">SVGA (800×600)</option>
+                            <option value="10">XGA (1024×768)</option>
+                            <option value="12">SXGA (1280×1024)</option>
+                            <option value="13" selected>UXGA (1600×1200)</option>
+                        </select>
+                    </div>
+                    <div class="toggle-row">
+                        <span data-t="lbl_vflip">Flip vertical</span>
+                        <label class="toggle"><input type="checkbox" id="vflip" name="vflip" checked><span class="slider"></span></label>
+                    </div>
+                    <div class="toggle-row">
+                        <span data-t="lbl_hmirror">Mirror horizontal</span>
+                        <label class="toggle"><input type="checkbox" id="hmirror" name="hmirror" checked><span class="slider"></span></label>
+                    </div>
+                </div>
+            </details>
+
+            <details>
+                <summary><span class="sec-color" style="background:#a855f7"></span> <span data-t="sec_image">Image</span></summary>
+                <div class="sec-body">
+                    <div class="fg">
+                        <label data-t="lbl_brightness">Brightness (-2 to 2)</label>
+                        <div class="range-wrap">
+                            <input type="range" id="brightness" name="brightness" min="-2" max="2" value="0" step="1">
+                            <span class="range-badge" id="brightness-value">0</span>
+                        </div>
+                    </div>
+                    <div class="fg">
+                        <label data-t="lbl_contrast">Contrast (-2 to 2)</label>
+                        <div class="range-wrap">
+                            <input type="range" id="contrast" name="contrast" min="-2" max="2" value="0" step="1">
+                            <span class="range-badge" id="contrast-value">0</span>
+                        </div>
+                    </div>
+                    <div class="fg">
+                        <label data-t="lbl_saturation">Saturation (-2 to 2)</label>
+                        <div class="range-wrap">
+                            <input type="range" id="saturation" name="saturation" min="-2" max="2" value="0" step="1">
+                            <span class="range-badge" id="saturation-value">0</span>
+                        </div>
+                    </div>
+                    <div class="fg">
+                        <label data-t="lbl_sharpness">Sharpness (-3 to 3)</label>
+                        <div class="range-wrap">
+                            <input type="range" id="sharpness" name="sharpness" min="-3" max="3" value="0" step="1">
+                            <span class="range-badge" id="sharpness-value">0</span>
+                        </div>
+                    </div>
+                    <div class="fg">
+                        <label data-t="lbl_denoise">Denoise (0 to 8)</label>
+                        <div class="range-wrap">
+                            <input type="range" id="denoise" name="denoise" min="0" max="8" value="0" step="1">
+                            <span class="range-badge" id="denoise-value">0</span>
+                        </div>
+                    </div>
+                </div>
+            </details>
+
+            <details>
+                <summary><span class="sec-color" style="background:#f59e0b"></span> <span data-t="sec_auto">Auto controls</span></summary>
+                <div class="sec-body">
+                    <div class="toggle-row">
+                        <span data-t="lbl_aec">Auto Exposure (AEC)</span>
+                        <label class="toggle"><input type="checkbox" id="aec" name="aec" checked><span class="slider"></span></label>
+                    </div>
+                    <div class="fg">
+                        <label data-t="lbl_ae_level">AE Level (-2 to 2)</label>
+                        <div class="range-wrap">
+                            <input type="range" id="ae_level" name="ae_level" min="-2" max="2" value="-2" step="1">
+                            <span class="range-badge" id="ae_level-value">-2</span>
+                        </div>
+                        <small data-t="hint_ae_level">-2 = darker, +2 = brighter</small>
+                    </div>
+                    <div class="toggle-row">
+                        <span data-t="lbl_agc">Auto Gain (AGC)</span>
+                        <label class="toggle"><input type="checkbox" id="agc" name="agc" checked><span class="slider"></span></label>
+                    </div>
+                    <div class="toggle-row">
+                        <span data-t="lbl_awb">Auto White Balance</span>
+                        <label class="toggle"><input type="checkbox" id="awb" name="awb" checked><span class="slider"></span></label>
+                    </div>
+                </div>
+            </details>
+
+            <details>
+                <summary><span class="sec-color" style="background:#3b82f6"></span> <span data-t="sec_telegram">Telegram notifications</span></summary>
+                <div class="sec-body">
+                    <div class="fg">
+                        <label for="tg_token"><span data-t="lbl_tg_token">Bot Token</span> <span id="tg_token_status" style="color:#888;font-size:.85em"></span></label>
+                        <input type="password" id="tg_token" name="tg_token" placeholder="123456789:ABCdef..." autocomplete="off">
+                    </div>
+                    <div class="fg">
+                        <label for="tg_chat" data-t="lbl_tg_chat">Chat ID</label>
+                        <input type="text" id="tg_chat" name="tg_chat" placeholder="123456789">
+                    </div>
+                    <button type="button" class="tg-save-btn" onclick="saveTelegramCreds()" data-t="btn_tg_save">Save Telegram credentials</button>
+                    <hr style="margin:8px 0 12px;border:none;border-top:1px solid rgba(255,255,255,.08)">
+                    <div class="toggle-row">
+                        <span data-t="lbl_motion_core">Firmware motion detection</span>
+                        <label class="toggle"><input type="checkbox" id="motion_detection_enabled" name="motion_detection_enabled"><span class="slider"></span></label>
+                    </div>
+                    <div class="toggle-row">
+                        <span data-t="lbl_tg_photo">Motion → Telegram photo</span>
+                        <label class="toggle"><input type="checkbox" id="motion_telegram" name="motion_telegram"><span class="slider"></span></label>
+                    </div>
+                    <div class="toggle-row">
+                        <span data-t="lbl_tg_video">Motion → Telegram video</span>
+                        <label class="toggle"><input type="checkbox" id="motion_video" name="motion_video"><span class="slider"></span></label>
+                    </div>
+                    <div class="toggle-row">
+                        <span data-t="lbl_sd_on_motion">SD recording on motion</span>
+                        <label class="toggle"><input type="checkbox" id="sd_auto_record" name="sd_auto_record"><span class="slider"></span></label>
+                    </div>
+                    <div class="fg">
+                        <label for="motion_cooldown" data-t="lbl_cooldown">Cooldown between photos (s)</label>
+                        <input type="number" id="motion_cooldown" name="motion_cooldown" min="5" max="3600" value="30">
+                    </div>
+                    <div class="fg">
+                        <label for="notify_start" data-t="lbl_notify_from">Active hours - from (0-23)</label>
+                        <input type="number" id="notify_start" name="notify_start" min="0" max="23" value="0">
+                    </div>
+                    <div class="fg">
+                        <label for="notify_end" data-t="lbl_notify_to">Active hours - to (0-23)</label>
+                        <input type="number" id="notify_end" name="notify_end" min="0" max="23" value="23">
+                        <small data-t="hint_notify">e.g. 22-7 = wraps midnight</small>
+                    </div>
+                </div>
+            </details>
+
+            <details>
+                <summary><span class="sec-color" style="background:#a855f7"></span> <span data-t="sec_person">Person detection (AI)</span></summary>
+                <div class="sec-body">
+                    <div class="toggle-row">
+                        <span data-t="lbl_person_enabled">Person detection enabled</span>
+                        <label class="toggle"><input type="checkbox" id="person_detection" name="person_detection"><span class="slider"></span></label>
+                    </div>
+                    <div class="fg">
+                        <label for="person_confidence" data-t="lbl_confidence">Confidence threshold (%)</label>
+                        <input type="number" id="person_confidence" name="person_confidence" min="10" max="99" value="60">
+                        <small data-t="hint_confidence">Min. confidence to confirm person</small>
+                    </div>
+                    <div class="toggle-row">
+                        <span data-t="lbl_person_tg_photo">AI detection → Telegram photo</span>
+                        <label class="toggle"><input type="checkbox" id="person_telegram_photo" name="person_telegram_photo"><span class="slider"></span></label>
+                    </div>
+                    <div class="fg">
+                        <label for="person_cooldown" data-t="lbl_person_cooldown">Cooldown between AI photos (s)</label>
+                        <input type="number" id="person_cooldown" name="person_cooldown" min="10" max="3600" value="60">
+                    </div>
+                    <div class="fg">
+                        <label for="person_recheck" data-t="lbl_person_recheck">Idle scan interval (s)</label>
+                        <input type="number" id="person_recheck" name="person_recheck" min="1" max="120" value="12">
+                        <small data-t="hint_person_recheck">Person check when no motion</small>
+                    </div>
+                </div>
+            </details>
+
+            <details>
+                <summary><span class="sec-color" style="background:#f59e0b"></span> <span data-t="sec_sd">SD recording</span></summary>
+                <div class="sec-body">
+                    <div class="fg">
+                        <label for="sd_record_duration" data-t="lbl_sd_duration">Recording duration after motion (s)</label>
+                        <input type="number" id="sd_record_duration" name="sd_record_duration" min="5" max="300" value="30">
+                    </div>
+                    <div class="fg">
+                        <label for="sd_max_usage" data-t="lbl_sd_max">Max SD usage (%)</label>
+                        <input type="number" id="sd_max_usage" name="sd_max_usage" min="50" max="99" value="90">
+                        <small data-t="hint_sd_max">Oldest files are auto-deleted</small>
+                    </div>
+                    <div class="fg">
+                        <label for="sd_fps" data-t="lbl_sd_fps">Recording FPS</label>
+                        <input type="number" id="sd_fps" name="sd_fps" min="1" max="30" value="10">
+                    </div>
+                </div>
+            </details>
+
+            <details>
+                <summary><span class="sec-color" style="background:#22c55e"></span> <span data-t="sec_mqtt">MQTT (Home Assistant)</span></summary>
+                <div class="sec-body">
+                    <div class="toggle-row">
+                        <span data-t="lbl_mqtt_enabled">MQTT enabled</span>
+                        <label class="toggle"><input type="checkbox" id="mqtt_enabled" name="mqtt_enabled"><span class="slider"></span></label>
+                    </div>
+                    <div class="fg">
+                        <label for="mqtt_server" data-t="lbl_mqtt_server">MQTT server</label>
+                        <input type="text" id="mqtt_server" name="mqtt_server" placeholder="192.168.1.100">
+                    </div>
+                    <div class="fg">
+                        <label for="mqtt_port" data-t="lbl_mqtt_port">MQTT port</label>
+                        <input type="number" id="mqtt_port" name="mqtt_port" min="1" max="65535" value="1883">
+                    </div>
+                </div>
+            </details>
+
+        </form>
+    </div>
+
+    <div class="save-bar">
+        <div class="save-bar-inner">
+            <button type="button" class="btn-back" onclick="window.location.href='/'" data-t="back">Back</button>
+            <button type="button" class="btn-save" onclick="submitForm()" data-t="btn_save">Save settings</button>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        var T = {
+            en: {
+                page_title:       'Camera settings',
+                back:             'Back',
+                sec_basic:        'Basic',
+                lbl_quality:      'JPEG quality (0-63, lower = better)',
+                lbl_framesize:    'Frame size',
+                lbl_vflip:        'Flip vertical',
+                lbl_hmirror:      'Mirror horizontal',
+                sec_image:        'Image',
+                lbl_brightness:   'Brightness (-2 to 2)',
+                lbl_contrast:     'Contrast (-2 to 2)',
+                lbl_saturation:   'Saturation (-2 to 2)',
+                lbl_sharpness:    'Sharpness (-3 to 3)',
+                lbl_denoise:      'Denoise (0 to 8)',
+                sec_auto:         'Auto controls',
+                lbl_aec:          'Auto Exposure (AEC)',
+                lbl_ae_level:     'AE Level (-2 to 2)',
+                hint_ae_level:    '-2 = darker, +2 = brighter',
+                lbl_agc:          'Auto Gain (AGC)',
+                lbl_awb:          'Auto White Balance',
+                sec_telegram:     'Telegram notifications',
+                lbl_tg_token:     'Bot Token',
+                lbl_tg_chat:      'Chat ID',
+                btn_tg_save:      'Save Telegram credentials',
+                tg_set:           '✓ set',
+                tg_unset:         '✗ not set',
+                lbl_motion_core:  'Firmware motion detection',
+                lbl_tg_photo:     'Motion → Telegram photo',
+                lbl_tg_video:     'Motion → Telegram video',
+                lbl_sd_on_motion: 'SD recording on motion',
+                lbl_cooldown:     'Cooldown between photos (s)',
+                lbl_notify_from:  'Active hours - from (0-23)',
+                lbl_notify_to:    'Active hours - to (0-23)',
+                hint_notify:      'e.g. 22-7 = wraps midnight',
+                sec_person:       'Person detection (AI)',
+                lbl_person_enabled:'Person detection enabled',
+                lbl_confidence:   'Confidence threshold (%)',
+                hint_confidence:  'Min. confidence to confirm person',
+                lbl_person_tg_photo:'AI detection → Telegram photo',
+                lbl_person_cooldown:'Cooldown between AI photos (s)',
+                lbl_person_recheck: 'Idle scan interval (s)',
+                hint_person_recheck:'Person check when no motion',
+                sec_sd:           'SD recording',
+                lbl_sd_duration:  'Recording duration after motion (s)',
+                lbl_sd_max:       'Max SD usage (%)',
+                hint_sd_max:      'Oldest files are auto-deleted',
+                lbl_sd_fps:       'Recording FPS',
+                sec_mqtt:         'MQTT (Home Assistant)',
+                lbl_mqtt_enabled: 'MQTT enabled',
+                lbl_mqtt_server:  'MQTT server',
+                lbl_mqtt_port:    'MQTT port',
+                btn_save:         'Save settings',
+                toast_saved:      'Settings saved!',
+                toast_tg_saved:   'Telegram credentials saved',
+                toast_tg_err:     'Error saving',
+                toast_tg_empty:   'Enter token or chat ID',
+                prompt_user:      'Camera username:',
+                prompt_pass:      'Camera password:'
+            },
+            cz: {
+                page_title:       'Nastavení kamery',
+                back:             'Zpět',
+                sec_basic:        'Základní',
+                lbl_quality:      'JPEG kvalita (0-63, nižší = lepší)',
+                lbl_framesize:    'Rozlišení',
+                lbl_vflip:        'Otočit svisle',
+                lbl_hmirror:      'Zrcadlit vodorovně',
+                sec_image:        'Obraz',
+                lbl_brightness:   'Jas (-2 až 2)',
+                lbl_contrast:     'Kontrast (-2 až 2)',
+                lbl_saturation:   'Sytost (-2 až 2)',
+                lbl_sharpness:    'Ostrost (-3 až 3)',
+                lbl_denoise:      'Odšumění (0 až 8)',
+                sec_auto:         'Automatické řízení',
+                lbl_aec:          'Automatická expozice (AEC)',
+                lbl_ae_level:     'Úroveň AE (-2 až 2)',
+                hint_ae_level:    '-2 = tmavší, +2 = světlejší',
+                lbl_agc:          'Automatický zisk (AGC)',
+                lbl_awb:          'Automatické vyvážení bílé',
+                sec_telegram:     'Telegram notifikace',
+                lbl_tg_token:     'Token bota',
+                lbl_tg_chat:      'Chat ID',
+                btn_tg_save:      'Uložit Telegram přihlašovací údaje',
+                tg_set:           '✓ nastaven',
+                tg_unset:         '✗ nenastaveno',
+                lbl_motion_core:  'Firmware detekce pohybu',
+                lbl_tg_photo:     'Pohyb → Telegram foto',
+                lbl_tg_video:     'Pohyb → Telegram video',
+                lbl_sd_on_motion: 'Nahrávání na SD při pohybu',
+                lbl_cooldown:     'Prodleva mezi fotkami (s)',
+                lbl_notify_from:  'Aktivní hodiny - od (0-23)',
+                lbl_notify_to:    'Aktivní hodiny - do (0-23)',
+                hint_notify:      'např. 22-7 = přes půlnoc',
+                sec_person:       'Detekce osob (AI)',
+                lbl_person_enabled:'Detekce osob zapnuta',
+                lbl_confidence:   'Minimální jistota (%)',
+                hint_confidence:  'Min. jistota pro potvrzení osoby',
+                lbl_person_tg_photo:'AI detekce → Telegram foto',
+                lbl_person_cooldown:'Prodleva mezi AI fotkami (s)',
+                lbl_person_recheck: 'Interval idle skenu (s)',
+                hint_person_recheck:'Kontrola osoby bez pohybu',
+                sec_sd:           'Nahrávání na SD',
+                lbl_sd_duration:  'Délka nahrávání po pohybu (s)',
+                lbl_sd_max:       'Max. využití SD (%)',
+                hint_sd_max:      'Nejstarší soubory se automaticky mažou',
+                lbl_sd_fps:       'FPS nahrávání',
+                sec_mqtt:         'MQTT (Home Assistant)',
+                lbl_mqtt_enabled: 'MQTT zapnuto',
+                lbl_mqtt_server:  'MQTT server',
+                lbl_mqtt_port:    'MQTT port',
+                btn_save:         'Uložit nastavení',
+                toast_saved:      'Nastavení uloženo!',
+                toast_tg_saved:   'Telegram přihlašovací údaje uloženy',
+                toast_tg_err:     'Chyba při ukládání',
+                toast_tg_empty:   'Zadej token nebo chat ID',
+                prompt_user:      'Uživatelské jméno kamery:',
+                prompt_pass:      'Heslo kamery:'
+            }
+        };
+
+        var lang = localStorage.getItem('lang') || 'cz';
+
+        function applyLang(l) {
+            lang = l;
+            localStorage.setItem('lang', l);
+            document.querySelectorAll('[data-t]').forEach(function(el) {
+                var k = el.getAttribute('data-t');
+                if (T[l][k]) el.textContent = T[l][k];
+            });
+            document.getElementById('lang-btn').textContent = l === 'cz' ? 'EN' : 'CZ';
+            document.documentElement.lang = l === 'cz' ? 'cs' : 'en';
+            // Update Telegram status badge if already loaded
+            var st = document.getElementById('tg_token_status');
+            if (st && st.dataset.set) {
+                st.textContent = st.dataset.set === '1' ? T[l].tg_set : T[l].tg_unset;
+            }
+        }
+
+        function toggleLang() { applyLang(lang === 'cz' ? 'en' : 'cz'); }
+
+        function showToast(text, type) {
+            var t = document.getElementById('toast');
+            t.textContent = text;
+            t.className = 'toast ' + type + ' show';
+            setTimeout(function() { t.className = 'toast'; }, 3000);
+        }
+
+        function updateSliderValue(id) {
+            var slider = document.getElementById(id);
+            var display = document.getElementById(id + '-value');
+            if (slider && display) display.textContent = slider.value;
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            ['brightness', 'contrast', 'saturation', 'sharpness', 'denoise', 'ae_level'].forEach(function(id) {
+                var slider = document.getElementById(id);
+                if (slider) slider.addEventListener('input', function() { updateSliderValue(id); });
+            });
+        });
+
+        window.addEventListener('load', function() {
+            applyLang(lang);
+
+            fetch('/status')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.jpeg_quality !== undefined) document.getElementById('quality').value = data.jpeg_quality;
+                    if (data.frame_size !== undefined) document.getElementById('framesize').value = data.frame_size;
+                    if (data.vflip !== undefined) document.getElementById('vflip').checked = (data.vflip === 1);
+                    if (data.hmirror !== undefined) document.getElementById('hmirror').checked = (data.hmirror === 1);
+                    if (data.brightness !== undefined) { document.getElementById('brightness').value = data.brightness; updateSliderValue('brightness'); }
+                    if (data.contrast !== undefined) { document.getElementById('contrast').value = data.contrast; updateSliderValue('contrast'); }
+                    if (data.saturation !== undefined) { document.getElementById('saturation').value = data.saturation; updateSliderValue('saturation'); }
+                    if (data.sharpness !== undefined) { document.getElementById('sharpness').value = data.sharpness; updateSliderValue('sharpness'); }
+                    if (data.denoise !== undefined) { document.getElementById('denoise').value = data.denoise; updateSliderValue('denoise'); }
+                    if (data.aec !== undefined) document.getElementById('aec').checked = (data.aec === 1);
+                    if (data.ae_level !== undefined) { document.getElementById('ae_level').value = data.ae_level; updateSliderValue('ae_level'); }
+                    if (data.agc !== undefined) document.getElementById('agc').checked = (data.agc === 1);
+                    if (data.awb !== undefined) document.getElementById('awb').checked = (data.awb === 1);
+                    if (data.motion_detection_enabled !== undefined) document.getElementById('motion_detection_enabled').checked = data.motion_detection_enabled;
+                    if (data.motion_telegram_photo !== undefined) document.getElementById('motion_telegram').checked = data.motion_telegram_photo;
+                    if (data.motion_telegram_video !== undefined) document.getElementById('motion_video').checked = data.motion_telegram_video;
+                    if (data.sd_auto_record !== undefined) document.getElementById('sd_auto_record').checked = data.sd_auto_record;
+                    if (data.motion_telegram_cooldown !== undefined) document.getElementById('motion_cooldown').value = data.motion_telegram_cooldown;
+                    if (data.motion_notify_start_hour !== undefined) document.getElementById('notify_start').value = data.motion_notify_start_hour;
+                    if (data.motion_notify_end_hour !== undefined) document.getElementById('notify_end').value = data.motion_notify_end_hour;
+                    if (data.person_detection_enabled !== undefined) document.getElementById('person_detection').checked = data.person_detection_enabled;
+                    if (data.person_telegram_photo !== undefined) document.getElementById('person_telegram_photo').checked = data.person_telegram_photo;
+                    if (data.person_confidence_threshold !== undefined) document.getElementById('person_confidence').value = Math.round(data.person_confidence_threshold * 100);
+                    if (data.person_detection_cooldown !== undefined) document.getElementById('person_cooldown').value = data.person_detection_cooldown;
+                    if (data.person_recheck_interval !== undefined) document.getElementById('person_recheck').value = data.person_recheck_interval;
+                    if (data.sd_auto_record_duration !== undefined) document.getElementById('sd_record_duration').value = data.sd_auto_record_duration;
+                    if (data.sd_max_usage_percent !== undefined) document.getElementById('sd_max_usage').value = data.sd_max_usage_percent;
+                    if (data.sd_record_fps !== undefined) document.getElementById('sd_fps').value = data.sd_record_fps;
+                    if (data.mqtt_enabled !== undefined) document.getElementById('mqtt_enabled').checked = data.mqtt_enabled;
+                    if (data.mqtt_server !== undefined) document.getElementById('mqtt_server').value = data.mqtt_server;
+                    if (data.mqtt_port !== undefined) document.getElementById('mqtt_port').value = data.mqtt_port;
+                })
+                .catch(function(err) { console.error('Failed to load status:', err); });
+
+            fetch('/credentials')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var st = document.getElementById('tg_token_status');
+                    var isSet = !!data.telegram_token_set;
+                    st.dataset.set = isSet ? '1' : '0';
+                    st.textContent = isSet ? T[lang].tg_set : T[lang].tg_unset;
+                    st.style.color = isSet ? '#16a34a' : '#dc2626';
+                    if (data.telegram_chat_id) document.getElementById('tg_chat').value = data.telegram_chat_id;
+                })
+                .catch(function() {});
+        });
+
+        function saveTelegramCreds() {
+            var token = document.getElementById('tg_token').value.trim();
+            var chat = document.getElementById('tg_chat').value.trim();
+            if (!token && !chat) { showToast(T[lang].toast_tg_empty, 'error'); return; }
+            var payload = {};
+            if (token) payload.telegram_bot_token = token;
+            if (chat) payload.telegram_chat_id = chat;
+            var authHeader = sessionStorage.getItem('camAuth') || '';
+            var headers = { 'Content-Type': 'application/json' };
+            if (authHeader) headers['Authorization'] = 'Basic ' + authHeader;
+            fetch('/credentials', { method: 'POST', headers: headers, body: JSON.stringify(payload) })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+                showToast(result.ok ? T[lang].toast_tg_saved : T[lang].toast_tg_err, result.ok ? 'success' : 'error');
+                if (result.ok) {
+                    var st = document.getElementById('tg_token_status');
+                    st.dataset.set = '1';
+                    st.textContent = T[lang].tg_set;
+                    st.style.color = '#16a34a';
+                    document.getElementById('tg_token').value = '';
+                }
+            })
+            .catch(function(err) { showToast('Error: ' + err, 'error'); });
+        }
+
+        function submitForm() {
+            var data = {
+                jpeg_quality: parseInt(document.getElementById('quality').value),
+                frame_size: parseInt(document.getElementById('framesize').value),
+                vflip: document.getElementById('vflip').checked,
+                hmirror: document.getElementById('hmirror').checked,
+                brightness: parseInt(document.getElementById('brightness').value),
+                contrast: parseInt(document.getElementById('contrast').value),
+                saturation: parseInt(document.getElementById('saturation').value),
+                sharpness: parseInt(document.getElementById('sharpness').value),
+                denoise: parseInt(document.getElementById('denoise').value),
+                aec: document.getElementById('aec').checked,
+                ae_level: parseInt(document.getElementById('ae_level').value),
+                agc: document.getElementById('agc').checked,
+                awb: document.getElementById('awb').checked,
+                motion_detection_enabled: document.getElementById('motion_detection_enabled').checked,
+                motion_telegram_photo: document.getElementById('motion_telegram').checked,
+                motion_telegram_video: document.getElementById('motion_video').checked,
+                sd_auto_record: document.getElementById('sd_auto_record').checked,
+                motion_telegram_cooldown: parseInt(document.getElementById('motion_cooldown').value),
+                motion_notify_start_hour: parseInt(document.getElementById('notify_start').value),
+                motion_notify_end_hour: parseInt(document.getElementById('notify_end').value),
+                person_detection_enabled: document.getElementById('person_detection').checked,
+                person_telegram_photo: document.getElementById('person_telegram_photo').checked,
+                person_confidence_threshold: parseInt(document.getElementById('person_confidence').value) / 100.0,
+                person_detection_cooldown: parseInt(document.getElementById('person_cooldown').value),
+                person_recheck_interval: parseInt(document.getElementById('person_recheck').value),
+                sd_auto_record_duration: parseInt(document.getElementById('sd_record_duration').value),
+                sd_max_usage_percent: parseInt(document.getElementById('sd_max_usage').value),
+                sd_record_fps: parseInt(document.getElementById('sd_fps').value),
+                mqtt_enabled: document.getElementById('mqtt_enabled').checked,
+                mqtt_server: document.getElementById('mqtt_server').value,
+                mqtt_port: parseInt(document.getElementById('mqtt_port').value)
+            };
+
+            var authHeader = sessionStorage.getItem('camAuth') || '';
+            var headers = { 'Content-Type': 'application/json' };
+            if (authHeader) headers['Authorization'] = 'Basic ' + authHeader;
+
+            fetch('/settings', { method: 'POST', headers: headers, body: JSON.stringify(data) })
+            .then(function(r) {
+                if (r.status === 401) {
+                    var u = prompt(T[lang].prompt_user) || '';
+                    var p = prompt(T[lang].prompt_pass) || '';
+                    var cred = btoa(u + ':' + p);
+                    sessionStorage.setItem('camAuth', cred);
+                    return fetch('/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + cred },
+                        body: JSON.stringify(data)
+                    }).then(function(r2) { return r2.json(); });
+                }
+                return r.json();
+            })
+            .then(function(result) {
+                showToast(result.message || T[lang].toast_saved, result.success ? 'success' : 'error');
+            })
+            .catch(function(err) {
+                showToast('Error: ' + err, 'error');
+            });
+        }
+    </script>
+</body>
+</html>

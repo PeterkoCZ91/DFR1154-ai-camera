@@ -51,6 +51,11 @@ ALLOWED = {
     "a12_system/test_language_split.py": "names the characters it searches for",
     "README.md": "quotes the dashboard's own Czech button labels",
     "CHANGELOG.md": "quotes the daily summary's own Czech line",
+    # The GUI's own translation tables. Both files carry a symmetric cz/en
+    # pair (36 keys each on the dashboard, 57 on the settings page), so the
+    # Czech here is one half of a translated interface, not untranslated text.
+    "firmware/web/index_src.html": "the dashboard's cz half of its cz/en table",
+    "firmware/web/settings_src.html": "the settings page's cz half of its cz/en table",
 }
 
 

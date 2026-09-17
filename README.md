@@ -529,7 +529,7 @@ Auto-switching between three camera tunings based on ambient light from the LTR-
 
 ## Web Dashboard
 
-Dark-mode responsive web UI accessible at `http://<device-ip>/`. The UI is gzipped and embedded in PROGMEM (~4.4 KB dashboard + ~7.3 KB settings, no external files, no SD card, no SPIFFS).
+Dark-mode responsive web UI accessible at `http://<device-ip>/`. The UI is gzipped and embedded in PROGMEM (~4.5 KB dashboard + ~7.4 KB settings, no external files, no SD card, no SPIFFS). Both pages carry a full Czech/English table and a language toggle; the source is `firmware/web/`, embedded by `tools/build_web_assets.py`.
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="Dashboard" width="360">
@@ -792,7 +792,15 @@ a12_system/
       +-- enroll_sface.py    Face enrollment (SFace gallery + whitelist)
       +-- setup.sh           First-run data directory setup
 
+firmware/web/
+ +-- index_src.html          Dashboard source (cz/en table, 36 keys each)
+ +-- settings_src.html       Settings page source (cz/en table, 57 keys each)
+                             Embedded into camera_server.cpp as gzip arrays by
+                             tools/build_web_assets.py; CI runs --check so the
+                             compiled page cannot drift from the source.
+
 tools/
+ +-- build_web_assets.py     Embed firmware/web/ into the firmware, or --check it
  +-- serial_telemetry.py     Serial -> SQLite logger (37 regex patterns, 9 tables, WAL mode)
  +-- esp_monitor.py          HTTP health check + alerting
  +-- telegram_download.py    HTTP photo collector from /frame
@@ -1017,7 +1025,7 @@ Reduces flash usage by ~395 KB and PSRAM usage by ~400 KB.
 - **AVI auto-stop** — recording stops at 45 MB or 120 s. No segmented recording yet (planned).
 - **MQTT min heap** — connection requires ~25 KB free heap; under heavy load, MQTT may disconnect.
 - **NTP required** for time-lapse and SD per-day folders — no internet = no per-day organization.
-- **Web UI is gzipped PROGMEM string** — editing requires firmware rebuild.
+- **Web UI ships as a gzipped PROGMEM array** — edit `firmware/web/*.html`, re-embed with `tools/build_web_assets.py`, then rebuild. Editing the array in `camera_server.cpp` directly is not a thing you can do.
 - **No multi-camera coordination** — each camera is independent (planned).
 
 </details>

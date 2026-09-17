@@ -1,0 +1,340 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ESP32-S3 Camera</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{
+            font-family:'Inter',system-ui,-apple-system,sans-serif;
+            background:#0f0f23;
+            color:#e0e0e0;
+            min-height:100vh;
+            display:flex;
+            justify-content:center;
+            align-items:flex-start;
+            padding:24px 16px;
+        }
+        .dash{max-width:760px;width:100%}
+        .header{text-align:center;margin-bottom:24px;position:relative}
+        .header h1{font-size:1.6em;font-weight:700;color:#fff;letter-spacing:-.02em}
+        .status-badge{
+            display:inline-flex;align-items:center;gap:6px;
+            margin-top:8px;padding:4px 14px;
+            background:rgba(0,212,255,.1);border:1px solid rgba(0,212,255,.25);
+            border-radius:20px;font-size:.8em;color:#00d4ff;
+        }
+        .status-dot{
+            width:8px;height:8px;border-radius:50%;
+            animation:pulse 2s infinite;
+        }
+        .dot-ok{background:#22c55e}
+        .dot-err{background:#ef4444;animation:none}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+        .lang-btn{
+            position:absolute;top:0;right:0;
+            background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);
+            border-radius:8px;padding:5px 10px;cursor:pointer;
+            font-size:.8em;color:#a0a0b8;transition:all .2s;
+            line-height:1;
+        }
+        .lang-btn:hover{background:rgba(255,255,255,.13);color:#fff}
+
+        .hero{
+            background:rgba(255,255,255,.04);
+            border:1px solid rgba(255,255,255,.08);
+            border-radius:16px;padding:28px 24px;
+            text-align:center;margin-bottom:18px;
+        }
+        .hero h2{font-size:1.1em;color:#a0a0b8;font-weight:500;margin-bottom:6px}
+        .hero p{color:#606078;font-size:.85em;margin-bottom:18px}
+        .stream-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+        .btn-stream{
+            display:inline-block;padding:13px 32px;
+            background:#00d4ff;color:#0f0f23;
+            font-size:1em;font-weight:600;
+            border-radius:12px;text-decoration:none;
+            transition:all .2s;
+            box-shadow:0 0 24px rgba(0,212,255,.2);
+        }
+        .btn-stream:hover{background:#33dfff;box-shadow:0 0 32px rgba(0,212,255,.35);transform:translateY(-1px)}
+        .btn-detect{
+            display:inline-block;padding:13px 32px;
+            background:rgba(168,85,247,.15);color:#a855f7;
+            font-size:1em;font-weight:600;
+            border:1px solid rgba(168,85,247,.35);
+            border-radius:12px;text-decoration:none;
+            transition:all .2s;
+        }
+        .btn-detect:hover{background:rgba(168,85,247,.25)}
+
+        .info-grid{
+            display:grid;
+            grid-template-columns:repeat(auto-fit,minmax(110px,1fr));
+            gap:8px;margin-bottom:18px;
+        }
+        .sublabel{font-size:.65rem;color:#888;margin-top:2px}.info-card{
+            background:rgba(255,255,255,.04);
+            border:1px solid rgba(255,255,255,.07);
+            border-radius:12px;padding:12px 10px;
+            text-align:center;
+        }
+        .info-card .label{font-size:.68em;color:#606078;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+        .info-card .value{font-size:1.05em;font-weight:600;color:#fff}
+        .info-card .value.warn{color:#f59e0b}
+        .info-card .value.bad{color:#ef4444}
+
+        .section-title{font-size:.78em;color:#606078;text-transform:uppercase;letter-spacing:.08em;margin:16px 0 8px;padding-left:4px}
+
+        .controls{
+            display:grid;
+            grid-template-columns:repeat(auto-fit,minmax(165px,1fr));
+            gap:8px;
+        }
+        .ctrl-btn{
+            padding:12px 10px;border:none;border-radius:10px;
+            font-size:.85em;font-weight:500;cursor:pointer;
+            transition:all .2s;text-decoration:none;
+            display:flex;align-items:center;justify-content:center;gap:6px;
+            color:#e0e0e0;background:rgba(255,255,255,.06);
+            border:1px solid rgba(255,255,255,.08);
+        }
+        .ctrl-btn:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.15)}
+        .ctrl-btn.on{background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.35);color:#22c55e}
+        .ctrl-btn.ai{background:rgba(168,85,247,.15);border-color:rgba(168,85,247,.35);color:#a855f7}
+        .ctrl-btn.rec{background:rgba(239,68,68,.15);border-color:rgba(239,68,68,.35);color:#ef4444}
+        .ctrl-btn.primary{background:rgba(0,212,255,.1);border-color:rgba(0,212,255,.2);color:#00d4ff}
+        .ctrl-btn.primary:hover{background:rgba(0,212,255,.18)}
+        .ctrl-btn.ir-on{background:rgba(251,191,36,.15);border-color:rgba(251,191,36,.35);color:#fbbf24}
+
+        @media(max-width:600px){
+            .header h1{font-size:1.3em}
+            .controls{grid-template-columns:1fr 1fr}
+            .info-grid{grid-template-columns:repeat(3,1fr)}
+            .stream-btns{flex-direction:column;align-items:center}
+        }
+    </style>
+</head>
+<body>
+    <div class="dash">
+        <div class="header">
+            <h1>ESP32-S3 AI Camera</h1>
+            <div class="status-badge"><span class="status-dot dot-ok" id="dot"></span> <span id="conn-text" data-t="connected">Connected</span></div>
+            <button class="lang-btn" id="lang-btn" onclick="toggleLang()">EN</button>
+        </div>
+
+        <div class="hero">
+            <h2 data-t="stream_title">Video stream</h2>
+            <p data-t="stream_sub">MJPEG stream from OV3660 camera</p>
+            <div class="stream-btns">
+                <a href="/stream" id="stream-link" class="btn-stream" target="_blank" data-t="btn_stream">Stream</a>
+                <a href="/detection-stream" id="detect-link" class="btn-detect" target="_blank" data-t="btn_detect">Detection stream</a>
+            </div>
+        </div>
+
+        <div class="info-grid" id="info">
+            <div class="info-card"><div class="label">IP</div><div class="value" id="ip">...</div></div>
+            <div class="info-card"><div class="label" data-t="lbl_uptime">Uptime</div><div class="value" id="uptime">--</div></div>
+            <div class="info-card"><div class="label">RAM</div><div class="value" id="heap">--</div></div>
+            <div class="info-card"><div class="label">PSRAM</div><div class="value" id="psram">--</div><div class="sublabel" id="psram-pct"></div></div>
+            <div class="info-card"><div class="label">WiFi</div><div class="value" id="rssi">--</div></div>
+            <div class="info-card"><div class="label">FPS</div><div class="value" id="stream-fps">--</div></div><div class="info-card"><div class="label" data-t="lbl_temp">Temp</div><div class="value" id="chip-temp">--</div></div><div class="info-card"><div class="label">Lux</div><div class="value" id="lux">--</div></div>
+            <div class="info-card"><div class="label" data-t="lbl_profile">Profile</div><div class="value" id="profile">--</div></div>
+            <div class="info-card"><div class="label" data-t="lbl_fw">Firmware</div><div class="value" id="version">--</div></div>
+        </div>
+
+        <div class="section-title" data-t="sec_detection">Detection</div>
+        <div class="controls">
+            <button id="motion-toggle" class="ctrl-btn" onclick="toggleMotion()">--</button>
+            <button id="person-toggle" class="ctrl-btn" onclick="togglePerson()">--</button>
+            <button id="record-toggle" class="ctrl-btn" onclick="toggleRecord()">--</button>
+            <button id="ir-toggle" class="ctrl-btn" onclick="toggleIR()">--</button>
+            <button id="sdlog-toggle" class="ctrl-btn" onclick="toggleSDLog()">--</button>
+        </div>
+
+        <div class="section-title" data-t="sec_tools">Tools</div>
+        <div class="controls">
+            <a href="/frame" class="ctrl-btn primary" target="_blank" data-t="tool_snapshot">Snapshot</a>
+            <button class="ctrl-btn" onclick="saveToSD()" id="save-sd-btn" data-t="tool_save_sd">Save to SD</button>
+            <a href="/settings-page" class="ctrl-btn primary" data-t="tool_settings">Settings</a>
+            <a href="/log-viewer" class="ctrl-btn primary" target="_blank" data-t="tool_log">Live Log</a>
+            <a href="/sd-list" class="ctrl-btn" target="_blank" data-t="tool_sd">SD files</a>
+            <a href="/status" class="ctrl-btn" target="_blank" data-t="tool_status">Status JSON</a>
+            <a href="/health" class="ctrl-btn" target="_blank" data-t="tool_health">Health</a>
+            <a href="/motion-debug" class="ctrl-btn" target="_blank" data-t="tool_motion">Motion debug</a>
+            <a href="/telemetry" class="ctrl-btn" target="_blank" data-t="tool_telemetry">Telemetry</a>
+            <a href="/events" class="ctrl-btn" target="_blank" data-t="tool_events">Events</a>
+            <a href="/stream-stats" class="ctrl-btn" target="_blank" data-t="tool_stream_stats">Stream Stats</a>
+            <a href="/psram-stats" class="ctrl-btn" target="_blank" data-t="tool_psram_stats">PSRAM Stats</a>
+            <a href="/audio-status" class="ctrl-btn" target="_blank" data-t="tool_audio_status">Audio Status</a>
+            <a id="audio-stream-link" class="ctrl-btn" target="_blank" data-t="tool_audio_stream">Audio Stream</a>
+        </div>
+    </div>
+
+    <script>
+        var T = {
+            en: {
+                connected:    'Connected',
+                offline:      'Offline',
+                stream_title: 'Video stream',
+                stream_sub:   'MJPEG stream from OV3660 camera',
+                btn_stream:   'Stream',
+                btn_detect:   'Detection stream',
+                lbl_uptime:   'Uptime',
+                lbl_profile:  'Profile',
+                lbl_fw:       'Firmware',
+                sec_detection:'Detection',
+                sec_tools:    'Tools',
+                tool_snapshot:'Snapshot',tool_save_sd:'Save to SD',lbl_temp:'Temp',
+                sdlog_on:'SD Log: ON',sdlog_off:'SD Log: OFF',
+                tool_settings:'Settings',
+                tool_log:     'Live Log',
+                tool_sd:      'SD files',
+                tool_status:  'Status JSON',
+                tool_health:  'Health',
+                tool_motion:  'Motion debug',
+                tool_telemetry:'Telemetry',tool_events:'Events',tool_stream_stats:'Stream Stats',tool_psram_stats:'PSRAM Stats',tool_audio_status:'Audio Status',tool_audio_stream:'Audio Stream',
+                photo_on:     'Photo: ON',
+                photo_off:    'Photo: OFF',
+                person_on:    'Person AI: ON',
+                person_off:   'Person AI: OFF',
+                rec_on:       'Recording: REC',
+                rec_off:      'Recording: OFF',
+                ir_on:        'IR LED: ON',
+                ir_off:       'IR LED: OFF'
+            },
+            cz: {
+                connected:    'Připojeno',
+                offline:      'Offline',
+                stream_title: 'Video stream',
+                stream_sub:   'MJPEG stream z kamery OV3660',
+                btn_stream:   'Stream',
+                btn_detect:   'Detekční stream',
+                lbl_uptime:   'Doba běhu',
+                lbl_profile:  'Profil',
+                lbl_fw:       'Firmware',
+                sec_detection:'Detekce',
+                sec_tools:    'Nástroje',
+                tool_snapshot:'Snímek',tool_save_sd:'Uložit na SD',lbl_temp:'Teplota',
+                sdlog_on:'SD Log: ZAP',sdlog_off:'SD Log: VYP',
+                tool_settings:'Nastavení',
+                tool_log:     'Živý log',
+                tool_sd:      'SD soubory',
+                tool_status:  'Stav JSON',
+                tool_health:  'Zdraví',
+                tool_motion:  'Debug pohybu',
+                tool_telemetry:'Telemetrie',tool_events:'Události',tool_stream_stats:'Stream Stats',tool_psram_stats:'PSRAM Stats',tool_audio_status:'Audio Status',tool_audio_stream:'Audio Stream',
+                photo_on:     'Foto: ZAP',
+                photo_off:    'Foto: VYP',
+                person_on:    'Osoba AI: ZAP',
+                person_off:   'Osoba AI: VYP',
+                rec_on:       'Nahrávání: ZAP',
+                rec_off:      'Nahrávání: VYP',
+                ir_on:        'IR LED: ZAP',
+                ir_off:       'IR LED: VYP'
+            }
+        };
+
+        var lang = localStorage.getItem('lang') || 'cz';
+
+        function applyLang(l) {
+            lang = l;
+            localStorage.setItem('lang', l);
+            document.querySelectorAll('[data-t]').forEach(function(el) {
+                var k = el.getAttribute('data-t');
+                if (T[l][k]) el.textContent = T[l][k];
+            });
+            document.getElementById('lang-btn').textContent = l === 'cz' ? 'EN' : 'CZ';
+            document.documentElement.lang = l === 'cz' ? 'cs' : 'en';
+        }
+
+        function toggleLang() {
+            applyLang(lang === 'cz' ? 'en' : 'cz');
+        }
+
+        var motionEnabled=false, personEnabled=false, irState=false, recording=false;
+
+        function updateStatus(){
+            fetch('/status').then(function(r){return r.json();}).then(function(d){
+                document.getElementById('ip').textContent=d.ip||'?';
+                document.getElementById('uptime').textContent=d.uptime||'--';
+                var heapKB=Math.floor((d.free_heap||0)/1024);
+                var heapEl=document.getElementById('heap');
+                heapEl.textContent=heapKB+' KB';
+                heapEl.className='value'+(heapKB<50?' bad':heapKB<100?' warn':'');
+                document.getElementById('psram').textContent=Math.floor((d.free_psram||0)/1024/1024)+' MB';
+                document.getElementById('version').textContent=(d.version||'?').split(' ')[0];
+
+                var rssi=d.wifi_rssi||0;
+                var rssiEl=document.getElementById('rssi');
+                rssiEl.textContent=rssi+' dBm';
+                rssiEl.className='value'+(rssi<-80?' bad':rssi<-65?' warn':'');
+
+                if(d.chip_temp_c!==undefined){document.getElementById('chip-temp').textContent=d.chip_temp_c.toFixed(0)+'°C';}if(d.stream_fps!==undefined){document.getElementById('stream-fps').textContent=d.stream_fps+' fps';}if(d.psram_usage_pct!==undefined){document.getElementById('psram-pct').textContent=d.psram_usage_pct.toFixed(0)+'% used';}var al=document.getElementById('audio-stream-link');if(al){al.href='http://'+d.ip+':82/audio.wav';}if(d.ambient_light_lux!==undefined){
+                    document.getElementById('lux').textContent=d.ambient_light_lux.toFixed(1);
+                }
+                if(d.camera_profile) document.getElementById('profile').textContent=d.camera_profile;
+
+                motionEnabled=!!d.motion_telegram_photo;
+                var mb=document.getElementById('motion-toggle');
+                mb.textContent=T[lang][motionEnabled?'photo_on':'photo_off'];
+                mb.className='ctrl-btn'+(motionEnabled?' on':'');
+
+                personEnabled=!!d.person_detection_enabled;
+                var pb=document.getElementById('person-toggle');
+                pb.textContent=T[lang][personEnabled?'person_on':'person_off'];
+                pb.className='ctrl-btn'+(personEnabled?' ai':'');
+
+                recording=!!d.is_recording;
+                var rb=document.getElementById('record-toggle');
+                rb.textContent=T[lang][recording?'rec_on':'rec_off'];
+                rb.className='ctrl-btn'+(recording?' rec':'');
+
+                document.getElementById('dot').className='status-dot dot-ok';
+                document.getElementById('conn-text').textContent=T[lang].connected;
+            }).catch(function(){
+                document.getElementById('dot').className='status-dot dot-err';
+                document.getElementById('conn-text').textContent=T[lang].offline;
+            });
+
+            fetch('/ir-status').then(function(r){return r.json();}).then(function(d){
+                irState=!!d.ir_led_state;
+                var ib=document.getElementById('ir-toggle');
+                ib.textContent=T[lang][irState?'ir_on':'ir_off'];
+                ib.className='ctrl-btn'+(irState?' ir-on':'');
+            }).catch(function(){});fetch('/sd-log').then(function(r){return r.json();}).then(function(d){sdlogActive=!!d.active;var sb=document.getElementById('sdlog-toggle');sb.textContent=T[lang][sdlogActive?'sdlog_on':'sdlog_off'];sb.className='ctrl-btn'+(sdlogActive?' rec':'');if(sdlogActive&&d.remaining_s>0){var m=Math.ceil(d.remaining_s/60);sb.title=T[lang].sdlog_on+' ('+m+'m left)';}else{sb.title='';}}).catch(function(){});
+        }
+
+        function toggleMotion(){
+            fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({motion_telegram_photo:!motionEnabled})}).then(function(){updateStatus();});
+        }
+        function togglePerson(){
+            fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({person_detection_enabled:!personEnabled})}).then(function(){updateStatus();});
+        }
+        function toggleRecord(){
+            fetch('/record',{method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({action:recording?'stop':'start'})}).then(function(){setTimeout(updateStatus,500);});
+        }
+        function toggleIR(){
+            fetch('/ir-control',{method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({auto_mode:false,state:irState?'off':'on'})}).then(function(){setTimeout(updateStatus,300);});
+        }
+
+        var sdlogActive=false;
+        function toggleSDLog(){var action=sdlogActive?'stop':'start';fetch('/sd-log',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action,timeout_h:4})}).then(function(){setTimeout(updateStatus,500);});}
+
+        function saveToSD(){var btn=document.getElementById('save-sd-btn');btn.disabled=true;fetch('/save_frame',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){return r.json();}).then(function(d){btn.textContent=d.status==='ok'?(T[lang].save_sd_ok||'Saved!'):(T[lang].save_sd_err||'Error');}).catch(function(){btn.textContent='Error';}).finally(function(){setTimeout(function(){btn.disabled=false;applyLang(lang);},2000);});}
+        applyLang(lang);
+        updateStatus();
+        setInterval(updateStatus,3000);
+        var h=window.location.hostname;
+        document.getElementById('stream-link').href='http://'+h+':81/stream';
+        document.getElementById('detect-link').href='http://'+h+':81/detection-stream';
+    </script>
+</body>
+</html>

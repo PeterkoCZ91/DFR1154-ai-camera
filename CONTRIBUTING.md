@@ -31,7 +31,7 @@ pio run
 pio run --target upload
 ```
 
-Key files: `firmware/camera_server.cpp`, `firmware/config.h`, `firmware/board_config.h`
+Key files: `firmware/camera_server.cpp`, `firmware/config.h`, `firmware/board_config.h`, and `firmware/web/*.html` for the dashboard and settings UI
 
 ### A12 Companion (Python)
 
@@ -62,7 +62,7 @@ Before opening an issue or PR, sanitize logs and examples. Use placeholders such
 
 1. Fork → feature branch (`git checkout -b fix/stream-reconnect`)
 2. Keep changes focused — one fix or feature per PR
-3. Firmware: run `pio run` and confirm it compiles cleanly
+3. Firmware: run `pio run` and confirm it compiles cleanly. If you touched `firmware/web/`, run `tools/build_web_assets.py` first — the build refuses to proceed while the compiled page differs from its source
 4. A12: run `python3 a12_system/test_config.py` and review `cd a12_system && ./tools/a12 doctor` before submitting
 5. Update `CHANGELOG.md` under the relevant section
 6. Open PR with a clear description of what and why

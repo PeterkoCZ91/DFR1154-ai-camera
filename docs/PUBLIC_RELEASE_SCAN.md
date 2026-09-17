@@ -85,6 +85,27 @@ rg -n "PROJECT_OWNER|project_owner|PROJECT_ID|project_id" \
   firmware/lib/ei-person-detection-fomo/src/model-parameters/
 ```
 
+## Web UI
+
+The dashboard and the settings page are served from gzip arrays compiled into
+`firmware/camera_server.cpp`. Their HTML lives in `firmware/web/`, and
+`tools/build_web_assets.py` embeds it:
+
+```bash
+tools/build_web_assets.py            # re-embed after editing firmware/web/
+tools/build_web_assets.py --check    # verify the compiled page matches the source
+```
+
+Until 2026-09-17 only the arrays existed and the HTML was in nobody's
+repository, so 59 KB of interface — including the complete cz/en translation
+table — could not be edited by anyone who cloned this. The sources were
+recovered by decompressing the arrays, and confirmed against the live camera:
+both pages hash identically to what the running firmware serves.
+
+`--check` runs in CI before the firmware build, because the array is what ships:
+an edit to `firmware/web/` that is not re-embedded would otherwise compile green
+and serve the old page.
+
 ## Language
 
 The repository is public and its own voice is **English**: code comments,

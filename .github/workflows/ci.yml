@@ -66,6 +66,12 @@ jobs:
       # upload_protocol/upload_port/upload_command, so it compiles the identical
       # objects for twice the wall clock. If `ota` ever gains a build_flag,
       # build it here too.
+      # Before compiling, not after: the arrays are what gets served, so a page
+      # edited in firmware/web/ without re-embedding would otherwise build
+      # green and ship the old UI.
+      - name: Web assets match their source
+        run: python3 tools/build_web_assets.py --check
+
       - name: Build
         working-directory: firmware
         run: ../.github/scripts/build-firmware.sh esp32-s3-devkitc-1
