@@ -60,21 +60,21 @@ struct PendingSensorSettings {
 extern PendingSensorSettings pendingSensorValues;
 extern SemaphoreHandle_t pendingSensorMutex; // protects pendingSensorValues writes
 
-// Inicializace a spuštění capture tasku
+// Initialise and start the capture task
 void startCameraCaptureTask();
 
 // --- Ring Buffer Reader Helpers (inline, zero-overhead) ---
 
-// Pokus o získání čtecí reference na frame buffer slot.
-// Vrací true pokud se podařilo (ref_count inkrementovaný), false pokud writer drží slot
-// nebo pokud po rozumném počtu pokusů stále kolidují jiní readeři.
+// Try to take a read reference on a frame buffer slot.
+// True when it succeeded (ref_count incremented); false when the writer holds
+// the slot, or when other readers kept colliding for a reasonable number of tries.
 static inline bool acquireFrameReader(int idx) {
     if (idx < 0 || idx >= FRAME_BUFFER_COUNT) return false;
     int expected = __atomic_load_n(&frameBuffers[idx].ref_count, __ATOMIC_SEQ_CST);
-    // Bounded CAS retries; yield mezi pokusy aby jiné tasky mohly postoupit.
-    // Writer drží slot jen po dobu memcpy (~2 ms), 16 yieldů = >32 ms → dost času.
+    // Bounded CAS retries, yielding between them so other tasks can make progress.
+    // The writer holds the slot only for the memcpy (~2 ms), so 16 yields = >32 ms is ample.
     for (int attempt = 0; attempt < 16; attempt++) {
-        if (expected < 0) return false; // writer aktivní
+        if (expected < 0) return false; // writer active
         if (__atomic_compare_exchange_n(&frameBuffers[idx].ref_count,
                 &expected, expected + 1,
                 false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
@@ -82,15 +82,15 @@ static inline bool acquireFrameReader(int idx) {
         }
         taskYIELD();
     }
-    return false; // příliš mnoho kolizí → caller si zkusí jiný frame
+    return false; // too many collisions -> the caller tries a different frame
 }
 
-// Uvolnění čtecí reference na frame buffer slot.
+// Release a read reference on a frame buffer slot.
 static inline void releaseFrameReader(int idx) {
     __atomic_fetch_sub(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
 }
 
-// Získání indexu posledního kompletního framu (atomic load, full barrier).
+// Index of the most recent complete frame (atomic load, full barrier).
 static inline int getLatestFrameIndex() {
     return __atomic_load_n(&current_frame_index, __ATOMIC_SEQ_CST);
 }

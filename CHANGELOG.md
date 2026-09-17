@@ -451,24 +451,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Fixed (Firmware — standalone Telegram)
 
-- **DNS override po WiFi připojení** — po `WiFi.begin()` se nyní nastaví primární DNS na `8.8.8.8` a sekundární na `8.8.4.4`. Router DNS intermittentně selhal při překladu `api.telegram.org` těsně po WiFi připojení (error -54, DNS timeout), což způsobovalo `telegram_failed: connection refused` na každý pokus o odeslání fotky. `HTTPClient` (textové notifikace) byl vůči tomuto méně citlivý díky odlišnému timingu při bootu.
+- **DNS override after the WiFi connection comes up** — `WiFi.begin()` is now followed by setting the primary DNS to `8.8.8.8` and the secondary to `8.8.4.4`. The router's DNS failed intermittently when resolving `api.telegram.org` right after association (error -54, DNS timeout), which turned every photo upload into `telegram_failed: connection refused`. `HTTPClient` (text notifications) was less exposed to it thanks to different timing at boot.
   ```cpp
-  // connectWiFi() — po WL_CONNECTED
+  // connectWiFi() — after WL_CONNECTED
   WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(),
               IPAddress(8, 8, 8, 8), IPAddress(8, 8, 4, 4));
   ```
-- **Odstraněna retry smyčka v `sendTelegramPhotoSync`** — předchozí implementace s 3 pokusy (každý volal celý `telegramMultipartUpload` včetně TLS handshake) způsobovala pomalý heap leak (~470 B/session z mbedTLS entropy/RNG kontextu). Za ~3 h provozu s četnými detekcemi klesl heap z 110 KB na 26 KB → `heap < 50000` check skipoval všechny fotky. Zpět na single attempt; DNS fix zajišťuje spolehlivost prvního pokusu.
-- **Chunk size upload snížen 2048 → 512 B** — menší TLS záznamy jsou šetrnější k heap fragmentaci při souběžném běhu person-detection inference (která alokuje dočasné buffery na heap).
-- **Event log rozšířen o silent failure paths** v `telegramMultipartUpload`:
-  - `write_failed` — `client.write()` vrátil 0 (TCP drop uprostřed uploadu)
-  - `response_timeout` — server neodpověděl do timeoutMs
-  - `api_XXX` — Telegram API vrátil non-200 kód
-  - `429_backoff:Xs` — rate limiting (dříve logováno pouze na Serial)
+- **Retry loop removed from `sendTelegramPhotoSync`** — the previous three-attempt implementation called the whole of `telegramMultipartUpload`, TLS handshake included, on every try, which leaked ~470 B per session from the mbedTLS entropy/RNG context. Over ~3 h of busy detection the heap fell from 110 KB to 26 KB, at which point the `heap < 50000` check skipped every photo. Back to a single attempt; the DNS fix is what makes the first one reliable.
+- **Upload chunk size lowered 2048 → 512 B** — smaller TLS records are gentler on heap fragmentation while person-detection inference runs alongside, since that allocates temporary buffers on the heap.
+- **Event log extended to the silent failure paths** in `telegramMultipartUpload`:
+  - `write_failed` — `client.write()` returned 0 (TCP drop mid-upload)
+  - `response_timeout` — the server did not answer within timeoutMs
+  - `api_XXX` — the Telegram API returned a non-200 code
+  - `429_backoff:Xs` — rate limiting (previously logged only to Serial)
 
 ### Build profile (standalone, INCLUDE_TELEGRAM)
 
 - RAM: ~29 % (94 884 B / 327 KB), Flash: ~25 % (1 599 605 B / 6.29 MB)
-- `free_heap` při bootu: ~105 KB, stabilní (bez driftu po 30+ min)
+- `free_heap` at boot: ~105 KB, stable (no drift after 30+ min)
 
 ---
 

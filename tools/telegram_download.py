@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-ESP32 Camera Photo Collector — stahuje snímky přímo z kamery přes HTTP.
+ESP32 Camera Photo Collector — pulls frames straight off the camera over HTTP.
 
-Dva režimy:
-  --interval N   Periodický snapshot každých N sekund
-  --on-motion    Sleduje sériák, při motion/person detekci stáhne snímek
+Two modes:
+  --interval N   A snapshot every N seconds
+  --on-motion    Follow the serial console and pull a frame on motion/person detection
 
 Usage:
-  python3 tools/telegram_download.py                           # snapshot každých 60s
-  python3 tools/telegram_download.py --interval 30             # každých 30s
-  python3 tools/telegram_download.py --on-motion               # jen při detekci
-  python3 tools/telegram_download.py --on-motion --interval 60 # obojí
-  python3 tools/telegram_download.py --ip 192.168.1.200        # jiná IP
+  python3 tools/telegram_download.py                           # a snapshot every 60s
+  python3 tools/telegram_download.py --interval 30             # every 30s
+  python3 tools/telegram_download.py --on-motion               # only on a detection
+  python3 tools/telegram_download.py --on-motion --interval 60 # both
+  python3 tools/telegram_download.py --ip 192.168.1.200        # a different address
 
 Dependencies: requests, pyserial (pro --on-motion)
 """
@@ -28,7 +28,7 @@ from datetime import datetime
 try:
     import requests
 except ImportError:
-    print("Chybí requests: pip install requests")
+    print("requests is missing: pip install requests")
     sys.exit(1)
 
 # --- Config ---
@@ -273,11 +273,11 @@ def main():
 
     # Final stats
     mb = stats["bytes"] / (1024 * 1024)
-    print(f"\n{BOLD}Session ukončena.{RESET}")
+    print(f"\n{BOLD}Session finished.{RESET}")
     print(f"  Fotky:  {stats['captured']} ({mb:.1f}MB)")
     print(f"  Motion: {stats['motion']} | Person: {stats['person']}")
     print(f"  Chyby:  {stats['errors']}")
-    print(f"  Složka: {args.out}")
+    print(f"  Directory: {args.out}")
 
 
 if __name__ == "__main__":

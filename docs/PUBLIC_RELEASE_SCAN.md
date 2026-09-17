@@ -85,6 +85,35 @@ rg -n "PROJECT_OWNER|project_owner|PROJECT_ID|project_id" \
   firmware/lib/ei-person-detection-fomo/src/model-parameters/
 ```
 
+## Language
+
+The repository is public and its own voice is **English**: code comments,
+docstrings, documentation, the changelog, commit messages, branch names and test
+names.
+
+**Czech is reserved for what the system says to its operator** — the daily
+Telegram summary and the dashboard's own button labels — and for the places that
+quote those strings verbatim: the test that asserts on the summary, and the two
+documents that cite the labels.
+
+The split had always been followed in practice and written down nowhere, so new
+code kept it by accident rather than by rule; on 2026-09-17 there were 86 Czech
+lines on the wrong side of it, none of them user-facing — docstrings and prints
+in four tools, ring-buffer comments in `firmware/camera_capture.h`, and four
+changelog entries in an otherwise English file.
+
+`a12_system/test_language_split.py` now enforces it. The allowlist there records
+a reason per file, and a second test fails if an exemption stops being needed,
+so the list cannot quietly grow. In Python the check is exact — the Czech has to
+sit inside a string token, so a Czech comment in an allowlisted file still
+fails. In Markdown the exemption is per file and it is review, not the test,
+that keeps those lines quotations.
+
+`.claude/` is outside the scan. Those are the owner's working instructions for
+their own tooling, on the same side of the line as the daily summary: written
+for the person who runs this, not for someone reading the repository to
+understand it.
+
 ## Must Not Be Committed
 
 Reject the commit if any of these appear as tracked files:

@@ -2,17 +2,17 @@
 """
 ESP32 OV3660 Brightness Test Tool
 
-Stáhne frame(y) z kamery, analyzuje jas a porovná s baseline.
-Výsledky loguje do CSV pro sledování vývoje.
+Pulls frames off the camera, measures brightness and compares it to a baseline.
+Results go into a CSV so the trend can be followed.
 
-Použití:
-  python3 tools/brightness_test.py                    # 1 snímek, výpis
-  python3 tools/brightness_test.py -n 5               # průměr z 5 snímků
-  python3 tools/brightness_test.py -n 5 --delay 2     # 5 snímků, 2s mezera
-  python3 tools/brightness_test.py --save              # uloží frame do tools/brightness_frames/
-  python3 tools/brightness_test.py --ip 192.168.1.100  # jiná IP
-  python3 tools/brightness_test.py --history           # zobrazí historii měření
-  python3 tools/brightness_test.py --baseline 73       # porovná s custom baseline
+Usage:
+  python3 tools/brightness_test.py                    # one frame, printed
+  python3 tools/brightness_test.py -n 5               # mean of 5 frames
+  python3 tools/brightness_test.py -n 5 --delay 2     # 5 frames, 2s apart
+  python3 tools/brightness_test.py --save              # keep the frame in tools/brightness_frames/
+  python3 tools/brightness_test.py --ip 192.168.1.100  # a different address
+  python3 tools/brightness_test.py --history           # print the measurement history
+  python3 tools/brightness_test.py --baseline 73       # compare against a custom baseline
 """
 
 import argparse
@@ -42,9 +42,9 @@ STATUS_ENDPOINT = "/status"
 REG_DEBUG_ENDPOINT = "/reg-debug"
 HTTP_TIMEOUT = 10
 
-# Baseline hodnoty pro porovnání
-BASELINE_AVG = 59.0   # v3.9.0 při 23 lux
-PREVIOUS_BEST = 73.2   # v3.9.1 při 23 lux
+# Baselines to compare against
+BASELINE_AVG = 59.0   # v3.9.0 at 23 lux
+PREVIOUS_BEST = 73.2   # v3.9.1 at 23 lux
 
 # Cesty
 SCRIPT_DIR = Path(__file__).parent
@@ -53,18 +53,18 @@ CSV_LOG = SCRIPT_DIR / "brightness_log.csv"
 
 
 def fetch_status(base_url):
-    """Stáhne /status a vrátí dict."""
+    """Fetch /status and return it as a dict."""
     try:
         r = requests.get(f"{base_url}{STATUS_ENDPOINT}", timeout=HTTP_TIMEOUT)
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print(f"  Varování: /status nedostupný: {e}")
+        print(f"  Warning: /status unavailable: {e}")
         return {}
 
 
 def fetch_reg_debug(base_url):
-    """Stáhne /reg-debug a vrátí dict."""
+    """Fetch /reg-debug and return it as a dict."""
     try:
         r = requests.get(f"{base_url}{REG_DEBUG_ENDPOINT}", timeout=HTTP_TIMEOUT)
         r.raise_for_status()
@@ -74,18 +74,18 @@ def fetch_reg_debug(base_url):
 
 
 def fetch_frame(base_url):
-    """Stáhne JPEG frame, vrátí (bytes, doba_ms)."""
+    """Fetch a JPEG frame; returns (bytes, elapsed_ms)."""
     start = time.time()
     r = requests.get(f"{base_url}{FRAME_ENDPOINT}", timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     elapsed = (time.time() - start) * 1000
     if len(r.content) < 1000:
-        raise ValueError(f"Frame příliš malý: {len(r.content)} bytes")
+        raise ValueError(f"Frame too small: {len(r.content)} bytes")
     return r.content, elapsed
 
 
 def analyze_brightness(jpeg_data):
-    """Analyzuje jas JPEG dat, vrátí dict s metrikami."""
+    """Measure the brightness of JPEG data; returns a dict of metrics."""
     img = Image.open(io.BytesIO(jpeg_data))
     gray = img.convert("L")
     pixels = list(gray.getdata())
@@ -108,7 +108,7 @@ def analyze_brightness(jpeg_data):
 
 
 def print_result(result, status, baseline, sample_num=None):
-    """Vytiskne výsledek analýzy."""
+    """Print the result of one analysis."""
     prefix = f"  Vzorek {sample_num}: " if sample_num else "  "
     avg = result["avg"]
     delta_base = avg - baseline
@@ -121,7 +121,7 @@ def print_result(result, status, baseline, sample_num=None):
 
 
 def log_to_csv(avg, lux, version, brightness, contrast, ae_level, note=""):
-    """Zapíše řádek do CSV logu."""
+    """Append one row to the CSV log."""
     CSV_LOG.parent.mkdir(parents=True, exist_ok=True)
     write_header = not CSV_LOG.exists()
     with open(CSV_LOG, "a", newline="") as f:
@@ -137,13 +137,13 @@ def log_to_csv(avg, lux, version, brightness, contrast, ae_level, note=""):
 
 
 def show_history():
-    """Zobrazí historii měření z CSV."""
+    """Print the measurement history from the CSV."""
     if not CSV_LOG.exists():
-        print("Žádná historie měření.")
+        print("No measurement history yet.")
         return
 
-    print(f"\nHistorie měření ({CSV_LOG}):")
-    print(f"{'Čas':<20} {'Avg':>6} {'Lux':>6} {'Verze':<35} {'B':>3} {'C':>3} {'AE':>3}  Pozn.")
+    print(f"\nMeasurement history ({CSV_LOG}):")
+    print(f"{'Time':<20} {'Avg':>6} {'Lux':>6} {'Version':<35} {'B':>3} {'C':>3} {'AE':>3}  Note")
     print("-" * 100)
 
     with open(CSV_LOG) as f:
@@ -158,13 +158,13 @@ def show_history():
 def main():
     parser = argparse.ArgumentParser(description="ESP32 OV3660 Brightness Test")
     parser.add_argument("--ip", default=DEFAULT_IP, help=f"IP kamery (default: {DEFAULT_IP})")
-    parser.add_argument("-n", "--samples", type=int, default=1, help="Počet snímků k průměrování")
-    parser.add_argument("--delay", type=float, default=1.0, help="Prodleva mezi snímky (s)")
-    parser.add_argument("--save", action="store_true", help="Uložit frame(y) do tools/brightness_frames/")
+    parser.add_argument("-n", "--samples", type=int, default=1, help="How many frames to average")
+    parser.add_argument("--delay", type=float, default=1.0, help="Delay between frames (s)")
+    parser.add_argument("--save", action="store_true", help="Keep the frames in tools/brightness_frames/")
     parser.add_argument("--baseline", type=float, default=BASELINE_AVG, help=f"Baseline avg (default: {BASELINE_AVG})")
-    parser.add_argument("--history", action="store_true", help="Zobrazit historii měření")
-    parser.add_argument("--note", default="", help="Poznámka k měření (uloží se do CSV)")
-    parser.add_argument("--reg", action="store_true", help="Zobrazit /reg-debug registrový dump")
+    parser.add_argument("--history", action="store_true", help="Print the measurement history")
+    parser.add_argument("--note", default="", help="A note about this measurement (stored in the CSV)")
+    parser.add_argument("--reg", action="store_true", help="Print the /reg-debug register dump")
     args = parser.parse_args()
 
     if args.history:
@@ -173,10 +173,10 @@ def main():
 
     base_url = f"http://{args.ip}"
     print("ESP32 OV3660 Brightness Test")
-    print(f"Kamera: {args.ip}  |  Snímků: {args.samples}  |  Baseline: {args.baseline}")
+    print(f"Camera: {args.ip}  |  Frames: {args.samples}  |  Baseline: {args.baseline}")
     print()
 
-    # Stáhni status
+    # Fetch status
     print("Stav kamery:")
     status = fetch_status(base_url)
     if status:
@@ -202,7 +202,7 @@ def main():
         bri = con = ae = "?"
     print()
 
-    # Registrový dump
+    # Register dump
     if args.reg:
         print("Registry (/reg-debug):")
         regs = fetch_reg_debug(base_url)
@@ -211,7 +211,7 @@ def main():
                 print(f"  {k}: {v}")
         print()
 
-    # Stáhni a analyzuj frame(y)
+    # Fetch and analyse the frames
     results = []
     for i in range(args.samples):
         try:
@@ -227,19 +227,19 @@ def main():
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 fname = FRAMES_DIR / f"frame_{ts}_{result['avg']:.0f}avg.jpg"
                 fname.write_bytes(jpeg_data)
-                print(f"  -> Uloženo: {fname}")
+                print(f"  -> Saved: {fname}")
 
             if i < args.samples - 1:
                 time.sleep(args.delay)
 
         except Exception as e:
-            print(f"  CHYBA při stahování snímku {i + 1}: {e}")
+            print(f"  ERROR fetching frame {i + 1}: {e}")
 
     if not results:
-        print("Žádný snímek se nepodařilo stáhnout.")
+        print("Not a single frame could be fetched.")
         sys.exit(1)
 
-    # Výsledek
+    # Result
     overall_avg = sum(r["avg"] for r in results) / len(results)
     overall_median = sum(r["median"] for r in results) / len(results)
     overall_p10 = sum(r["p10"] for r in results) / len(results)
@@ -255,9 +255,9 @@ def main():
     sign_prev = "+" if delta_prev >= 0 else ""
 
     if args.samples > 1:
-        print(f"PRŮMĚR ({args.samples} snímků):")
+        print(f"MEAN ({args.samples} frames):")
     else:
-        print("VÝSLEDEK:")
+        print("RESULT:")
     print(f"  Avg brightness:  {overall_avg:.1f}/255")
     print(f"  P10/P50/P90:     {overall_p10:.0f} / {overall_median:.0f} / {overall_p90:.0f}")
     print(f"  Resolution:      {results[0]['width']}x{results[0]['height']}")
@@ -273,7 +273,7 @@ def main():
 
     # Loguj do CSV
     log_to_csv(overall_avg, lux, version, bri, con, ae, args.note)
-    print(f"\nZalogováno do {CSV_LOG}")
+    print(f"\nLogged to {CSV_LOG}")
 
     sys.exit(0 if verdict == "PASS" else 1)
 

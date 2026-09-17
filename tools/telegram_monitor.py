@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ESP32 Telegram Monitor — sleduje sériový výstup a loguje detekce + Telegram zprávy.
-Použití: python3 telegram_monitor.py [--port /dev/ttyACM0] [--baud 115200] [--log detections.log]
+ESP32 Telegram Monitor — follows the serial output and logs detections + Telegram messages.
+Usage: python3 telegram_monitor.py [--port /dev/ttyACM0] [--baud 115200] [--log detections.log]
 """
 
 import serial

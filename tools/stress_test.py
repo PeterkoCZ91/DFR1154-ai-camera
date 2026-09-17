@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-ESP32 kamera – lehký 24/7 stres test:
-- Každých 30 s GET /health a /status
-- Každých 60 s uložit jeden JPEG frame ze streamu
-- Každou hodinu volitelně uložit krátký MJPEG chunk (10 s)
-Loguje do rotujícího logu stress_test.log a ukládá artefakty do ./tools/artifacts.
+ESP32 camera - light 24/7 stress test:
+- GET /health and /status every 30 s
+- Save one JPEG frame from the stream every 60 s
+- Optionally save a short MJPEG chunk (10 s) every hour
+Logs to the rotating stress_test.log and writes artefacts to ./tools/artifacts.
 """
 
 import json
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import requests
 
-# Uprav podle své IP
+# Set to your own camera address
 ESP32_HOST = "192.168.1.100"
 STREAM_URL = f"http://{ESP32_HOST}:81/stream"
 HEALTH_URL = f"http://{ESP32_HOST}/health"
@@ -26,13 +26,13 @@ STATUS_URL = f"http://{ESP32_HOST}/status"
 HEALTH_INTERVAL = 15        # s
 STATUS_INTERVAL = 15        # s
 SNAPSHOT_INTERVAL = 30      # s
-VIDEO_INTERVAL = 1800       # s (pokud nechceš videa, nastav na 0)
-VIDEO_DURATION = 10         # s délka MJPEG chunku
+VIDEO_INTERVAL = 1800       # s (set to 0 for no video)
+VIDEO_DURATION = 10         # s, length of the MJPEG chunk
 
 ARTIFACT_DIR = Path(__file__).parent / "artifacts"
 LOG_PATH = Path(__file__).parent / "stress_test.log"
 
-# Telegram (volitelné): nastav env TELEGRAM_TOKEN a TELEGRAM_CHAT_ID
+# Telegram (optional): set the TELEGRAM_TOKEN and TELEGRAM_CHAT_ID env vars
 # Default test credentials (lab only); override via env for production.
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -116,7 +116,7 @@ _last_notify = 0.0
 
 
 def notify(text: str) -> None:
-    """Odešle Telegram alert, pokud je nastaven token/ID a drží cooldown."""
+    """Send a Telegram alert, if a token/ID is configured and the cooldown allows it."""
     global _last_notify
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
