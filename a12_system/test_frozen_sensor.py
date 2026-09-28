@@ -595,3 +595,15 @@ def test_failed_reboots_never_reach_the_power_cycle_alert(tmp_path):
     assert not any("power" in m.lower() for m in p.notifier.sent), (
         "asked for a power cycle after reboots that never happened"
     )
+
+
+def test_recovery_after_a_reboot_is_still_announced(tmp_path):
+    # Exposure-only episodes end silently now (the PIR light ends them every
+    # evening), but a camera A12 rebooted is news when it comes back.
+    p = _pipeline(tmp_path, strikes=1, max_attempts=1, frozen_strikes=1, healthy_required=3)
+    p._note_flat_frame(1000.0, frozen=False)
+    p._note_flat_frame(1001.0, frozen=True)
+    assert p.shared_state.get("reboot_camera") == "flat"
+    for tick in range(3):
+        p._flat_ladder_note_nonflat(1010.0 + tick)
+    assert any("healthy again" in m for m in p.notifier.sent)

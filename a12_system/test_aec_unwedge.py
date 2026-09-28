@@ -131,19 +131,14 @@ def test_sustained_low_detail_requests_an_unwedge(tmp_path):
     assert p.shared_state["unwedge_camera"] is True
 
 
-def test_flat_alert_does_not_blame_low_light(tmp_path):
-    # brightness=64 uniform grey is NOT darkness (real darkness reads ~5), and
-    # the old wording sent the operator looking for a lighting problem.
+def test_the_rewrite_itself_is_silent(tmp_path):
+    # A rewrite that works needs no operator; one that does not is reported
+    # once, by the give-up. Announcing each attempt was a third of the 126
+    # night-time messages in the week of 2026-09-21.
     p = _pipeline(tmp_path, strikes=1)
     p._note_flat_frame(1000.0)
-    assert p.notifier.sent, "a sustained low-detail episode must alert"
-    assert "low light is possible" not in p.notifier.sent[0]
-
-
-def test_alert_says_recovery_is_being_attempted(tmp_path):
-    p = _pipeline(tmp_path, strikes=1)
-    p._note_flat_frame(1000.0)
-    assert "reboot skipped" not in p.notifier.sent[0]
+    assert p.shared_state["unwedge_camera"] is True
+    assert p.notifier.sent == []
 
 
 def test_stops_requesting_once_the_budget_is_spent(tmp_path):

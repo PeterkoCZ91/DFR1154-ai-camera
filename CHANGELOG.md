@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Fixed (A12 — one low-detail message a night, not three per PIR light cycle)
+
+- **A motion-triggered hall light turned every evening into a message stream.** The image goes uniform grey each time the light switches off and regains detail each time it switches on. Each cycle closed and reopened the low-detail episode, and every episode could say three things: that it was rewriting AEC/AGC, that the rewrites had not helped, and that frames were healthy again. Over one week that was 126 messages, all between 18:00 and 06:00, from 36 episodes. The rewrites did not help in any of them, because there was no light to expose.
+- The rewrites still run, but silently: one that works needs no operator. The give-up message is now the only low-detail message, sent at most once per `FLAT_FRAME_GIVEUP_NOTIFY_INTERVAL` (default 43200 s, about once a night). "Frames are healthy again" is sent only after an episode in which A12 actually rebooted the camera. Detail returning after exposure rewrites alone just means the light came on, and the person alert already reports that.
+- Unchanged: the frozen-sensor reboot and power-cycle messages, and the one that reports a rewrite never reached the camera.
+
 ### Fixed (A12 — runtime config changes that published a confirmation and did nothing)
 
 - **Eight MQTT-settable keys reached nobody until the next restart.** `update_from_mqtt` returns True and `__main__` publishes `camera/config/status/last_update`, so an operator lowering a threshold from Home Assistant saw the confirmation land — while `notify_threshold`, `local_record_threshold`, `require_sensor`, `detection_cooldown`, `pir_cooldown` and `periodic_yolo_interval` were read once into instance attributes in `DetectionPipeline.__init__` and never read again. They are properties over `runtime_config` now, read at the point of use; `RuntimeConfig.get()` is a locked dict walk, which is nothing against a YOLO inference. The `max(0, ...)` floor on the PIR cooldown moved with it — a negative value would make every comparison against it true and disable the gate.

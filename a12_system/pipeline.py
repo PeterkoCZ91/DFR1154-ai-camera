@@ -509,6 +509,13 @@ class DetectionPipeline:
             runtime_config.get("flat_frame_unwedge_cooldown", 300)
         )
         self._flat_notify_interval = float(runtime_config.get("flat_frame_notify_interval", 3600))
+        # The give-up is the one low-detail message worth sending, and at most
+        # once a night. The PIR light closes and reopens an episode every time
+        # it switches on and off, so a per-episode latch alone let an evening
+        # of light cycles through: 36 give-ups in the week of 2026-09-21.
+        self._flat_giveup_notify_interval = float(
+            runtime_config.get("flat_frame_giveup_notify_interval", 43200)
+        )
         self._last_flat_unwedge = 0.0
         self._flat_consecutive_count = 0
         self._flat_forced_reconnects = 0
@@ -642,33 +649,27 @@ class DetectionPipeline:
             # change are evidence that the readout itself has stopped.
             self._frozen_consecutive_count = 0
             self._frozen_unwedges_seen += 1
-            if self.flat_state.should_notify(
-                "flat_alert", current_time, self._flat_notify_interval
-            ):
-                self.notifier.send_telegram(
-                    self._telegram_message(
-                        "Camera image has almost no detail. Rewriting the exposure "
-                        "registers (AEC/AGC) to clear a possible wedge — no reboot, "
-                        "no downtime. (rate-limited alert)"
-                    ),
-                    bypass_cooldown=True,
-                )
+            # Silent on purpose: a rewrite that works needs no operator, and
+            # one that does not is reported once, by the give-up below.
         elif action == "giveup" and self.flat_state.set_gaveup():
             logging.critical(
                 f"{self.log_prefix} Image still has no detail after "
                 f"{self._flat_max_unwedge_attempts} AEC/AGC rewrites — "
                 "the exposure loop is not the cause"
             )
-            self.notifier.send_telegram(
-                self._telegram_message(
-                    "Camera image still has no detail after repeated exposure "
-                    "rewrites. The sensor is still producing new frames, so the "
-                    "readout has not stopped — what is left is the scene "
-                    "itself: a genuinely dark or featureless view, or a "
-                    "blocked lens."
-                ),
-                bypass_cooldown=True,
-            )
+            if self.flat_state.should_notify(
+                "flat_giveup", current_time, self._flat_giveup_notify_interval
+            ):
+                self.notifier.send_telegram(
+                    self._telegram_message(
+                        "Camera image still has no detail after repeated exposure "
+                        "rewrites. The sensor is still producing new frames, so the "
+                        "readout has not stopped — what is left is the scene "
+                        "itself: a genuinely dark or featureless view, or a "
+                        "blocked lens."
+                    ),
+                    bypass_cooldown=True,
+                )
 
     def _refund_failed_reboot(self) -> None:
         """Credit back a reboot request that never reached the camera.
@@ -763,7 +764,11 @@ class DetectionPipeline:
 
         self._flat_forced_reconnects = 0
 
-        if self.flat_state.clear() and self.flat_state.should_notify(
+        # Only a reboot is news when it ends. An exposure-only episode ends
+        # every time the PIR light comes on, and "healthy again" then just
+        # says somebody walked in — which the person alert already said.
+        rebooted = self.flat_state.reboot_count() > 0
+        if self.flat_state.clear() and rebooted and self.flat_state.should_notify(
             "recovered", current_time, self._flat_notify_interval
         ):
             self.notifier.send_telegram(

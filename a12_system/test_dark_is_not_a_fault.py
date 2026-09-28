@@ -200,4 +200,52 @@ def test_dawn_closes_the_episode(tmp_path, monkeypatch):
             p.process_frame(frame)
 
     assert not p.flat_state.episode_active()
-    assert any("healthy again" in m for m in p.notifier.sent)
+    # Detail coming back after exposure rewrites is the PIR light or dawn,
+    # not news. Only an episode that rebooted the camera announces its end.
+    assert not any("healthy again" in m for m in p.notifier.sent)
+
+
+def _feed_lit(p, clock, count, rng):
+    """The PIR light is on: a textured hallway."""
+    for _ in range(count):
+        clock.now += 31
+        frame = rng.integers(40, 200, size=(120, 160, 3), dtype=np.uint8)
+        with pytest.raises(_EndOfWatchdog):
+            p.process_frame(frame)
+
+
+def test_an_evening_of_pir_light_cycles_sends_one_message(tmp_path, monkeypatch):
+    """The week of 2026-09-21: 126 messages, all between 18:00 and 06:00.
+
+    The hallway goes grey whenever the PIR light switches off and gets detail
+    back whenever it switches on. Each cycle used to open a fresh episode worth
+    three messages (rewriting / still no detail / recovered), and every
+    rewrite failed, because there was no light to expose.
+    """
+    clock = _Clock()
+    monkeypatch.setattr("a12_system.pipeline.time.time", clock.time)
+    p = _watchdog_pipeline(tmp_path, clock)
+    rng = np.random.default_rng(7)
+
+    for _ in range(3):
+        _feed(p, clock, level=64, count=40, rng=rng)
+        _feed_lit(p, clock, count=12, rng=rng)
+
+    assert len(p.notifier.sent) == 1, p.notifier.sent
+    assert "still has no detail" in p.notifier.sent[0]
+    # The rewrites themselves still run on every cycle — only the talk stops.
+    assert p.shared_state.get("unwedge_camera") is True
+
+
+def test_the_next_night_is_reported_again(tmp_path, monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr("a12_system.pipeline.time.time", clock.time)
+    p = _watchdog_pipeline(tmp_path, clock)
+    rng = np.random.default_rng(8)
+
+    _feed(p, clock, level=64, count=40, rng=rng)
+    _feed_lit(p, clock, count=12, rng=rng)
+    clock.now += 24 * 3600
+    _feed(p, clock, level=64, count=40, rng=rng)
+
+    assert len([m for m in p.notifier.sent if "still has no detail" in m]) == 2

@@ -99,6 +99,7 @@ def _ladder(healthy_required=10):
     p._telegram_message = lambda m: m
     p.flat_state = types.SimpleNamespace(
         clear=lambda: False,               # already clear → no notification
+        reboot_count=lambda: 0,
         should_notify=lambda *a, **k: False,
     )
     return p
