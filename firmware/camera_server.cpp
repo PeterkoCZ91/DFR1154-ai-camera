@@ -3198,14 +3198,23 @@ const char CAPTIVE_PORTAL_HTML[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-// Handler: Captive portal setup page
+// Provisioning is allowed only while the station interface is disabled.
+// Keep this guard independent of LAB_MODE's Basic Auth bypass.
+static bool captive_portal_only(httpd_req_t *req) {
+    if (WiFi.getMode() == WIFI_AP) return true;
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Available only in access point mode");
+    return false;
+}
+
 static esp_err_t captive_portal_handler(httpd_req_t *req) {
+    if (!captive_portal_only(req)) return ESP_OK;
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, CAPTIVE_PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
 // Handler: WiFi network scan
 static esp_err_t wifi_scan_handler(httpd_req_t *req) {
+    if (!captive_portal_only(req)) return ESP_OK;
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
@@ -3223,6 +3232,7 @@ static esp_err_t wifi_scan_handler(httpd_req_t *req) {
 
 // Handler: Save WiFi credentials and reboot
 static esp_err_t wifi_save_handler(httpd_req_t *req) {
+    if (!captive_portal_only(req)) return ESP_OK;
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
@@ -3256,6 +3266,7 @@ static esp_err_t wifi_save_handler(httpd_req_t *req) {
 
 // Handler: Redirect any unknown URL to captive portal (AP mode)
 static esp_err_t captive_redirect_handler(httpd_req_t *req) {
+    if (!captive_portal_only(req)) return ESP_OK;
     String url = "http://" + WiFi.softAPIP().toString() + "/setup";
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", url.c_str());

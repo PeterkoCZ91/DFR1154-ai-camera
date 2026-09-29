@@ -87,7 +87,7 @@ Use **Enhanced** for a fixed installation with a server/Pi running 24/7 — UNCE
 ## In 3 Points
 
 1. **Three concurrent video pipelines from one ESP32-S3.** A lock-free CAS-based ring buffer (3 × 256 KB PSRAM slots) feeds MJPEG streaming, RTSP server, AVI recording, motion detection, FOMO inference, time-lapse, and dashboard snapshots — all simultaneously, **without frame copies**, from a single `captureTask`. The ring buffer protocol uses atomic CAS reference counting (`-1` writer / `0` free / `>0` readers).
-2. **Three-state on-device detection cascade.** Block-based motion detection (~10 ms at 400×300 grayscale) gates Edge Impulse FOMO inference (~300–500 ms at 64×64 int8, TFLite Micro + ESP-NN) — temporal-filtered for **~90% false-positive reduction** and tracked by a lightweight ByteTrack-style Kalman tracker. Output is **NONE / UNCERTAIN / CONFIDENT**: confident hits send Telegram directly; uncertain hits (60–75%) route via MQTT to A12 for YOLOv11n verification — no false alarms, no silent drops.
+2. **Three-state on-device detection cascade.** Block-based motion detection on an 80×60 grayscale image gates Edge Impulse FOMO inference (~300–500 ms at 64×64 int8, TFLite Micro + ESP-NN) — temporal-filtered for **~90% false-positive reduction** and tracked by a lightweight ByteTrack-style Kalman tracker. Output is **NONE / UNCERTAIN / CONFIDENT**: confident hits send Telegram directly; uncertain hits (60–75%) route via MQTT to A12 for YOLOv11n verification — no false alarms, no silent drops.
 3. **Battle-tested production firmware.** 6+ months of continuous operation, 50+ versions, full Home Assistant MQTT discovery, Telegram bot with 10 commands, OTA updates with auto-rollback, captive portal AP fallback, NVS-encrypted credentials, sabotage detection watchdog, day/night/dusk auto-profiles via LTR-308 lux sensor.
 
 ---
@@ -382,27 +382,26 @@ The `person_confidence_threshold` (default 0.6) sets the NONE floor. The `person
 
 ### Motion Detection (motion_detection.cpp)
 
-Block-based frame differencing against an EMA background model. The whole pipeline runs in ~10 ms at 400×300 working resolution.
+Block-based frame differencing against an EMA background model. The current working image is 80×60, grouped into a 20×15 block grid; current processing latency has not been re-measured.
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| **Working resolution** | 400×300 (UXGA / 4) | 4× more detail than v3.10 (was 200×150) |
+| **Working resolution** | 80×60, grid 20×15 | Fixed grid shared with the M5Stack zone coordinates |
 | Block size | 4 × 4 pixels | Natural low-pass filter — single noisy pixel = 1/16 of block |
-| Pixel diff threshold | 20 + AGC gain | Adaptive to sensor noise (gain 0 → 20, gain 30 → 50) |
-| Pixel threshold (night) | × 2.5 | Boosted at night to filter sensor noise |
+| Pixel diff threshold | 28 + AGC gain | Adaptive to sensor noise (gain 0 → 28, gain 30 → 58) |
 | Trigger percentage | 5% | Min blocks changed to trigger |
 | Trigger pct (night) | × 2.5 | Stricter at night |
-| Upper bound | 70% | Above = global light change, rejected |
-| Confirm frames | 2 | Consecutive frames required |
-| EMA alpha (day) | 0.92 | Background adaptation rate |
-| EMA alpha (night) | 0.97 | Slower at night to suppress sensor noise |
+| Upper bound | 50% | Above = global light change, rejected |
+| Confirm frames | 3 | Consecutive frames required |
+| EMA alpha (day) | 0.95 | Background adaptation rate |
+| EMA alpha (night) | 0.98 | Slower at night to suppress sensor noise |
 | Cluster requirement | 1+ neighbor (day), 2+ (night) | 4-connected adjacency |
-| Brightness reset | Δ > 80/255 between frames | Background reset on sudden light change |
+| Brightness reset | Δ > 40/255 between frames | Background reset on sudden light change |
 | ROI mask | Per-block on/off | Configurable via `/roi-mask` API |
 
-**Night mode** (avg brightness < 10): instead of blanket suppress, the detector requires stricter clustering and higher pixel thresholds — actual night motion is detected while sensor noise is filtered.
+**Night mode** (avg brightness < 10): instead of blanket suppress, the detector requires stricter clustering and a 2.5× trigger percentage — actual night motion is detected while sensor noise is filtered.
 
-**Sudden light change**: when average brightness jumps by more than 80/255 between consecutive frames (e.g. lights turned on, sunset, headlights), the EMA background is instantly reset to the current frame to prevent false motion during the transition.
+**Sudden light change**: when average brightness jumps by more than 40/255 between consecutive frames (e.g. lights turned on, sunset, headlights), the EMA background is instantly reset to the current frame to prevent false motion during the transition.
 
 ### Person Detection (person_detection.cpp)
 
@@ -475,9 +474,9 @@ Auto-switching between three camera tunings based on ambient light from the LTR-
 
 | Feature | Description |
 |---------|-------------|
-| **Motion detection** | Block-based EMA background subtraction at 400×300, spatial clustering (4-connected), AGC-aware threshold, ROI mask |
+| **Motion detection** | Block-based EMA background subtraction at 80×60, spatial clustering (4-connected), AGC-aware threshold, ROI mask |
 | **Night motion** | Adaptive thresholds + stricter clustering instead of blanket suppression |
-| **Sudden-light reset** | Background reset on Δ > 80/255 between frames (sunset, lights on/off) |
+| **Sudden-light reset** | Background reset on Δ > 40/255 between frames (sunset, lights on/off) |
 | **Person detection (on-device)** | Edge Impulse FOMO 64×64 int8 with histogram normalization, 2-frame temporal filter. Output: `NONE` / `UNCERTAIN` / `CONFIDENT` |
 | **Three-state decision + MQTT routing** | `CONFIDENT` (≥75%) → Telegram direct. `UNCERTAIN` (60–75%) → MQTT `person_uncertain` → A12 YOLO verification → Telegram only if confirmed. Falls back to direct Telegram when MQTT unavailable. |
 | **PERF metrics** | 30s serial log: `infer_ms`, `motion`, `pd_pos/neg`, `tg_sent`, `fallback` — track detection quality over time |
@@ -681,6 +680,8 @@ The camera exposes 3 HTTP servers and an RTSP server:
 | `/update` | POST | OTA firmware update (binary upload) |
 
 #### Captive Portal (AP mode only)
+
+These endpoints return HTTP 403 in station mode, including when a lab build bypasses Basic Auth elsewhere.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -915,8 +916,8 @@ Camera settings live in `config.json` on LittleFS. Credentials live in NVS (encr
 |-----------|---------|-------|-------------|
 | `frame_size` | 13 (UXGA 1600×1200) | 0-13 | OV3660 frame size enum (downscale only at runtime) |
 | `jpeg_quality` | 12 | 5-63 | Lower = better quality, larger files |
-| `flip_vertical` | false | bool | |
-| `flip_horizontal` | false | bool | |
+| `flip_vertical` | true | bool | |
+| `flip_horizontal` | true | bool | |
 | `brightness` | 3 | -3 to 3 | OV3660 driver range (wider than standard ±2) |
 | `contrast` | 1 | -2 to 2 | |
 | `saturation` | 0 | -2 to 2 | |
@@ -1191,8 +1192,8 @@ The full command table and multi-instance examples live in
 |---------|--------|-------------|
 | Temporal filter for person detection | :white_check_mark: Done | 2-frame confirmation, ~90% false-positive reduction |
 | Histogram clamp at true night | :white_check_mark: Done | Skip stretch when range < 20 to avoid IR noise amplification |
-| Night motion detection (relaxed) | :white_check_mark: Done | Stricter cluster + 2.5× pixel threshold instead of blanket suppress |
-| Background reset on light changes | :white_check_mark: Done | Δ80/255 brightness jump triggers EMA reset |
+| Night motion detection (relaxed) | :white_check_mark: Done | Stricter cluster + 2.5× trigger percentage instead of blanket suppress |
+| Background reset on light changes | :white_check_mark: Done | Current code resets the EMA after a brightness jump >40/255 |
 | LTR-308 sample rate 5× faster | :white_check_mark: Done | 100 ms vs 500 ms — faster sunset/headlight reactions |
 
 ### Detection Improvements (TIER 2/3 — done in v3.11)
@@ -1201,7 +1202,7 @@ The full command table and multi-instance examples live in
 |---------|--------|-------------|
 | MR²-ByteTrack Kalman tracker | :white_check_mark: Done | Persistent IDs (`tracker.cpp`), eliminates duplicate notifications, +1 KB SRAM |
 | OV3660 HDR + DPC + 2D denoise | :white_check_mark: Done | Init-time SCCB writes (LENC, BPC/WPC auto, SDE, 2D-NR) |
-| Motion detection 4× detail | :white_check_mark: Done | SCALE_FACTOR 8→4 (UXGA: 200×150 → 400×300), grid 64×48 → 128×96 |
+| Motion detection detail | :white_check_mark: Done | The current pipeline uses an 80×60 working image and a 20×15 grid |
 
 ### Other Features (done in v3.11)
 
@@ -1342,7 +1343,7 @@ Running in production since November 2025. Multiple camera nodes in residential 
 |--------|-------|
 | Capture FPS @ UXGA | ~25-30 FPS |
 | MJPEG stream FPS | ~25 FPS |
-| Motion detection latency | ~10 ms (at 400×300 working resolution) |
+| Motion detection latency | Not re-measured for the current 80×60 working image |
 | FOMO inference time | ~300–500 ms (TFLite Micro + ESP-NN, v3.12.41+) |
 | Tracker update time | ~2-5 ms |
 | Telegram photo upload (typical) | 2-4 s (256 KB JPEG over WiFi) |

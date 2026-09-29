@@ -30,6 +30,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from a12_system.camera import Camera
+from a12_system.config import load_config
 
 # The camera's own per-frame send timeout (firmware `detection_send_timeout_ms`,
 # reported by /health). It gives up on one frame and continues; a client that
@@ -41,6 +42,18 @@ def _cam(**overrides):
     config = {"camera_url": "http://camera.invalid", "camera_http_user": ""}
     config.update(overrides)
     return Camera(config)
+
+
+def test_loaded_defaults_keep_the_camera_send_window(monkeypatch, tmp_path):
+    """Exercise the production config loader as well as Camera construction."""
+    monkeypatch.delenv("STREAM_FREEZE_TIMEOUT", raising=False)
+    monkeypatch.delenv("STREAM_READ_TIMEOUT", raising=False)
+    config = load_config(str(tmp_path))
+    config["camera_url"] = "http://127.0.0.1"
+
+    cam = Camera(config)
+    assert cam.freeze_timeout == 20.0
+    assert cam.stream_read_timeout == 18.0
 
 
 def test_socket_read_timeout_fires_before_the_freeze_heuristic():

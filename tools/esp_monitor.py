@@ -298,7 +298,7 @@ def http_health_check(ip):
 
         # Also try a snapshot to verify camera works
         try:
-            r = requests.get(base + "/capture", timeout=HTTP_TIMEOUT, stream=True)
+            r = requests.get(base + "/frame", timeout=HTTP_TIMEOUT, stream=True)
             jpg_size = len(r.content)
             if r.status_code == 200 and jpg_size > 1000:
                 print(f"{GREEN}[HEALTH] Snapshot OK: {jpg_size//1024}KB{RESET}")
