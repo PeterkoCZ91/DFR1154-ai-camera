@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Fixed (review pass — defaults, provisioning endpoints, MQTT topic, two small firmware bugs)
+
+- **`stream_freeze_timeout` / `stream_read_timeout` shipped as 3.0 / 2.0 s, the pair `camera.py` documents as a measured mistake** (49 teardowns in an hour, 25.8 % blind). They are 20.0 / 18.0 again. The existing test built `Camera` from a two-key literal and so passed under either default; a new one goes through `load_config()`.
+- **`/setup`, `/wifi-scan`, `/wifi-save` and the captive redirect answered in station mode.** `/wifi-save` had no authentication, so any host on the LAN could overwrite the stored WiFi credentials and force a reboot. All four now return 403 unless the radio is in AP mode, independently of `LAB_MODE`.
+- **A12 subscribed to `esp32cam/ESP32-Camera/...` while a fresh board publishes under `esp32cam/ESP32-Camera-<mac>/...`,** so ESP32 motion and the `person_uncertain` hand-off never arrived and nothing logged it. `/health` now reports `device_name`; A12 uses it when `ESP32_MQTT_DEVICE` is unset and warns when it has to fall back.
+- **A failed `run_classifier` left `consecutive_detections` untouched,** so two detections with a failure between them counted as consecutive. It is reset, as a decode failure already did.
+- **`loadROIMask` left the tail of the caller's malloc'd buffer uninitialised for a short stored mask.** The tail is now filled with "enabled".
+- `tools/esp_monitor.py` fetched `/capture`, which the firmware does not have; it uses `/frame`.
+- README: motion detection parameters (80x60 grid, 50 % upper bound, 3 confirm frames, EMA 0.95 / 0.98, reset at delta > 40) and the flip defaults now match the code.
+
 ### Fixed (A12 — one low-detail message a night, not three per PIR light cycle)
 
 - **A motion-triggered hall light turned every evening into a message stream.** The image goes uniform grey each time the light switches off and regains detail each time it switches on. Each cycle closed and reopened the low-detail episode, and every episode could say three things: that it was rewriting AEC/AGC, that the rewrites had not helped, and that frames were healthy again. Over one week that was 126 messages, all between 18:00 and 06:00, from 36 episodes. The rewrites did not help in any of them, because there was no light to expose.
