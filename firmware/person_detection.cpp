@@ -215,6 +215,9 @@ PersonDetectionResult PersonDetector::runInference() {
 
     if (err != EI_IMPULSE_OK) {
         Serial.printf("PersonDetector: run_classifier failed (%d)\n", (int)err);
+        // Same reasoning as the decode-failure reset in detectFromJpeg(): two hits
+        // with a failed inference between them are not consecutive.
+        consecutive_detections = 0;
         return result;
     }
 

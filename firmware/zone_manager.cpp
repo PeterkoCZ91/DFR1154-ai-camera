@@ -169,7 +169,12 @@ bool loadROIMask(char* out_buf, int buf_len) {
     File f = LittleFS.open(ROI_MASK_FILE, "r");
     if (!f) return false;
     int bytes = f.readBytes(out_buf, buf_len - 1);
-    out_buf[bytes] = '\0';
     f.close();
-    return bytes > 0;
+    if (bytes <= 0) return false;
+    // A shorter (older or truncated) file must not leave the caller's malloc'd
+    // buffer partly uninitialised: blocks past the stored data stay enabled,
+    // which is what the setter does for a short mask.
+    memset(out_buf + bytes, '1', (buf_len - 1) - bytes);
+    out_buf[buf_len - 1] = '\0';
+    return true;
 }
