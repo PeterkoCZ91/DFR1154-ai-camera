@@ -3043,6 +3043,10 @@ static esp_err_t health_handler(httpd_req_t *req) {
     // A12 polls /health every cycle and nothing else, so the UI language rides
     // along here rather than costing a second request to /status.
     doc["ui_language"] = config.ui_language;
+    // The MQTT topic is esp32cam/<device_name>; A12 reads it from here when
+    // ESP32_MQTT_DEVICE is not set, instead of guessing a name that a fresh
+    // board (per-MAC default) never publishes under.
+    doc["device_name"] = config.device_name;
     
     String response;
     serializeJson(doc, response);

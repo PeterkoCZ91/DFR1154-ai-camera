@@ -109,6 +109,31 @@ class MQTTClient:
             self._last_connect_fail_log = now
             logging.warning(f"{self.log_prefix} MQTT broker unavailable; retrying in background")
 
+    def _esp32_device_name(self) -> str:
+        """Name the camera publishes under: esp32cam/<name>/motion.
+
+        An explicit ESP32_MQTT_DEVICE wins. Otherwise ask the camera's /health,
+        because a fresh board's default name carries its MAC and a guessed
+        "ESP32-Camera" would subscribe to a topic nothing publishes, silently.
+        """
+        configured = self.config.get("esp32_mqtt_device")
+        if configured:
+            return configured
+        try:
+            url = resolve_camera_url(self.config["camera_url"]).rstrip("/") + "/health"
+            name = requests.get(url, timeout=3).json().get("device_name")
+            if isinstance(name, str) and name.strip():
+                logging.info(f"{self.log_prefix} ESP32 MQTT device from /health: {name}")
+                return name.strip()
+        except Exception as e:
+            logging.debug(f"{self.log_prefix} could not read device_name from /health: {e}")
+        logging.warning(
+            f"{self.log_prefix} ESP32_MQTT_DEVICE is not set and the camera did not report "
+            f"its device_name; assuming 'ESP32-Camera'. If ESP32 motion never arrives over "
+            f"MQTT, set ESP32_MQTT_DEVICE to the camera's device name."
+        )
+        return "ESP32-Camera"
+
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code == 0:
             self.connected = True
@@ -122,7 +147,7 @@ class MQTTClient:
             self.client.subscribe("camera/config/set/#")
 
             # ESP32 firmware signals (published by the camera's MQTT handler)
-            esp32_device = self.config.get("esp32_mqtt_device", "ESP32-Camera")
+            esp32_device = self._esp32_device_name()
             self.esp32_motion_topic = f"esp32cam/{esp32_device}/motion"
             self.esp32_uncertain_topic = f"esp32cam/{esp32_device}/person_uncertain"
             self.client.subscribe(self.esp32_motion_topic)
