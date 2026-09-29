@@ -40,10 +40,19 @@ known_faces/
 face_debug/
 face_samples_aside/
 
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Audit reports written by agents (not part of the tree; docs are English-only and CI walks the tree)
+reports/
+
 # OS
 .DS_Store
 Thumbs.db
 .claude/
+.codex/
+.gemini/
 
 # Local-only development context and secrets
 LOCAL_*.md
