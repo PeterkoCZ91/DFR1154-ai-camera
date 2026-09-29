@@ -19,6 +19,7 @@ from .face_result import (
     should_run_face_check,
 )
 from .detection import crop_person_box
+from .door_unlock import ha_unlock, unlock_decision
 from .flat_episode import FlatEpisodeState
 from .messages import translate
 
@@ -398,7 +399,9 @@ class DetectionPipeline:
         self._notify_thread = threading.Thread(target=self._notification_worker, daemon=True)
         self._notify_thread.start()
 
-        # Groq vision face recognition
+        self._last_face_unlock_at = 0.0
+
+        # Groq vision face recognition (optional, off without GROQ_API_KEY)
         self.groq_vision = None
         groq_api_key = runtime_config.get("groq_api_key", "")
         groq_faces_dir = os.path.join(script_dir, "known_faces")
@@ -434,24 +437,71 @@ class DetectionPipeline:
         self.configure_stream_freeze_ladder(runtime_config)
         self.freeze_state = FlatEpisodeState(os.path.join(script_dir, "stream_freeze_state.json"))
 
-    def _trigger_nuki_unlock(self, name: str):
-        if not self.ha_url or not self.ha_token:
-            logging.warning(f"{self.log_prefix} Nuki unlock skipped — no HA config")
-            return
-        try:
-            import requests as _req
-            _req.post(
-                f"{self.ha_url}/api/services/lock/unlock",
-                headers={"Authorization": f"Bearer {self.ha_token}", "Content-Type": "application/json"},
-                json={"entity_id": self.nuki_entity_id},
-                timeout=5,
-            )
-            logging.info(f"{self.log_prefix} Nuki unlock triggered for '{name}'")
+    def _trigger_nuki_unlock(self, name: str, faces=None):
+        """Open the lock without holding up frame processing.
+
+        The HA call and the wait for the lock to report back take seconds, and
+        this runs on the detection loop, so it goes to a short-lived thread.
+        """
+        threading.Thread(
+            target=self._nuki_unlock_worker, args=(name, faces), daemon=True
+        ).start()
+
+    def _nuki_unlock_worker(self, name: str, faces=None):
+        opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id)
+        if opened:
+            logging.info(f"{self.log_prefix} Nuki unlocked for '{name}' ({detail})")
+            self.db.log_event("unlock", name, 1.0)
+            # More than one face in view is worth a line: the door followed the
+            # largest one, and whoever stood beside it got no say.
+            if faces and faces > 1:
+                text = "Unlocked for {} ({} faces in view)".format(name, faces)
+            else:
+                text = "Unlocked for {}".format(name)
+            self.notifier.send_telegram(text, bypass_cooldown=True)
+        else:
+            # Never report an unlock that HA did not confirm: an expired token
+            # or a dead Nuki bridge looks like success to a fire-and-forget POST.
+            logging.error(f"{self.log_prefix} Nuki unlock for '{name}' FAILED: {detail}")
+            self.db.log_event("unlock_failed", name, 0.0)
             self.notifier.send_telegram(
-                "Unlocked for {}".format(name), bypass_cooldown=True
+                "Door did NOT unlock for {} ({})".format(name, detail),
+                bypass_cooldown=True,
             )
-        except Exception as e:
-            logging.error(f"{self.log_prefix} Nuki unlock failed: {e}")
+
+    def _maybe_unlock_for_face(self, face) -> None:
+        """Open the door for an enrolled resident, or say what it would have done."""
+        cfg = self.runtime_config
+        now = time.time()
+        allowed, reason = unlock_decision(
+            face,
+            enabled=bool(cfg.get("face_unlock.enabled", False)),
+            allowed_names=cfg.get("face_unlock.names", []) or [],
+            min_score=float(cfg.get("face_unlock.min_score", 0.60)),
+            now=now,
+            last_unlock_at=self._last_face_unlock_at,
+            cooldown=float(cfg.get("face_unlock.cooldown_seconds", 60.0)),
+        )
+        if not allowed:
+            if reason != "disabled" and face.is_resident:
+                logging.info(f"{self.log_prefix} Face unlock denied: {reason}")
+            return
+        self._last_face_unlock_at = now
+        faces = face.faces or 1
+        if cfg.get("face_unlock.dry_run", True):
+            logging.info(
+                f"{self.log_prefix} Face unlock DRY RUN: would open for "
+                f"'{face.lead_name}' (score {face.lead_score:.3f}, faces in view: {faces})"
+            )
+            self.db.log_event("unlock_dry_run", face.lead_name, float(face.lead_score))
+            self.notifier.send_telegram(
+                "DRY RUN: would unlock for {} (score {:.2f}, faces in view: {})".format(
+                    face.lead_name, face.lead_score, faces
+                ),
+                bypass_cooldown=True,
+            )
+            return
+        self._trigger_nuki_unlock(face.lead_name, faces)
 
     def _caption(self, template: str, value) -> str:
         """Render one piece of a clip caption in the operator's language.
@@ -1675,6 +1725,7 @@ class DetectionPipeline:
                 # Only a resident may put a name into the caption. Appending the
                 # raw result used to produce "Person detected (Video) (No face)".
                 person_name = notification_name(face)
+                self._maybe_unlock_for_face(face)
                 # The row is written once, when the episode closes.
                 whitelist = self.runtime_config.get(
                     "face_recognition.whitelisted_names", []

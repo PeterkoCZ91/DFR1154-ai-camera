@@ -38,6 +38,16 @@ class FaceResult(NamedTuple):
     # inherited from a library default — a near miss and a total mismatch are
     # very different facts and the outcome alone hides both.
     score: Optional[float] = None
+    # How many faces the frame held. A verdict that names one person says
+    # nothing about who else was standing there, so the count travels with it.
+    faces: Optional[int] = None
+    # Who the LARGEST face (the person nearest the camera) matched, and how
+    # closely. `name`/`score` above answer "is a resident anywhere in view",
+    # which is right for muting an alert; the door needs "is the person at the
+    # door a resident", which is this. None when that face matched nobody or
+    # when no face could be singled out.
+    lead_name: Optional[str] = None
+    lead_score: Optional[float] = None
 
     @property
     def is_resident(self) -> bool:
@@ -154,6 +164,18 @@ class FaceEpisode:
 
     def reset(self) -> None:
         self._name_hits: dict = {}
+        # Lowest similarity seen for each name. The verdict reports the weakest
+        # of the agreeing sightings, so a strict consumer (the door) is never
+        # handed the flattering best frame of an otherwise marginal match.
+        self._name_min_score: dict = {}
+        # Sightings where the LARGEST face was this resident, with the weakest
+        # such score. Deliberately not vetoed by a sighting where the lead face
+        # matched nobody: a blurred frame reads as "stranger" (21 of 30 of the
+        # owner's own frames at the desk did), and one bad frame must not undo
+        # the confirmations that agree.
+        self._lead_hits: dict = {}
+        self._lead_min_score: dict = {}
+        self._max_faces = 0
         self._stranger = 0
         self._no_face = 0
         self._error = 0
@@ -161,8 +183,21 @@ class FaceEpisode:
 
     def record(self, result: FaceResult) -> None:
         self.checks_done += 1
+        if result.faces:
+            self._max_faces = max(self._max_faces, result.faces)
+        if result.lead_name and result.lead_score is not None:
+            self._lead_hits[result.lead_name] = self._lead_hits.get(result.lead_name, 0) + 1
+            prior = self._lead_min_score.get(result.lead_name)
+            self._lead_min_score[result.lead_name] = (
+                result.lead_score if prior is None else min(prior, result.lead_score)
+            )
         if result.outcome is FaceOutcome.RESIDENT and result.name:
             self._name_hits[result.name] = self._name_hits.get(result.name, 0) + 1
+            if result.score is not None:
+                prior = self._name_min_score.get(result.name)
+                self._name_min_score[result.name] = (
+                    result.score if prior is None else min(prior, result.score)
+                )
         elif result.outcome is FaceOutcome.STRANGER:
             self._stranger += 1
         elif result.outcome is FaceOutcome.NO_FACE:
@@ -174,7 +209,15 @@ class FaceEpisode:
         if self._name_hits:
             name, hits = max(self._name_hits.items(), key=lambda kv: kv[1])
             if hits >= self.required_confirmations:
-                return FaceResult(FaceOutcome.RESIDENT, name)
+                lead_ok = self._lead_hits.get(name, 0) >= self.required_confirmations
+                return FaceResult(
+                    FaceOutcome.RESIDENT,
+                    name,
+                    self._name_min_score.get(name),
+                    faces=self._max_faces or None,
+                    lead_name=name if lead_ok else None,
+                    lead_score=self._lead_min_score.get(name) if lead_ok else None,
+                )
         if self._stranger:
             return FaceResult(FaceOutcome.STRANGER)
         if self._name_hits:

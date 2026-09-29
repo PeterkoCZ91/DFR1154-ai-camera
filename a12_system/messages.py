@@ -34,6 +34,9 @@ CZECH: dict[str, str] = {
 
     # pipeline.py — Nuki unlock
     'Unlocked for {}': 'Odemknuto pro {}',
+    'Door did NOT unlock for {} ({})': 'Dveře se pro {} NEODEMKLY ({})',
+    'Unlocked for {} ({} faces in view)': 'Odemknuto pro {} (v záběru obličejů: {})',
+    'DRY RUN: would unlock for {} (score {:.2f}, faces in view: {})': 'TEST: odemklo by se pro {} (skóre {:.2f}, obličejů v záběru: {})',
 
     # status_monitor.py — sabotage watchdog and health checks
     'SABOTAGE! Camera signal lost ({}s)!': 'SABOTÁŽ! Ztracen signál z kamery ({} s)!',

@@ -80,6 +80,22 @@ DEFAULT_CONFIG = {
         # Quiet time after which the next person starts a fresh episode.
         "episode_gap_seconds": 30.0,
     },
+    # Opening the door from a face verdict. Off, and when switched on it starts
+    # as a dry run: it logs and messages what it WOULD have done, so the score
+    # threshold can be fitted to this camera before anything actually moves.
+    "face_unlock": {
+        "enabled": False,
+        "dry_run": True,
+        # Only these enrolled names may open the door. Empty means nobody, which
+        # is deliberately stricter than face_recognition.whitelisted_names
+        # (that one only mutes alerts).
+        "names": [],
+        # Cosine similarity of the WEAKEST agreeing sighting. 0.363 is the
+        # library's operating point for "same person"; a lock wants precision,
+        # so this sits well above it.
+        "min_score": 0.60,
+        "cooldown_seconds": 60.0,
+    },
     "telegram": {
         "enabled": False,
         "token": None,
@@ -370,6 +386,11 @@ ENV_OVERRIDES = [
     ("FACE_DETECTOR_SCORE_THRESHOLD", "face_recognition.detector_score_threshold", _parse_float),
     ("FACE_DEBUG_CROP_DIR", "face_recognition.debug_crop_dir", str),
     ("FACE_DEBUG_CROP_LIMIT", "face_recognition.debug_crop_limit", _parse_int),
+    ("FACE_UNLOCK_ENABLED", "face_unlock.enabled", _parse_bool),
+    ("FACE_UNLOCK_DRY_RUN", "face_unlock.dry_run", _parse_bool),
+    ("FACE_UNLOCK_NAMES", "face_unlock.names", _parse_csv),
+    ("FACE_UNLOCK_MIN_SCORE", "face_unlock.min_score", _parse_float),
+    ("FACE_UNLOCK_COOLDOWN_SECONDS", "face_unlock.cooldown_seconds", _parse_float),
     # MQTT
     ("MQTT_BROKER", "mqtt.broker_url", str),
     ("MQTT_PORT", "mqtt.port", _parse_int),

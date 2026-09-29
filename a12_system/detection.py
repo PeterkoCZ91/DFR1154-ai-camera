@@ -391,8 +391,14 @@ class Detector:
         if not self.known_face_encodings:
             return FaceResult(FaceOutcome.UNAVAILABLE)
 
-        embeddings = backend.embed(frame)
-        if not embeddings:
+        # (face row, embedding) pairs when the backend can give boxes; the row
+        # is what lets us tell which face is nearest the camera.
+        detect = getattr(backend, "detect_and_embed", None)
+        if detect is not None:
+            pairs = detect(frame)
+        else:
+            pairs = [(None, e) for e in backend.embed(frame)]
+        if not pairs:
             return FaceResult(FaceOutcome.NO_FACE)
 
         # Several faces can share a frame; the best match over all of them
@@ -402,21 +408,45 @@ class Detector:
         # stranger just under the threshold is the case worth looking at.
         best_name, best_name_score = None, -1.0
         closest_score = -1.0
-        for embedding in embeddings:
+        matches = []
+        for _, embedding in pairs:
             name, score = best_match(
                 embedding,
                 self.known_face_encodings,
                 self.known_face_names,
                 self.face_cosine_threshold,
             )
+            matches.append((name, score))
             closest_score = max(closest_score, score)
             if name is not None and score > best_name_score:
                 best_name, best_name_score = name, score
 
+        # The door asks a different question: is the LARGEST face, the person
+        # nearest the camera, a resident. Without boxes and more than one face
+        # it cannot be answered, and an unanswerable question is a "no".
+        lead = self._largest_face_index([face for face, _ in pairs])
+        lead_name, lead_score = (None, None)
+        if lead is not None:
+            lead_name, lead_score = matches[lead]
+
         if best_name is not None:
-            return FaceResult(FaceOutcome.RESIDENT, best_name, best_name_score)
+            return FaceResult(
+                FaceOutcome.RESIDENT, best_name, best_name_score,
+                faces=len(pairs), lead_name=lead_name, lead_score=lead_score,
+            )
         score = closest_score if closest_score > -1.0 else None
-        return FaceResult(FaceOutcome.STRANGER, None, score)
+        return FaceResult(FaceOutcome.STRANGER, None, score, faces=len(pairs))
+
+    @staticmethod
+    def _largest_face_index(faces: list):
+        """Index of the biggest face, or None when it cannot be told."""
+        if len(faces) == 1:
+            return 0
+        try:
+            areas = [float(f[2]) * float(f[3]) for f in faces]
+        except (TypeError, IndexError, ValueError):
+            return None
+        return max(range(len(areas)), key=areas.__getitem__)
 
     def identify_person(self, frame: np.ndarray) -> FaceResult:
         """Check one frame against the enrolled gallery.
