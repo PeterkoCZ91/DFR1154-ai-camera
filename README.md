@@ -642,8 +642,8 @@ The camera exposes 3 HTTP servers and an RTSP server:
 |----------|--------|-------------|
 | `/` | GET | Main HTML dashboard (gzipped) |
 | `/frame` | GET | Latest JPEG snapshot from ring buffer (~5 ms) |
-| `/status` | GET | System JSON: IP, uptime, RSSI, heap, lux, profile, version, FPS, all toggles |
-| `/health` | GET | Health check JSON: WiFi state, sensors, tasks, camera state |
+| `/status` | GET | System JSON: IP, uptime, RSSI, heap, lux, profile, version, FPS, all toggles, fitted `sensor`/`sensor_pid`, `lens_fov_deg` |
+| `/health` | GET | Health check JSON: WiFi state, sensors, tasks, camera state, fitted `sensor`, `lens_fov_deg` |
 | `/telemetry` | GET | Detailed metrics: frames captured, motion events, AI inferences, errors, restarts |
 | `/psram-stats` | GET | PSRAM usage breakdown by allocation |
 | `/motion-status` | GET | Motion detector state, last trigger time, EMA stats |
@@ -899,7 +899,7 @@ build_flags =
 
 **The problem:** Some OV3660 modules ship with stuck pixels visible as bright dots in dark frames. The default BPC/WPC settings don't catch all of them.
 
-**Workaround:** Init-time register writes enable BPC/WPC auto-adaptation (`0x5025`), SDE (Special Digital Effects, `0x5001`), and confirm LENC/GMA are active (`0x5000`). These features are not exposed in the `sensor_t` API.
+**Workaround:** Init-time register writes enable BPC/WPC auto-adaptation (`0x5025`), SDE (Special Digital Effects, `0x5001`), and confirm LENC/GMA are active (`0x5000`). They run only when the fitted sensor is an OV3660; the AEC zone weights (`0x5688`–`0x568F`) run on OV3660 and OV5640, which share that register map. These features are not exposed in the `sensor_t` API.
 
 > [!WARNING]
 > Register `0x5580` (2D noise reduction) **must not be written** on this OV3660 revision — writing `0x40` causes an inverted/negative image. The register is intentionally skipped in `initCamera()`.
@@ -918,6 +918,7 @@ Camera settings live in `config.json` on LittleFS. Credentials live in NVS (encr
 | `jpeg_quality` | 12 | 5-63 | Lower = better quality, larger files |
 | `flip_vertical` | true | bool | |
 | `flip_horizontal` | true | bool | |
+| `lens_fov_deg` | 0 | 0-220 | Horizontal FOV of the fitted lens, entered by the owner (`0` = unknown). The sensor is detected; a lens is passive glass and is not. |
 | `brightness` | 3 | -3 to 3 | OV3660 driver range (wider than standard ±2) |
 | `contrast` | 1 | -2 to 2 | |
 | `saturation` | 0 | -2 to 2 | |
@@ -1319,6 +1320,7 @@ Running in production since November 2025. Multiple camera nodes in residential 
 | Board | Sensor | Notes |
 |-------|--------|-------|
 | **DFRobot FireBeetle 2 ESP32-S3 (DFR1154)** | OV3660 3 MP | Production tested 6+ months — main reference platform |
+| DFR1154 with an OV5640 DVP module (65° lens) on the same flex | OV5640 5 MP | Runs unmodified on a bench board; `sensor` reports `OV5640`, OV3660-only tuning is skipped |
 | ESP32-S3 DevKit + OV2640 module | OV2640 2 MP | Works with reduced quality (OV3660 features missing) |
 | AI-Thinker ESP32-CAM | OV2640 | Older platform — requires custom pinout, no PSRAM_OPI |
 

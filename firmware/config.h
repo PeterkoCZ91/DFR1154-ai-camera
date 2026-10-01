@@ -81,6 +81,9 @@ struct Config {
   int jpeg_quality;      // 5-63 (lower = better quality, OV3660 min ~4)
   bool flip_vertical;
   bool flip_horizontal;
+  // Horizontal FOV of the mounted lens in degrees, 0 = unknown. A lens is passive
+  // glass the sensor cannot report, so the owner enters it after swapping modules.
+  int lens_fov_deg;
 
   // Fine-tuning controls
   int brightness;        // -2 to 2
@@ -131,5 +134,9 @@ struct Config {
   bool timelapse_enabled;            // Enable time-lapse capture (default false)
   int timelapse_interval_sec;        // Interval between captures in seconds (default 60)
 };
+
+// Sensor detected at camera init (main.cpp); 0 until the camera is up.
+extern uint16_t cameraSensorPID;
+const char* cameraSensorName();
 
 #endif // CONFIG_H

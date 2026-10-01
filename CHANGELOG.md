@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-09-15
 
+### Added (firmware — report which camera module is on the flex)
+
+- **`/status`, `/settings` (GET) and `/health` report `sensor`** (`OV3660`, `OV5640`, `OV2640`, read from the chip at init); `/status` also carries `sensor_pid`. The board takes other 24-pin DVP modules on the same flex — an OV5640 module with a 65° lens runs unmodified — and until now nothing said which one was fitted.
+- **`lens_fov_deg`** (horizontal field of view in degrees, `0` = unknown) can be set with `POST /settings` (0–220) and is reported next to `sensor`. A lens is passive glass the sensor cannot detect, so the owner enters it after swapping modules.
+
+### Fixed (firmware — sensor-specific register tuning)
+
+- **The raw register tuning was written to whatever sensor was fitted.** The AEC zone weights (`0x5688`–`0x568F`) are now written only on OV3660 and OV5640, which share that register map, and the OV3660 ISP block (`0x5000`, `0x5001`, `0x5025`) only on OV3660 — on an OV5640 those bits select other blocks, and the OV2640 has a different, banked register map. The boot log names the sensor and says what was skipped.
+
 ### Fixed (review pass — defaults, provisioning endpoints, MQTT topic, two small firmware bugs)
 
 - **`stream_freeze_timeout` / `stream_read_timeout` shipped as 3.0 / 2.0 s, the pair `camera.py` documents as a measured mistake** (49 teardowns in an hour, 25.8 % blind). They are 20.0 / 18.0 again. The existing test built `Camera` from a two-key literal and so passed under either default; a new one goes through `load_config()`.

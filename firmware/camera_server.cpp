@@ -1399,6 +1399,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
             "\"stream_fps\":%d,\"psram_usage_pct\":%.1f,"
             "\"telegram_queue_depth\":%u,\"telegram_queue_ready\":%s,\"telegram_task_ready\":%s,\"telegram_uploading\":%s,\"telegram_sent\":%u,\"telegram_fail\":%u,\"telegram_drops\":%u,"
             "\"mqtt_enabled\":%s,\"mqtt_connected\":%s,\"mqtt_state\":%d,\"mqtt_connects\":%u,\"mqtt_failures\":%u,\"mqtt_link_uptime_s\":%u,"
+            "\"sensor\":\"%s\",\"sensor_pid\":\"0x%04X\",\"lens_fov_deg\":%d,"
             "\"ui_language\":\"%s\","
             "\"version\":\"%s\"}",
             ip.c_str(),
@@ -1440,6 +1441,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
             telegram_queue_depth, telegram_queue_ready ? "true" : "false", telegram_task_ready ? "true" : "false", telegram_uploading ? "true" : "false", telegram_sent, telegram_fail, telegram_drops,
             config.mqtt_enabled ? "true" : "false", mqttLinkUp() ? "true" : "false",
             mqttLastState(), mqttConnectCount(), mqttFailCount(), mqttLinkUptimeSeconds(),
+            cameraSensorName(), (unsigned)cameraSensorPID, config.lens_fov_deg,
             config.ui_language.c_str(),
             config.version.c_str()
         );
@@ -1516,6 +1518,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         doc["frame_size"] = s->status.framesize;
         doc["vflip"] = s->status.vflip;
         doc["hmirror"] = s->status.hmirror;
+        doc["sensor"] = cameraSensorName();
+        doc["lens_fov_deg"] = config.lens_fov_deg;
         doc["brightness"] = s->status.brightness;
         doc["contrast"] = s->status.contrast;
         doc["saturation"] = s->status.saturation;
@@ -1896,6 +1900,15 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
             String lang = doc["ui_language"].as<String>();
             if ((lang == "cz" || lang == "en") && config.ui_language != lang) {
                 config.ui_language = lang;
+                config_changed = true;
+            }
+        }
+
+        // Lens FOV is owner-entered metadata (glass cannot be detected); 0 = unknown.
+        if (doc.containsKey("lens_fov_deg")) {
+            int fov = doc["lens_fov_deg"];
+            if (fov >= 0 && fov <= 220 && fov != config.lens_fov_deg) {
+                config.lens_fov_deg = fov;
                 config_changed = true;
             }
         }
@@ -2948,6 +2961,10 @@ static esp_err_t health_handler(httpd_req_t *req) {
     doc["uptime_seconds"] = uptimeSeconds;
     doc["uptime_hours"] = (uptimeSeconds % 86400) / 3600;
     doc["uptime_days"] = uptimeSeconds / 86400;
+
+    // Which module is on the flex, and the owner-entered lens FOV (0 = unknown)
+    doc["sensor"] = cameraSensorName();
+    doc["lens_fov_deg"] = config.lens_fov_deg;
     
     // Memory
     doc["free_heap"] = ESP.getFreeHeap();

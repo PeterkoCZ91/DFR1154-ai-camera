@@ -82,6 +82,21 @@ static inline void resetMainTaskWdt() {
 int initZone0_1 = -1;  // 0x5688 expected 0x11
 int initZone8_9 = -1;  // 0x568c expected 0xEE
 
+// Sensor actually on the flex, read from the chip at init. The board ships with an
+// OV3660 but takes OV5640/OV2640 DVP modules too, and the raw register tuning below
+// is only valid for some of them.
+uint16_t cameraSensorPID = 0;
+
+const char* cameraSensorName() {
+  switch (cameraSensorPID) {
+    case OV3660_PID: return "OV3660";
+    case OV5640_PID: return "OV5640";
+    case OV2640_PID: return "OV2640";
+    case 0:          return "none";
+    default:         return "unknown";
+  }
+}
+
 // Global health instances
 WiFiHealth wifi_health = {0, 0, 0, false, "unknown"}; // char[16] init
 SystemStats sys_stats = {0, 0, 0, 0, 0, 0, 0};
@@ -772,6 +787,7 @@ Config getDefaultConfig() {
   c.jpeg_quality = 12;  // 5-63, lower = better quality; 12 keeps Telegram JPEGs smaller/stabler
   c.flip_vertical = true;   // Camera is mounted upside-down
   c.flip_horizontal = true; // Mirror correction
+  c.lens_fov_deg = 0;       // unknown until the owner sets it
   c.telegram_bot_token = "";   // Credentials loaded from NVS
   c.telegram_chat_id = "";
   c.http_user = "admin";
@@ -836,6 +852,7 @@ bool loadConfig() {
   config.jpeg_quality = doc["jpeg_quality"] | 12;
   config.flip_vertical = doc["flip_vertical"] | false;
   config.flip_horizontal = doc["flip_horizontal"] | false;
+  config.lens_fov_deg = doc["lens_fov_deg"] | 0;
   config.motion_detection_enabled = doc["motion_detection_enabled"] | true;
   config.motion_telegram_photo = doc["motion_telegram_photo"] | doc["motion_telegram_enabled"] | false;
   config.motion_telegram_video = doc["motion_telegram_video"] | false;
@@ -911,6 +928,7 @@ bool saveConfig() {
   doc["jpeg_quality"] = config.jpeg_quality;
   doc["flip_vertical"] = config.flip_vertical;
   doc["flip_horizontal"] = config.flip_horizontal;
+  doc["lens_fov_deg"] = config.lens_fov_deg;
   doc["motion_detection_enabled"] = config.motion_detection_enabled;
   doc["motion_telegram_photo"] = config.motion_telegram_photo;
   doc["motion_telegram_video"] = config.motion_telegram_video;
@@ -1072,6 +1090,9 @@ bool initCamera() {
   // Apply camera settings
   sensor_t * s = esp_camera_sensor_get();
   if (s != NULL) {
+    cameraSensorPID = s->id.PID;
+    Serial.printf("📷 Sensor: %s (PID 0x%04X)\n", cameraSensorName(), cameraSensorPID);
+
     // Apply saved resolution (downscale from UXGA init — OV3660 can't upscale)
     if (config.frame_size <= FRAMESIZE_UXGA && config.frame_size != FRAMESIZE_UXGA) {
       s->set_framesize(s, (framesize_t)config.frame_size);
@@ -1112,23 +1133,32 @@ bool initCamera() {
     // Each reg covers 2 zones (hi nibble=zone N+1, lo nibble=zone N). Range: 0-F.
     // Top rows (windows/ceiling) get low weight; bottom rows (subject/floor) get high weight.
     // This prevents bright windows from crushing the AEC target and darkening the scene.
-    s->set_reg(s, 0x5688, 0xff, 0x11);  // Zones 0,1: 1 (top row — windows)
-    s->set_reg(s, 0x5689, 0xff, 0x11);  // Zones 2,3: 1
-    s->set_reg(s, 0x568a, 0xff, 0x62);  // Zones 4,5: medium
-    s->set_reg(s, 0x568b, 0xff, 0x62);  // Zones 6,7: medium
-    s->set_reg(s, 0x568c, 0xff, 0xee);  // Zones 8,9: high (subject/room)
-    s->set_reg(s, 0x568d, 0xff, 0xee);  // Zones 10,11: high
-    s->set_reg(s, 0x568e, 0xff, 0xee);  // Zones 12,13: high (floor)
-    s->set_reg(s, 0x568f, 0xff, 0xee);  // Zones 14,15: high
+    // OV3660 and OV5640 share this register map (verified on an OV5640 2026-10-01);
+    // the OV2640 has a banked 8-bit map where these addresses mean something else.
+    if (cameraSensorPID == OV3660_PID || cameraSensorPID == OV5640_PID) {
+      s->set_reg(s, 0x5688, 0xff, 0x11);  // Zones 0,1: 1 (top row — windows)
+      s->set_reg(s, 0x5689, 0xff, 0x11);  // Zones 2,3: 1
+      s->set_reg(s, 0x568a, 0xff, 0x62);  // Zones 4,5: medium
+      s->set_reg(s, 0x568b, 0xff, 0x62);  // Zones 6,7: medium
+      s->set_reg(s, 0x568c, 0xff, 0xee);  // Zones 8,9: high (subject/room)
+      s->set_reg(s, 0x568d, 0xff, 0xee);  // Zones 10,11: high
+      s->set_reg(s, 0x568e, 0xff, 0xee);  // Zones 12,13: high (floor)
+      s->set_reg(s, 0x568f, 0xff, 0xee);  // Zones 14,15: high
 
-    initZone0_1 = s->get_reg(s, 0x5688, 0xff);
-    initZone8_9 = s->get_reg(s, 0x568c, 0xff);
-    Serial.printf("📷 Zone weight verify: 0x5688=0x%02X(want 0x11) 0x568c=0x%02X(want 0xEE)\n", initZone0_1, initZone8_9);
+      initZone0_1 = s->get_reg(s, 0x5688, 0xff);
+      initZone8_9 = s->get_reg(s, 0x568c, 0xff);
+      Serial.printf("📷 Zone weight verify: 0x5688=0x%02X(want 0x11) 0x568c=0x%02X(want 0xEE)\n", initZone0_1, initZone8_9);
+    } else {
+      Serial.printf("📷 Zone weights skipped: register map not known for %s\n", cameraSensorName());
+    }
 
     // --- OV3660 advanced ISP features (init-time only, SCCB free) ---
-    s->set_reg(s, 0x5000, 0xff, 0xA7);  // ISP Control: LENC+GMA+BPC+WPC+COLOR+AWB
-    s->set_reg(s, 0x5001, 0xff, 0xA3);  // ISP Control 2: SDE+UV_AVG+AWB_GAIN
-    s->set_reg(s, 0x5025, 0x03, 0x03);  // Auto BPC/WPC adaptation
+    // OV3660 only: on the OV5640 these bits of 0x5000/0x5001 select other blocks.
+    if (cameraSensorPID == OV3660_PID) {
+      s->set_reg(s, 0x5000, 0xff, 0xA7);  // ISP Control: LENC+GMA+BPC+WPC+COLOR+AWB
+      s->set_reg(s, 0x5001, 0xff, 0xA3);  // ISP Control 2: SDE+UV_AVG+AWB_GAIN
+      s->set_reg(s, 0x5025, 0x03, 0x03);  // Auto BPC/WPC adaptation
+    }
 
     // 2D Noise Reduction (0x5580) DISABLED — writing 0x40 to this register causes
     // inverted/negative image on this OV3660 revision. Confirmed by binary search
@@ -1137,10 +1167,14 @@ bool initCamera() {
     // depend on 0x5580 NR enable bit.
     // Trade-off: slightly noisier image in low-light/IR. Acceptable for person detection.
 
-    int reg5000 = s->get_reg(s, 0x5000, 0xff);
-    Serial.printf("📷 ISP advanced: 0x5000=0x%02X(want 0xA7), NR disabled (0x5580 causes inversion)\n", reg5000);
+    if (cameraSensorPID == OV3660_PID) {
+      int reg5000 = s->get_reg(s, 0x5000, 0xff);
+      Serial.printf("📷 ISP advanced: 0x5000=0x%02X(want 0xA7), NR disabled (0x5580 causes inversion)\n", reg5000);
+    } else {
+      Serial.printf("📷 ISP advanced (OV3660-only) skipped for %s\n", cameraSensorName());
+    }
 
-    Serial.println("📷 Camera initialized (brightness=3, ae_level=5, zone-weighted AEC, 2D-NR, BPC/WPC auto)");
+    Serial.printf("📷 Camera initialized: %s, brightness=3, ae_level=5\n", cameraSensorName());
     // NOTE: updateCameraProfile() called from setup() AFTER initIRControl() (LTR-308 init)
   }
 
