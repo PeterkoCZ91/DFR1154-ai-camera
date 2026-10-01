@@ -400,6 +400,8 @@ class DetectionPipeline:
         self._notify_thread.start()
 
         self._last_face_unlock_at = 0.0
+        # Newest saved face crop, attached to the dry-run Telegram message.
+        self._last_face_crop_path = None
 
         # Groq vision face recognition (optional, off without GROQ_API_KEY)
         self.groq_vision = None
@@ -498,6 +500,7 @@ class DetectionPipeline:
                 "DRY RUN: would unlock for {} (score {:.2f}, faces in view: {})".format(
                     face.lead_name, face.lead_score, faces
                 ),
+                media_path=getattr(self, "_last_face_crop_path", None),
                 bypass_cooldown=True,
             )
             return
@@ -1500,6 +1503,7 @@ class DetectionPipeline:
             )
             if cv2.imwrite(path, crop):
                 self._face_debug_written += 1
+                self._last_face_crop_path = path
                 if self._face_debug_written == self._face_debug_limit:
                     logging.info(
                         f"Face debug crops reached the limit of "

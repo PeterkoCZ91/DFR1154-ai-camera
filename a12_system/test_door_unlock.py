@@ -179,3 +179,12 @@ def test_verdict_reports_the_most_faces_seen():
     ep.record(res(faces=1))
     ep.record(res(faces=3))
     assert ep.verdict().faces == 3
+
+
+def test_dry_run_message_attaches_the_latest_face_crop():
+    fn, fake, events, sent, opened = _pipeline(dry_run=True)
+    attached = []
+    fake.notifier.send_telegram = lambda m, **k: attached.append(k.get("media_path"))
+    fake._last_face_crop_path = "/data/face_debug/x.jpg"
+    fn(fake, RESIDENT)
+    assert attached == ["/data/face_debug/x.jpg"]
