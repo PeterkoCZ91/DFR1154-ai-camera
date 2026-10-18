@@ -6,7 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [Unreleased] - 2026-09-15
+## [Unreleased] - 2026-10-18
+
+### Added (A12 — 3D Parallax & Planar Anti-Spoofing Liveness)
+- **3D parallax and non-planar geometry verification on YuNet landmarks (`face_liveness.py`).** Computes normalized 2D affine residuals and barycentric nose-to-eye depth ratios across consecutive confirming frames. Rejects static printed photos and flat screens (`spoof_planar` / `spoof_static`) with zero extra heavy dependencies in <0.2 ms CPU time.
+- **Graceful awaiting state (`awaiting:spoof_static`):** A momentarily static face does not drop the person track or wipe confirmations, allowing natural micro-motion on subsequent frames to confirm unlock without lockout.
+
+### Added (A12 — Bidirectional Telegram Bot Service)
+- **Interactive `TelegramBotService` (`telegram_bot.py`).** Replaces problematic on-ESP32 getUpdates TLS polling with server-side background thread (`infinity_polling`), eliminating ESP32 heap fragmentation.
+- **Bot commands:** `/help`, `/photo` / `/foto` (fresh camera frame capture), `/unlock` / `/odemknout` (Nuki latch unlatch via HA `lock.open`), `/status` / `/stav` (FPS, gallery count, Nuki status), `/mute [min]` & `/unmute` (temporary alert silencing), and `/enroll <name>` (add new face from photo directly in chat).
+- **Interactive inline keyboards:** Visitor and doorbell alerts include `[ 🔓 Odemknout ]` and `[ 🔕 Ztišit 15m ]` buttons with single-click execution and markup updates.
+- **Chat authorization:** Restricts command execution to configured `TELEGRAM_CHAT_ID`, dropping and logging unauthorized access attempts.
+
+### Added (A12 — SFace Gallery Sanitization Tool)
+- **`a12_system/tools/sanitize_gallery.py`:** Prunes cross-polluted embeddings (max cross-similarity >= 0.35), removes internal cluster outliers, and deduplicates video burst frames via greedy exemplar selection. Cleaned gallery reduced worst-case cross similarity from 0.398 down to 0.321 (safely below SFace's 0.363 match threshold).
+
+### Fixed (A12 — Fast Cadence Face Checks & Distance Poisoning Elimination)
+- **Fast intermediate face checks:** Decoupled YuNet face verification from the heavy 2.0s YOLO interval. During an active PIR window, intermediate frames check faces at 0.5s intervals inside the known person crop, slashing unlock latency from 4–6s down to 0.5–1.0s.
+- **Score poisoning eliminated in `FaceEpisode`:** Replaced cumulative `min(all_scores)` with a sliding confirmation window (`scores[-required_confirmations:]`). Distant, low-confidence initial detections (e.g. 0.40) no longer permanently block unlock when the resident arrives in front of the camera (e.g. 0.85).
+- **CLAHE lightness channel fallback:** In `detect_and_embed`, if raw YuNet detects no face, a single-pass CLAHE contrast enhancement runs on the L channel, recovering 21% of previously lost shadowed/backlit crops.
+- **Fisheye lens quality calibration:** Disabled harmful Laplacian blur filtering (`min_sharpness = 0.0`) which dropped 86% of faces behind the 160° fisheye acrylic dome, relying on physical face pixel size (>= 60 px) and YuNet detection confidence (>= 0.70).
+
+## [3.12.53] - 2026-09-15
 
 ### Added (firmware — report which camera module is on the flex)
 

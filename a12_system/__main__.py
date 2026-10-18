@@ -88,6 +88,7 @@ class Application:
         self.mqtt_client = None
         self.status_monitor = None
         self.pipeline = None
+        self.telegram_bot = None
         self.http_session = requests.Session()
 
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -96,6 +97,11 @@ class Application:
     def _signal_handler(self, sig, frame):
         logging.info("Shutdown signal received...")
         self.running = False
+        if getattr(self, "telegram_bot", None):
+            try:
+                self.telegram_bot.stop()
+            except Exception as e:
+                logging.warning(f"Error stopping Telegram bot on signal: {e}")
         raise KeyboardInterrupt
 
     def _consumer_config(self) -> dict:
@@ -287,6 +293,22 @@ class Application:
             script_dir=DATA_DIR,
         )
 
+        # Telegram Bot Service
+        if config.get("telegram", {}).get("enabled", False) and self.pipeline:
+            try:
+                from .telegram_bot import TelegramBotService
+
+                self.telegram_bot = TelegramBotService(
+                    config=config,
+                    notifier=notifier,
+                    pipeline=self.pipeline,
+                    runtime_config=self.runtime_config,
+                )
+                self.telegram_bot.start()
+                logging.info(f"{log_prefix} Telegram Bot Service started")
+            except Exception as e:
+                logging.error(f"{log_prefix} Failed to start Telegram Bot Service: {e}")
+
         # Initial camera config
         init_settings = self.runtime_config.get("camera_init_settings", {})
         if init_settings:
@@ -462,6 +484,12 @@ class Application:
         self._cleaned_up = True
 
         logging.info("Shutting down...")
+        if self.telegram_bot:
+            try:
+                self.telegram_bot.stop()
+            except Exception as e:
+                logging.warning(f"Error stopping Telegram bot during cleanup: {e}")
+            self.telegram_bot = None
         if self.pipeline:
             self.pipeline.stop()
         if self.status_monitor:

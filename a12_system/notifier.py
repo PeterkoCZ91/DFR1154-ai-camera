@@ -20,12 +20,37 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
 
 
+def make_visitor_keyboard() -> object | None:
+    """Build inline keyboard for visitor notifications: unlock and mute buttons.
+
+    Safely falls back to None if telebot is not available.
+    """
+    if not TELEGRAM_AVAILABLE:
+        return None
+    try:
+        from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("🔓 Odemknout", callback_data="unlock_door"),
+            InlineKeyboardButton("🔕 Ztišit 15m", callback_data="mute_15m"),
+        )
+        return markup
+    except Exception as e:
+        logging.warning(f"Failed to create visitor keyboard: {e}")
+        return None
+
+
 class Notifier:
+    make_visitor_keyboard = staticmethod(make_visitor_keyboard)
+    _muted_until: float = 0.0
+
     def __init__(self, config: dict):
         self.config = config
         self.bot = None
         self.chat_id = None
         self.last_telegram_time = 0
+        self._muted_until = 0.0
         # send_telegram() is called from at least five threads (notification
         # worker, status monitor, audio monitor, HA callback, main loop). The
         # cooldown check was an unguarded read-modify-write, so two events could
@@ -49,6 +74,15 @@ class Notifier:
             except Exception as e:
                 logging.error(f"Telegram init failed: {e}")
 
+    def is_muted(self) -> bool:
+        """Return True if notifications are currently muted."""
+        return time.time() < getattr(self, "_muted_until", 0.0)
+
+    def mute_until(self, timestamp: float) -> None:
+        """Mute outgoing notifications until specified unix timestamp."""
+        with self._send_lock:
+            self._muted_until = float(timestamp)
+
     def language(self) -> str:
         """The operator's language, or Czech if nothing has said otherwise.
 
@@ -62,7 +96,13 @@ class Notifier:
         except Exception:
             return "cz"
 
-    def send_telegram(self, message: str, media_path: str = None, bypass_cooldown: bool = False) -> bool:
+    def send_telegram(
+        self,
+        message: str,
+        media_path: str = None,
+        bypass_cooldown: bool = False,
+        reply_markup=None,
+    ) -> bool:
         """Send Telegram message/photo/video/GIF with cooldown.
 
         Returns True only when Telegram accepted the message. Callers that must not
@@ -73,6 +113,13 @@ class Notifier:
         cooldown = self.config.get("telegram_cooldown_seconds", 60)
 
         with self._send_lock:
+            if self.is_muted():
+                logging.info(
+                    f"Telegram notification muted for another "
+                    f"{self._muted_until - current_time:.0f}s; dropping message"
+                )
+                return False
+
             if current_time < self._rate_limited_until:
                 logging.warning(
                     f"Telegram rate-limited for another "
@@ -100,17 +147,21 @@ class Notifier:
         # about the sentence, not the language.
         message = translate_outgoing(message, self.language())
 
+        kwargs = {}
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
+
         try:
             if media_path and os.path.exists(media_path):
                 with open(media_path, "rb") as f:
                     if media_path.endswith(".gif"):
-                        self.bot.send_animation(self.chat_id, f, caption=message)
+                        self.bot.send_animation(self.chat_id, f, caption=message, **kwargs)
                     elif media_path.endswith(".mp4"):
-                        self.bot.send_video(self.chat_id, f, caption=message)
+                        self.bot.send_video(self.chat_id, f, caption=message, **kwargs)
                     else:
-                        self.bot.send_photo(self.chat_id, f, caption=message)
+                        self.bot.send_photo(self.chat_id, f, caption=message, **kwargs)
             else:
-                self.bot.send_message(self.chat_id, message)
+                self.bot.send_message(self.chat_id, message, **kwargs)
 
             logging.info(f"Telegram sent: {message[:50]}...")
             return True

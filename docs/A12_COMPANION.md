@@ -37,38 +37,41 @@ For Docker layout, multiple camera instances and runtime data ownership, see
 
 ## Detection, Face Recognition and Shared Scorer
 
-**Face recognition + Nuki unlock (optional)**
+**Local Face Recognition + Nuki Unlock**
 
-A12 uses [Groq](https://console.groq.com) (LLaMA 4 Scout, free tier) to recognize
-residents by comparing live camera frames against reference photos — no local model training
-needed.
+A12 runs 100% on-device, local face detection and recognition using OpenCV's `cv2.dnn` (YuNet for 5-point landmark detection and SFace for 128-d cosine embeddings). No cloud APIs, no subscription, and zero external biometric data leakage.
 
 ```bash
-# 1. Get a free API key at https://console.groq.com → API Keys
-#    Add to config.env:
-GROQ_API_KEY=<GROQ_API_KEY>
-NUKI_LOCK_ENTITY_ID=lock.nuki_smart_lock   # HA entity
+# 1. Models live in the A12 data directory alongside YOLO:
+#    face_detection_yunet_2023mar.onnx   (~230 KB)
+#    face_recognition_sface_2021dec.onnx (~38 MB)
+#
+# 2. Add to config.env:
+FACE_RECOGNITION_ENABLED=true
+FACE_UNLOCK_ENABLED=true
+FACE_UNLOCK_NAMES=alice,bob
+FACE_UNLOCK_MIN_SCORE=0.45
+FACE_UNLOCK_CONFIRMATIONS=2
+NUKI_LOCK_ENTITY_ID=lock.sweet_home   # HA lock entity
 
-# 2. Create a folder with 2–3 JPEG reference photos per person
-mkdir -p /opt/a12-data/known_faces/alice
-# copy or take snapshots — camera built-in /frame endpoint works great
+# 3. Enrol faces into known_faces_sface.pkl using the enrolment CLI:
+python3 a12_system/tools/enroll_sface.py --name alice --images /path/to/photos/
 
-# 3. Restart A12
-a12_system/tools/a12 up
+# 4. Optional: Sanitize and deduplicate gallery embeddings:
+python3 a12_system/tools/sanitize_gallery.py --input /data/known_faces_sface.pkl --report
 ```
 
-How A12 decides what to do with a detected person:
+**Key Pipeline Features:**
+- **Fast Cadence (0.5s):** Decoupled from the heavy 2.0s YOLO cycle. Intermediate frames check faces directly inside the known person bounding box, unlocking within 0.5–1.0s.
+- **3D Parallax & Planar Anti-Spoofing:** Analyzes 2D affine residuals and barycentric nose-to-eye depth ratios across consecutive frames. Rejects printed photos and smartphone screens (`spoof_planar` / `spoof_static`) in <0.2 ms CPU time without extra dependencies.
+- **Sliding Confirmation Window:** Eliminates score poisoning from distant approaches. Two consecutive positive sightings at normal distance trigger the unlock.
+- **CLAHE Contrast Fallback:** Recovers 21% of underexposed or shadowed faces in backlit doorways.
+- **Home Assistant Latch Unlatch:** Calls HA service `lock.open` to unlatch the door mechanism, allowing hands-free entry.
 
-| Groq confidence | Action |
-|---|---|
-| ≥ 90% | Telegram skipped · Nuki unlocked automatically |
-| 65–89% | Telegram sent with name hint · manual confirm |
-| < 65% | Full Telegram alert — unknown visitor |
-
-> [!NOTE]
-> A12 requires the YOLO model file (`yolo11n.onnx`, ~6 MB). `setup.sh` downloads
-> it automatically. If you prefer manual download, use the Ultralytics v8.3.0 asset
-> release for `yolo11n.onnx`.
+**Interactive Telegram Bot:**
+- Running on the server via `TelegramBotService` (no ESP32 TLS polling or memory fragmentation).
+- Commands: `/photo` (live frame capture), `/unlock` (instant Nuki unlatch), `/status` (system & stream overview), `/mute [min]` / `/unmute`, and `/enroll <name>` (add person directly from photo in chat).
+- Inline Action Buttons: Visitor and stranger notifications include `[ 🔓 Unlock ]` and `[ 🔕 Mute 15m ]` with one-tap confirmation.
 
 **Shared YOLO scorer (optional, opt-in)**
 
