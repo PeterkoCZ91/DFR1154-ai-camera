@@ -52,6 +52,8 @@ FACE_UNLOCK_ENABLED=true
 FACE_UNLOCK_NAMES=alice,bob
 FACE_UNLOCK_MIN_SCORE=0.45
 FACE_UNLOCK_CONFIRMATIONS=2
+FACE_MIN_FACE_SIZE=40                 # Minimum face size in pixels (filters distant faces)
+FACE_MAX_CHECKS_PER_EPISODE=20        # Usable face checks per approach runway
 NUKI_LOCK_ENTITY_ID=lock.sweet_home   # HA lock entity
 
 # 3. Enrol faces into known_faces_sface.pkl using the enrolment CLI:
@@ -63,14 +65,16 @@ python3 a12_system/tools/sanitize_gallery.py --input /data/known_faces_sface.pkl
 
 **Key Pipeline Features:**
 - **Fast Cadence (0.5s):** Decoupled from the heavy 2.0s YOLO cycle. Intermediate frames check faces directly inside the known person bounding box, unlocking within 0.5–1.0s.
+- **Distance Face Filtering & Check Budget:** Faces smaller than 40×40 px (`min_face_size = 40`) are skipped without consuming the usable check budget (`FACE_MAX_CHECKS_PER_EPISODE = 20`, `FACE_MAX_ATTEMPTS_PER_EPISODE = 30`), eliminating premature lockout during a resident's approach.
 - **3D Parallax & Planar Anti-Spoofing:** Analyzes 2D affine residuals and barycentric nose-to-eye depth ratios across consecutive frames. Rejects printed photos and smartphone screens (`spoof_planar` / `spoof_static`) in <0.2 ms CPU time without extra dependencies.
 - **Sliding Confirmation Window:** Eliminates score poisoning from distant approaches. Two consecutive positive sightings at normal distance trigger the unlock.
 - **CLAHE Contrast Fallback:** Recovers 21% of underexposed or shadowed faces in backlit doorways.
-- **Home Assistant Latch Unlatch:** Calls HA service `lock.open` to unlatch the door mechanism, allowing hands-free entry.
+- **Home Assistant Latch Unlatch & Lock:** Calls HA service `lock.open` to unlatch the door mechanism for hands-free entry, and `lock.lock` to secure the door on demand.
 
 **Interactive Telegram Bot:**
 - Running on the server via `TelegramBotService` (no ESP32 TLS polling or memory fragmentation).
-- Commands: `/photo` (live frame capture), `/unlock` (instant Nuki unlatch), `/status` (system & stream overview), `/mute [min]` / `/unmute`, and `/enroll <name>` (add person directly from photo in chat).
+- Commands & Aliases: `/photo` / `/foto` (live frame capture), `/unlock` / `/odemknout` / `/od` (instant Nuki unlatch via HA `lock.open`), `/lock` / `/zamknout` / `/za` (Nuki door lock via HA `lock.lock`), `/status` / `/stav` (system & stream overview), `/mute [min]` / `/unmute`, and `/enroll <name>` (add person directly from photo in chat).
+- Command Menu Picker: Automatically registers the command list in the Telegram client UI via the `set_my_commands` API upon bot startup.
 - Inline Action Buttons: Visitor and stranger notifications include `[ 🔓 Unlock ]` and `[ 🔕 Mute 15m ]` with one-tap confirmation.
 
 **Shared YOLO scorer (optional, opt-in)**

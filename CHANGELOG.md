@@ -12,14 +12,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **3D parallax and non-planar geometry verification on YuNet landmarks (`face_liveness.py`).** Computes normalized 2D affine residuals and barycentric nose-to-eye depth ratios across consecutive confirming frames. Rejects static printed photos and flat screens (`spoof_planar` / `spoof_static`) with zero extra heavy dependencies in <0.2 ms CPU time.
 - **Graceful awaiting state (`awaiting:spoof_static`):** A momentarily static face does not drop the person track or wipe confirmations, allowing natural micro-motion on subsequent frames to confirm unlock without lockout.
 
-### Added (A12 — Bidirectional Telegram Bot Service)
+### Added (A12 — Bidirectional Telegram Bot Service & Lock Control)
 - **Interactive `TelegramBotService` (`telegram_bot.py`).** Replaces problematic on-ESP32 getUpdates TLS polling with server-side background thread (`infinity_polling`), eliminating ESP32 heap fragmentation.
-- **Bot commands:** `/help`, `/photo` / `/foto` (fresh camera frame capture), `/unlock` / `/odemknout` (Nuki latch unlatch via HA `lock.open`), `/status` / `/stav` (FPS, gallery count, Nuki status), `/mute [min]` & `/unmute` (temporary alert silencing), and `/enroll <name>` (add new face from photo directly in chat).
+- **Bot commands & short aliases:** `/help`, `/photo` / `/foto` (fresh camera frame capture), `/unlock` / `/odemknout` / `/od` (Nuki latch unlatch via HA `lock.open`), `/lock` / `/zamknout` / `/za` (Nuki door locking via HA `lock.lock`), `/status` / `/stav` (FPS, gallery count, Nuki status), `/mute [min]` & `/unmute` (temporary alert silencing), and `/enroll <name>` (add new face from photo directly in chat).
+- **Door locking support (`ha_lock` in `door_unlock.py`):** Integrates Home Assistant `lock.lock` service call with state reading before and verification polling after the call.
+- **Automatic command menu registration (`set_my_commands`):** Populates the Telegram UI command popup picker on startup via Telegram Bot API, providing quick selection of `/od`, `/za`, `/foto`, `/stav`, `/mute`, `/unmute`, and `/help`.
 - **Interactive inline keyboards:** Visitor and doorbell alerts include `[ 🔓 Odemknout ]` and `[ 🔕 Ztišit 15m ]` buttons with single-click execution and markup updates.
 - **Chat authorization:** Restricts command execution to configured `TELEGRAM_CHAT_ID`, dropping and logging unauthorized access attempts.
 
 ### Added (A12 — SFace Gallery Sanitization Tool)
 - **`a12_system/tools/sanitize_gallery.py`:** Prunes cross-polluted embeddings (max cross-similarity >= 0.35), removes internal cluster outliers, and deduplicates video burst frames via greedy exemplar selection. Cleaned gallery reduced worst-case cross similarity from 0.398 down to 0.321 (safely below SFace's 0.363 match threshold).
+
+### Fixed (A12 — Distant Face Filtering & Approach Lockout Elimination)
+- **Distant face filtering (`min_face_size = 40px`):** Added `DEFAULT_MIN_FACE_SIZE = 40` and `FACE_MIN_FACE_SIZE` override in `SFaceBackend` and `Detector`. Small distant faces (<40×40 px) return `NO_FACE` and do not increment `usable_checks`, preventing distant approach detections from exhausting the check budget.
+- **Expanded check budget:** Increased default `FACE_MAX_CHECKS_PER_EPISODE` from 5 to 20 (allowing 10s of active checking at 0.5s intervals) and `FACE_MAX_ATTEMPTS_PER_EPISODE` from 15 to 30.
 
 ### Fixed (A12 — Fast Cadence Face Checks & Distance Poisoning Elimination)
 - **Fast intermediate face checks:** Decoupled YuNet face verification from the heavy 2.0s YOLO interval. During an active PIR window, intermediate frames check faces at 0.5s intervals inside the known person crop, slashing unlock latency from 4–6s down to 0.5–1.0s.
