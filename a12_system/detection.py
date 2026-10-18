@@ -61,6 +61,7 @@ class Detector:
         self.motion_streak = 0
         self.is_ultralytics_v8 = False
         self.last_person_box = None
+        self.last_lead_face_row = None
         self.face_backend = None
         self.face_cosine_threshold = DEFAULT_COSINE_THRESHOLD
         self._remote_failure_until = 0.0
@@ -389,6 +390,7 @@ class Detector:
     def _identify_with_backend(self, backend, frame: np.ndarray) -> FaceResult:
         """Match every face in the frame against the enrolled gallery."""
         if not self.known_face_encodings:
+            self.last_lead_face_row = None
             return FaceResult(FaceOutcome.UNAVAILABLE)
 
         # (face row, embedding) pairs when the backend can give boxes; the row
@@ -399,6 +401,7 @@ class Detector:
         else:
             pairs = [(None, e) for e in backend.embed(frame)]
         if not pairs:
+            self.last_lead_face_row = None
             return FaceResult(FaceOutcome.NO_FACE)
 
         # Several faces can share a frame; the best match over all of them
@@ -425,17 +428,31 @@ class Detector:
         # nearest the camera, a resident. Without boxes and more than one face
         # it cannot be answered, and an unanswerable question is a "no".
         lead = self._largest_face_index([face for face, _ in pairs])
+        self.last_lead_face_row = pairs[lead][0] if lead is not None else None
         lead_name, lead_score = (None, None)
+        quality = None
         if lead is not None:
             lead_name, lead_score = matches[lead]
+            lead_face_box = pairs[lead][0]
+            if lead_face_box is not None:
+                try:
+                    from .face_quality import measure_face_quality
+                    quality = measure_face_quality(frame, lead_face_box)
+                except Exception:
+                    quality = None
 
         if best_name is not None:
             return FaceResult(
                 FaceOutcome.RESIDENT, best_name, best_name_score,
                 faces=len(pairs), lead_name=lead_name, lead_score=lead_score,
+                quality=quality,
+                face_row=self.last_lead_face_row,
             )
         score = closest_score if closest_score > -1.0 else None
-        return FaceResult(FaceOutcome.STRANGER, None, score, faces=len(pairs))
+        return FaceResult(
+            FaceOutcome.STRANGER, None, score, faces=len(pairs), quality=quality,
+            face_row=self.last_lead_face_row,
+        )
 
     @staticmethod
     def _largest_face_index(faces: list):
@@ -457,6 +474,7 @@ class Detector:
         """
         backend = getattr(self, "face_backend", None)
         if backend is None:
+            self.last_lead_face_row = None
             return FaceResult(FaceOutcome.UNAVAILABLE)
 
         try:
@@ -464,5 +482,6 @@ class Detector:
         except Exception as e:
             # Runs inside the detection loop: a backend fault must read as
             # "nothing was established", never take the pipeline down with it.
+            self.last_lead_face_row = None
             logging.error(f"Face recognition error: {e}")
             return FaceResult(FaceOutcome.ERROR)

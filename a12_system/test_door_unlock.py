@@ -70,7 +70,7 @@ class _Resp:
         return self.body
 
 
-def run(post_status=200, states=("unlocked",)):
+def run(post_status=200, states=("locked", "unlocked")):
     seq = iter(states)
     last = {"v": states[-1]}
 
@@ -89,8 +89,9 @@ def run(post_status=200, states=("unlocked",)):
 
 
 def test_confirmed_unlock():
-    assert run(states=("unlocked",)) == (True, "unlocked")
+    assert run(states=("locked", "unlocked")) == (True, "unlocked")
     assert run(states=("locked", "unlocking")) == (True, "unlocking")
+    assert run(states=("unlocked", "opening")) == (True, "opening")
 
 
 def test_http_error_is_not_reported_as_unlocked():
@@ -100,7 +101,40 @@ def test_http_error_is_not_reported_as_unlocked():
 
 def test_lock_that_never_moves_is_not_reported_as_unlocked():
     ok, detail = run(states=("locked",))
-    assert ok is False and detail == "state_after_unlock:locked"
+    assert ok is False and detail == "open_not_confirmed:locked"
+
+
+def test_already_unlocked_without_a_transition_is_not_success():
+    assert run(states=("unlocked",)) == (False, "open_not_confirmed:unlocked")
+
+
+def test_open_uses_unlatch_service_and_accepts_a_completed_transition():
+    calls = []
+    states = iter([
+        {"state": "unlocked", "last_changed": "before"},
+        {"state": "unlocked", "last_changed": "after"},
+    ])
+    result = ha_unlock(
+        "http://ha:8123/", "tok", "lock.x",
+        post=lambda url, **kw: calls.append((url, kw)) or _Resp(),
+        get=lambda *a, **k: _Resp(body=next(states)),
+    )
+    assert result == (True, "unlocked")
+    assert calls[0][0] == "http://ha:8123/api/services/lock/open"
+    assert calls[0][1]["json"] == {"entity_id": "lock.x"}
+
+
+def test_attribute_update_alone_does_not_confirm_opening():
+    states = iter([
+        {"state": "unlocked", "last_changed": "same", "last_updated": "before"},
+        {"state": "unlocked", "last_changed": "same", "last_updated": "after"},
+    ])
+    assert ha_unlock(
+        "http://ha:8123", "tok", "lock.x",
+        post=lambda *a, **k: _Resp(),
+        get=lambda *a, **k: _Resp(body=next(states)),
+        settle_seconds=0,
+    ) == (False, "open_not_confirmed:unlocked")
 
 
 def test_missing_ha_config_never_calls_out():
@@ -188,3 +222,48 @@ def test_dry_run_message_attaches_the_latest_face_crop():
     fake._last_face_crop_path = "/data/face_debug/x.jpg"
     fn(fake, RESIDENT)
     assert attached == ["/data/face_debug/x.jpg"]
+
+
+def test_confirmed_opening_notifies_with_name_and_captured_photo(monkeypatch):
+    from types import SimpleNamespace
+    from a12_system import pipeline
+    from a12_system.messages import CZECH, translate_outgoing
+
+    events, sent = [], []
+    fake = SimpleNamespace(
+        ha_url="http://ha", ha_token="test", nuki_entity_id="lock.x", log_prefix="[t]",
+        db=SimpleNamespace(log_event=lambda *args: events.append(args)),
+        notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append((text, kw)) or True),
+    )
+    monkeypatch.setattr(pipeline, "ha_unlock", lambda *args: (True, "opening"))
+    pipeline.DetectionPipeline._nuki_unlock_worker(fake, "alice", 1, "/data/face_debug/match.jpg")
+    assert events == [("unlock", "alice", 1.0)]
+    text, options = sent[0]
+    assert "alice" in text and "confirmed" in text
+    assert options == {"media_path": "/data/face_debug/match.jpg", "bypass_cooldown": True}
+    assert translate_outgoing(text, "cz") == CZECH[
+        "Face recognised: {}. Latch opening confirmed."
+    ].format("alice")
+
+    monkeypatch.setattr(pipeline, "ha_unlock", lambda *args: (False, "open_not_confirmed:unlocked"))
+    pipeline.DetectionPipeline._nuki_unlock_worker(fake, "alice", 1)
+    assert events[-1][0] == "unlock_failed"
+    assert "NOT confirmed" in sent[-1][0]
+    assert translate_outgoing(sent[-1][0], "cz") == CZECH[
+        "Latch opening NOT confirmed for {} ({})"
+    ].format("alice", "open_not_confirmed:unlocked")
+
+
+def test_opening_thread_keeps_photo_from_the_recognition(monkeypatch):
+    from types import SimpleNamespace
+    from a12_system import pipeline
+
+    jobs = []
+    monkeypatch.setattr(
+        pipeline.threading, "Thread",
+        lambda **kw: SimpleNamespace(start=lambda: jobs.append(kw)),
+    )
+    fake = SimpleNamespace(_last_face_crop_path="/data/face_debug/match.jpg", _nuki_unlock_worker=object())
+    pipeline.DetectionPipeline._trigger_nuki_unlock(fake, "alice", 2)
+    fake._last_face_crop_path = "/data/face_debug/next-person.jpg"
+    assert jobs[0]["args"] == ("alice", 2, "/data/face_debug/match.jpg")

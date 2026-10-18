@@ -485,7 +485,7 @@ Auto-switching between three camera tunings based on ambient light from the LTR-
 | **IR LED auto control** | Lux threshold + hysteresis, manual override via API |
 | **OV3660 ISP tuning** | LENC, BPC/WPC auto, SDE, 2D-NR (init-time SCCB writes) |
 | **Server-side YOLO** | Optional Python A12 system runs YOLOv11n on the MJPEG stream for full bounding-box accuracy |
-| **Face recognition** | OpenCV YuNet detector + SFace embeddings in A12. Runs only inside a PIR window, on the YOLO person box, and decides once per occurrence rather than per frame. No extra dependency — both APIs ship with opencv-python-headless; two model files live in the data directory beside the YOLO weights |
+| **Face recognition** | OpenCV YuNet detector + SFace embeddings in A12. Runs inside a PIR window on the YOLO person box, independently of clip/notification cooldown. An occurrence allows five detected-face checks within fifteen total attempts, so missing faces do not exhaust the useful checks. Recognition still requires two agreeing sightings; the lock has its own score threshold and cooldown. No extra dependency — both APIs ship with opencv-python-headless; two model files live in the data directory beside the YOLO weights |
 | **Sensor fusion** | Confirmed alarm requires both camera detection AND external Zigbee sensor within configurable time window |
 
 ### :house: Integrations

@@ -97,10 +97,17 @@ class SFaceBackend:
     model files; use `from_paths` in production.
     """
 
-    def __init__(self, detector, recognizer, threshold: float = DEFAULT_COSINE_THRESHOLD):
+    def __init__(
+        self,
+        detector,
+        recognizer,
+        threshold: float = DEFAULT_COSINE_THRESHOLD,
+        enhance_contrast: bool = True,
+    ):
         self.detector = detector
         self.recognizer = recognizer
         self.threshold = float(threshold)
+        self.enhance_contrast = bool(enhance_contrast)
 
     @classmethod
     def from_paths(
@@ -109,12 +116,13 @@ class SFaceBackend:
         recognizer_path: str,
         threshold: float = DEFAULT_COSINE_THRESHOLD,
         score_threshold: float = 0.6,
+        enhance_contrast: bool = True,
     ) -> "SFaceBackend":
         import cv2
 
         detector = cv2.FaceDetectorYN_create(detector_path, "", (320, 320), score_threshold)
         recognizer = cv2.FaceRecognizerSF_create(recognizer_path, "")
-        return cls(detector, recognizer, threshold)
+        return cls(detector, recognizer, threshold, enhance_contrast=enhance_contrast)
 
     def embed(self, frame: np.ndarray) -> list:
         """Every face found in this frame, as a 128-d SFace feature."""
@@ -138,12 +146,27 @@ class SFaceBackend:
             # not match the image, and the crop size varies with the person box.
             self.detector.setInputSize((width, height))
             _, faces = self.detector.detect(frame)
+            active_frame = frame
+            if (faces is None or len(faces) == 0) and self.enhance_contrast and frame.ndim == 3 and frame.shape[2] == 3:
+                try:
+                    import cv2
+                    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                    lum, a_chan, b_chan = cv2.split(lab)
+                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                    enhanced = cv2.cvtColor(
+                        cv2.merge((clahe.apply(lum), a_chan, b_chan)), cv2.COLOR_LAB2BGR
+                    )
+                    _, faces = self.detector.detect(enhanced)
+                    if faces is not None and len(faces) > 0:
+                        active_frame = enhanced
+                except Exception:
+                    pass
             if faces is None or len(faces) == 0:
                 return []
 
             embeddings = []
             for face in faces:
-                aligned = self.recognizer.alignCrop(frame, face)
+                aligned = self.recognizer.alignCrop(active_frame, face)
                 feature = self.recognizer.feature(aligned)
                 if feature is None:
                     continue

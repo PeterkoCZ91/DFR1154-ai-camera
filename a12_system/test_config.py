@@ -114,6 +114,35 @@ def test_yolo_http_backend_env_override():
     print("[OK] YOLO_BACKEND/YOLO_SCORER_URL env overrides work")
 
 
+def test_face_unlock_env_overrides(tmp_path):
+    env = {
+        "FACE_UNLOCK_ENABLED": "true",
+        "FACE_UNLOCK_NAMES": "alice,bob",
+        "FACE_UNLOCK_MIN_SCORE": "0.45",
+        "FACE_UNLOCK_CONFIRMATIONS": "3",
+        "FACE_UNLOCK_WINDOW_SECONDS": "8.0",
+        "FACE_UNLOCK_MIN_FACE_SIZE": "50.0",
+    }
+    old = {key: os.environ.get(key) for key in env}
+    try:
+        os.environ.update(env)
+        config = load_config(str(tmp_path))
+        fu = config["face_unlock"]
+        assert fu["enabled"] is True
+        assert fu["names"] == ["alice", "bob"]
+        assert fu["min_score"] == 0.45
+        assert fu["confirmations"] == 3
+        assert fu["window_seconds"] == 8.0
+        assert fu["min_face_size"] == 50.0
+    finally:
+        for key, value in old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+
 def test_no_duplicate_flat_keys():
     """Verify no backward-compat flat keys pollute the config."""
     forbidden = [

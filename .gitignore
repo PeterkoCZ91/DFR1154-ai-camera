@@ -65,3 +65,5 @@ telegram_crash_report.md
 
 # Local agent planning context
 docs/superpowers/
+*face_review*.json
+eval_output/

@@ -71,6 +71,9 @@ DEFAULT_CONFIG = {
         # frames per occurrence.
         "require_pir_window": True,
         "max_checks_per_episode": 5,
+        # Missing faces and backend errors do not consume the usable-face
+        # budget, but all attempts remain bounded to cap CPU and disk work.
+        "max_attempts_per_episode": 15,
         "min_check_interval_seconds": 0.5,
         # YOLO person boxes clip the crown; a face detector needs the head.
         "person_box_margin": 0.25,
@@ -95,6 +98,9 @@ DEFAULT_CONFIG = {
         # so this sits well above it.
         "min_score": 0.60,
         "cooldown_seconds": 60.0,
+        "confirmations": 2,
+        "window_seconds": 10.0,
+        "min_face_size": 60.0,
     },
     "telegram": {
         "enabled": False,
@@ -376,6 +382,7 @@ ENV_OVERRIDES = [
     ("FACE_RECOGNITION_ENABLED", "face_recognition.enabled", _parse_bool),
     ("FACE_REQUIRE_PIR_WINDOW", "face_recognition.require_pir_window", _parse_bool),
     ("FACE_MAX_CHECKS_PER_EPISODE", "face_recognition.max_checks_per_episode", _parse_int),
+    ("FACE_MAX_ATTEMPTS_PER_EPISODE", "face_recognition.max_attempts_per_episode", _parse_int),
     ("FACE_MIN_CHECK_INTERVAL_SECONDS", "face_recognition.min_check_interval_seconds", _parse_float),
     ("FACE_PERSON_BOX_MARGIN", "face_recognition.person_box_margin", _parse_float),
     ("FACE_EPISODE_RESIDENT_CONFIRMATIONS", "face_recognition.episode_resident_confirmations", _parse_int),
@@ -391,6 +398,9 @@ ENV_OVERRIDES = [
     ("FACE_UNLOCK_NAMES", "face_unlock.names", _parse_csv),
     ("FACE_UNLOCK_MIN_SCORE", "face_unlock.min_score", _parse_float),
     ("FACE_UNLOCK_COOLDOWN_SECONDS", "face_unlock.cooldown_seconds", _parse_float),
+    ("FACE_UNLOCK_CONFIRMATIONS", "face_unlock.confirmations", _parse_int),
+    ("FACE_UNLOCK_WINDOW_SECONDS", "face_unlock.window_seconds", _parse_float),
+    ("FACE_UNLOCK_MIN_FACE_SIZE", "face_unlock.min_face_size", _parse_float),
     # MQTT
     ("MQTT_BROKER", "mqtt.broker_url", str),
     ("MQTT_PORT", "mqtt.port", _parse_int),

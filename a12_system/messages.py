@@ -33,9 +33,9 @@ CZECH: dict[str, str] = {
     '{} - local MP4 saved': '{} – MP4 uloženo lokálně',
 
     # pipeline.py — Nuki unlock
-    'Unlocked for {}': 'Odemknuto pro {}',
-    'Door did NOT unlock for {} ({})': 'Dveře se pro {} NEODEMKLY ({})',
-    'Unlocked for {} ({} faces in view)': 'Odemknuto pro {} (v záběru obličejů: {})',
+    'Face recognised: {}. Latch opening confirmed.': '🔓 Rozpoznán: {}. Otevření střelky potvrzeno.',
+    'Face recognised: {}. Latch opening confirmed ({} faces in view).': '🔓 Rozpoznán: {}. Otevření střelky potvrzeno (obličejů v záběru: {}).',
+    'Latch opening NOT confirmed for {} ({})': '⚠️ Rozpoznán: {}. Otevření střelky se nepodařilo potvrdit ({}).',
     'DRY RUN: would unlock for {} (score {:.2f}, faces in view: {})': 'TEST: odemklo by se pro {} (skóre {:.2f}, obličejů v záběru: {})',
 
     # status_monitor.py — sabotage watchdog and health checks

@@ -1,5 +1,48 @@
 # A12 Tools
 
+## evaluate_face_unlock.py — Offline Quality and Confirmation Replay
+
+Runs on a **copy** of saved `face_debug/*.jpg`, the two ONNX face models,
+and the tagged SFace gallery. It never connects to HA, MQTT, Telegram, or a
+camera. Use the same OpenCV version as the capture runtime for comparisons.
+
+```bash
+python3 -m a12_system.tools.evaluate_face_unlock \
+  --data-dir /path/to/data-copy \
+  --output-dir ./reports/face-replay \
+  --allowed-name Alice
+```
+
+Outputs face-only quality measurements, threshold/window sensitivity tables,
+Czech operator-facing HTML (`review.html`), a focused review of newly permitted
+candidates (`review_new.html`), and a Czech annotation sheet (`oznaceni.csv`).
+The translation resource is `tools/face_review_cs.json`; technical data in
+`review.csv` retains stable field names for processing.
+Results are simulations on recompressed images with the supplied gallery,
+not historical lock actions or measured accuracy. Old crops have no physical
+track IDs: the replay explicitly assumes episode continuity and does not
+validate it. The grid thresholds are experimental and are not deployed.
+
+`face_quality.py` implements the opt-in quality policy; `face_window.py`
+implements a separate experimental window requiring an explicit physical
+track ID. Neither module changes the production recognition pipeline.
+
+## sanitize_gallery.py — Gallery Sanitization & Outlier Pruning
+
+Prunes contaminated reference embeddings from an SFace gallery (`known_faces_sface.pkl`).
+Filters extreme internal outliers, cross-polluted samples, and video burst frames:
+
+```bash
+python3 -m a12_system.tools.sanitize_gallery \
+  --input /path/to/known_faces_sface.pkl \
+  --output /path/to/known_faces_sface_clean.pkl \
+  --report
+```
+
+1. **Extreme internal outliers:** drops samples with median similarity to their own cluster `< min_within` (default 0.40) or `max_cross >= within_median`.
+2. **Cross-pollution:** drops samples whose maximum similarity to another enrolled identity is `>= max_cross` (default 0.35).
+3. **Burst deduplication:** greedy exemplar selection per identity to eliminate video burst frames (`max_internal_sim < 0.88`), retaining diverse poses.
+
 ## a12 — Runtime CLI Wrapper
 
 `tools/a12` is the recommended user-facing entry point for local Docker operation.

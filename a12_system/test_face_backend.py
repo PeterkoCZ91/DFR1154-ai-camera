@@ -207,6 +207,29 @@ def test_a_raising_backend_yields_no_embeddings_rather_than_exploding():
     assert SFaceBackend(_Boom(), _FakeRecognizer()).embed(_frame()) == []
 
 
+def test_contrast_enhancement_recovers_shadowed_face():
+    """When the initial detection returns no faces, CLAHE enhancement tries again."""
+    face = np.array([10, 10, 90, 90] + [0] * 10 + [0.9], dtype=np.float32)
+    calls = []
+
+    class _ContrastDetector:
+        def setInputSize(self, size):
+            pass
+
+        def detect(self, image):
+            calls.append(image)
+            # First call returns no faces, second call (enhanced) finds the face
+            if len(calls) == 1:
+                return 1, None
+            return 1, np.array([face])
+
+    backend = SFaceBackend(_ContrastDetector(), _FakeRecognizer())
+    embeddings = backend.embed(_frame())
+    assert len(calls) == 2, "detector was not re-run with contrast enhancement"
+    assert len(embeddings) == 1
+
+
+
 # --- the detector speaking through this backend ----------------------------
 # Same FaceOutcome contract as the dlib path, so everything downstream — the
 # episode vote, the caption, the daily summary — is unchanged by the swap.

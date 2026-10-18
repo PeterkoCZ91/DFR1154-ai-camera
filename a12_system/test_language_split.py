@@ -31,7 +31,7 @@ SCANNED_SUFFIXES = (".py", ".md", ".cpp", ".h", ".sh", ".html")
 
 # Directories this repository does not write.
 SKIPPED_DIRS = {
-    ".git", "__pycache__", "node_modules", ".pio", "logs", "recordings",
+    ".git", "__pycache__", "node_modules", ".pio", "logs", "recordings", "reports",
     # Vendored third-party sources, and a vendored skills bundle.
     os.path.join("firmware", "lib"),
     os.path.join("docs", "superpowers"),
@@ -51,6 +51,9 @@ ALLOWED = {
     # The catalogue itself: the Czech half of every operator-visible message.
     # This is the file the rule exists to permit, not an exception to it.
     "a12_system/messages.py": "the Czech translation of every operator-visible message",
+    "a12_system/notifier.py": "the visitor inline keyboard Czech button labels",
+    "a12_system/telegram_bot.py": "the Telegram bot's operator-facing Czech commands, help, and responses",
+    "a12_system/test_telegram_bot.py": "asserts on the Telegram bot's Czech strings verbatim",
     "README.md": "quotes the dashboard's own Czech button labels",
     "CHANGELOG.md": "quotes the daily summary's own Czech line",
     # The GUI's own translation tables. Both files carry a symmetric cz/en

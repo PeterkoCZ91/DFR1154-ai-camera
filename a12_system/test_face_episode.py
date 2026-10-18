@@ -155,6 +155,20 @@ def test_a_resident_still_wins_over_a_single_unmatched_frame():
     assert ep.verdict().outcome is FaceOutcome.RESIDENT
 
 
+def test_early_marginal_match_does_not_poison_later_strong_confirmations():
+    """A person approaching from a distance has a low score, then strong ones.
+    The episode verdict must reflect the confirming window, not the distant frame."""
+    ep = FaceEpisode(required_confirmations=2)
+    ep.record(FaceResult(FaceOutcome.RESIDENT, "Alice", score=0.40, lead_name="Alice", lead_score=0.40))
+    ep.record(FaceResult(FaceOutcome.RESIDENT, "Alice", score=0.82, lead_name="Alice", lead_score=0.82))
+    ep.record(FaceResult(FaceOutcome.RESIDENT, "Alice", score=0.85, lead_name="Alice", lead_score=0.85))
+    verdict = ep.verdict()
+    assert verdict.is_resident
+    assert verdict.name == "Alice"
+    assert verdict.score == 0.82
+    assert verdict.lead_score == 0.82
+
+
 def test_an_episode_of_unreadable_frames_says_no_face():
     ep = FaceEpisode()
     for _ in range(5):
@@ -324,10 +338,59 @@ def test_the_pipeline_hands_the_detector_a_crop_not_the_whole_frame():
 
 def test_the_pipeline_stops_checking_once_the_budget_is_spent():
     det = _StubDetector([NO_FACE] * 20)
-    p = _pipeline(det, _face_max_checks=3)
+    p = _pipeline(det, _face_max_attempts=3)
     for _ in range(10):
         p._face_verdict(_frame())
     assert len(det.calls) == 3
+
+
+def test_missing_faces_do_not_exhaust_the_usable_face_budget():
+    det = _StubDetector([NO_FACE] * 5 + [RESIDENT, RESIDENT])
+    p = _pipeline(det)
+    for _ in range(7):
+        result = p._face_verdict(_frame())
+    assert result.is_resident
+    assert p._face_episode.usable_checks == 2
+    assert p._face_episode.checks_done == 7
+
+
+def test_detected_faces_still_have_a_separate_budget():
+    det = _StubDetector([NO_FACE, STRANGER, ERROR, RESIDENT, RESIDENT])
+    p = _pipeline(det, _face_max_checks=2)
+    for _ in range(10):
+        p._face_verdict(_frame())
+    assert len(det.calls) == 4
+    assert p._face_episode.usable_checks == 2
+    assert not p._face_episode.verdict().is_resident
+
+
+def test_recording_cooldown_does_not_delay_face_confirmation_or_unlock(monkeypatch):
+    from unittest.mock import Mock
+    from a12_system.face_result import FaceResult
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("a12_system.pipeline.time.time", lambda: clock["t"])
+    match = FaceResult(FaceOutcome.RESIDENT, "alice", .8, faces=1,
+                       lead_name="alice", lead_score=.8)
+    p = _pipeline(_StubDetector([match, match]))
+    p.runtime_config = {
+        "face_recognition": {"enabled": True},
+        "face_unlock.enabled": True, "face_unlock.names": ["alice"],
+        "face_unlock.dry_run": False, "require_sensor_for_recording": False,
+        "face_unlock.min_score": .45, "detection_cooldown_seconds": 60,
+    }
+    p.groq_vision = None
+    p.last_save_time = {"person": 999.0}
+    p._last_face_unlock_at = 0.0
+    p._score_event = Mock(return_value=100)
+    p._log_decision_audit = Mock()
+    p._trigger_nuki_unlock = Mock()
+    for now in (1000.0, 1002.0, 1004.0):
+        clock["t"] = now
+        p._handle_person_detections(_frame(), [("person", .95)], "external_trigger_window", "pir", 1, {})
+    p._trigger_nuki_unlock.assert_called_once_with("alice", 1)
+    assert p._last_face_unlock_at == 1002.0
+    assert p.last_save_time == {"person": 999.0}
 
 
 def test_two_occurrences_apart_in_time_do_not_share_a_verdict(monkeypatch):
@@ -565,3 +628,59 @@ def test_the_heartbeat_closes_an_episode_that_went_quiet(tmp_path, monkeypatch):
         p.process_frame(_frame())
 
     assert _face_rows(p) == [("Resident", 1.0)]
+
+
+def test_intermediate_face_checks_run_between_yolo_cycles_for_fast_unlock(monkeypatch):
+    """When a person is standing at the door (PIR active and person seen recently),
+    face checks must run at min_interval (0.5s) without waiting 2.0s for the next YOLO cycle."""
+    import queue
+    from unittest.mock import Mock
+
+    match = FaceResult(FaceOutcome.RESIDENT, "Resident", 0.8, faces=1, lead_name="Resident", lead_score=0.8)
+    det = _StubDetector([match, match])
+    p = _pipeline(det, _face_min_check_interval=0.5)
+    p.running = True
+    p.shared_state = {
+        "external_yolo_until": 2000.0,
+        "external_yolo_source": "pir",
+    }
+    p.runtime_config = {
+        "face_recognition": {"enabled": True},
+        "face_unlock.enabled": True,
+        "face_unlock.names": ["Resident"],
+        "face_unlock.dry_run": False,
+        "face_unlock.min_score": 0.45,
+    }
+    p.groq_vision = None
+    p.last_heartbeat = 1000.0
+    p.heartbeat_interval = 30
+    p.frame_count = 0
+    p.frame_buffer = []
+    p.notification_queue = queue.Queue()
+    p.status_monitor = None
+    p.last_periodic_yolo = 1000.0
+    p.last_external_yolo = 1000.0
+    p.external_yolo_interval = 2.0  # YOLO runs every 2.0s
+    p.person_confirmation_seen_at = {"pir": 1000.0, "camera": 0.0}
+    p.person_confirmation_max_gap = 3.0
+    p._last_face_unlock_at = 0.0
+    p.last_clip_buffer_sample = 0.0
+    p.clip_frame_size = (640, 480)
+    p._trigger_nuki_unlock = Mock()
+    p.detector.detect_motion = Mock(return_value=False)
+    p._should_buffer_clip_frames = Mock(return_value=False)
+    p._handle_pir_recording = Mock()
+    p.force_yolo_event = Mock(is_set=Mock(return_value=False))
+
+    # At t=1000.5s (0.5s later), run_yolo is False (2.0s interval not elapsed),
+    # but 0.5s face interval HAS elapsed.
+    clock = {"t": 1000.5}
+    monkeypatch.setattr("a12_system.pipeline.time.time", lambda: clock["t"])
+    p.process_frame(_frame())
+    assert len(det.calls) == 1
+
+    # At t=1001.0s (1.0s later), next face check runs and provides second confirmation!
+    clock["t"] = 1001.0
+    p.process_frame(_frame())
+    assert len(det.calls) == 2
+    p._trigger_nuki_unlock.assert_called_once_with("Resident", 1)

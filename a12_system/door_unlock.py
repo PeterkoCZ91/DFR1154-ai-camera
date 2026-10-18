@@ -65,19 +65,26 @@ def ha_unlock(
     settle_seconds: float = 6.0,
     timeout: float = 5.0,
 ) -> Tuple[bool, str]:
-    """Call lock.unlock and confirm the lock moved. Returns (opened, detail).
+    """Call lock.open (unlatch) and observe a new lock state.
 
     A 2xx from the service call only says HA accepted the request. An expired
     token is a 401 and a dead Nuki bridge still answers 200, so the state is
-    read back before anything is reported as unlocked.
+    read before and after the call. An already-unlocked, unchanged state is
+    not evidence that the latch moved.
     """
     if not ha_url or not token:
         return False, "no_ha_config"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base = ha_url.rstrip("/")
     try:
+        before = get(f"{base}/api/states/{entity_id}", headers=headers, timeout=timeout)
+        before.raise_for_status()
+        initial = before.json()
+    except Exception as e:
+        return False, f"state_before_open_failed:{e}"
+    try:
         resp = post(
-            f"{base}/api/services/lock/unlock",
+            f"{base}/api/services/lock/open",
             headers=headers,
             json={"entity_id": entity_id},
             timeout=timeout,
@@ -92,12 +99,17 @@ def ha_unlock(
         try:
             r = get(f"{base}/api/states/{entity_id}", headers=headers, timeout=timeout)
             r.raise_for_status()
-            state = r.json().get("state")
+            current = r.json()
+            state = current.get("state")
+            changed = state != initial.get("state") or (
+                current.get("last_changed") is not None
+                and current["last_changed"] != initial.get("last_changed")
+            )
+            if changed and state in _OPENED_STATES:
+                return True, str(state)
         except Exception as e:
             state = f"unreadable:{e}"
-        if state in _OPENED_STATES:
-            return True, str(state)
         if waited >= settle_seconds:
-            return False, f"state_after_unlock:{state}"
+            return False, f"open_not_confirmed:{state}"
         sleep(1.0)
         waited += 1.0
