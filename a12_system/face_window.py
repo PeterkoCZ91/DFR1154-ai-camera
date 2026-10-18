@@ -1,19 +1,41 @@
-"""Experimental lock confirmation window; not used by the live pipeline.
+"""The confirmation window that stands between face checks and the latch.
+
+Fed ONLY fresh per-frame checks, one call per face check actually run. The
+episode verdict is an aggregate that is handed back on every frame; feeding it
+here counted one sighting again and again. `at` must strictly increase, so the
+same check offered twice cannot count twice either.
 
 A real tracker must supply track_id. An episode identifier or a name alone
 does not establish that two observations belong to the same physical person.
+
+Fails closed throughout: no track, no landmarks, an unmeasured quality, more
+than one face or a weak score never count towards an opening.
 """
 
 from collections import deque
 import math
 from typing import Optional
 
-from .face_liveness import check_liveness_pair
-from .face_result import FaceResult
+from .face_liveness import LivenessPolicy, check_liveness_sequence
+from .face_result import FaceOutcome, FaceResult
+
+# Checks that resolved no face at all. They say nothing about who is at the
+# door (78 % of person frames have no resolvable face), so they neither add a
+# confirmation nor erase one; the time window still bounds how old a
+# confirmation may be.
+_NO_EVIDENCE = frozenset({FaceOutcome.NO_FACE, FaceOutcome.UNAVAILABLE, FaceOutcome.ERROR})
 
 
 class FaceUnlockWindow:
-    def __init__(self, *, allowed_names, min_score=0.45, confirmations=2, seconds=5.0):
+    def __init__(
+        self,
+        *,
+        allowed_names,
+        min_score=0.45,
+        confirmations=2,
+        seconds=5.0,
+        liveness_policy: Optional[LivenessPolicy] = None,
+    ):
         if confirmations < 2 or seconds <= 0 or not math.isfinite(seconds):
             raise ValueError("require at least two confirmations and a finite positive window")
         if not math.isfinite(min_score) or not 0 <= min_score <= 1:
@@ -22,14 +44,17 @@ class FaceUnlockWindow:
         self.min_score = min_score
         self.confirmations = confirmations
         self.seconds = seconds
+        self.liveness_policy = liveness_policy or LivenessPolicy()
         self.reset()
 
     def reset(self):
         self.track_id = None
+        # (at, face_row, lead_score) of each agreeing check, oldest first.
         self.hits = deque(maxlen=self.confirmations)
         self.name = None
         self.last_at = None
-        self.last_face_row = None
+        # Weakest score of the hits that produced the last confirmation.
+        self.confirmed_score = None
 
     def record(
         self,
@@ -49,37 +74,42 @@ class FaceUnlockWindow:
         if self.track_id != track_id or (self.last_at is not None and at <= self.last_at):
             self.reset()
         self.track_id, self.last_at = track_id, at
-        while self.hits and at - self.hits[0] > self.seconds:
+        while self.hits and at - self.hits[0][0] > self.seconds:
             self.hits.popleft()
+        if face.outcome in _NO_EVIDENCE:
+            return False, "no_face"
         reason = None
-        if not quality_ok:
-            reason = "quality"
-        elif face.faces != 1:
+        if face.faces != 1:
             reason = "ambiguous_faces"
         elif not face.is_resident or face.lead_name not in self.allowed_names:
             reason = "identity"
         elif face.lead_score is None or not math.isfinite(face.lead_score) or face.lead_score < self.min_score:
             reason = "score"
+        elif not quality_ok:
+            reason = "quality"
+        elif face_row is None:
+            # Without landmarks nothing can be said about liveness, and a
+            # check that cannot be made is a "no".
+            reason = "no_landmarks"
         if reason:
             self.hits.clear()
-            self.last_face_row = None
             return False, reason
         # Even if more than one identity is permitted, hits cannot be shared.
-        if getattr(self, "name", None) != face.lead_name:
+        if self.name != face.lead_name:
             self.hits.clear()
-            self.last_face_row = None
         self.name = face.lead_name
-        self.hits.append(at)
+        self.hits.append((at, face_row, float(face.lead_score)))
 
-        if len(self.hits) >= self.confirmations:
-            prev_row = self.last_face_row
-            if face_row is not None and prev_row is not None:
-                is_live, liveness_reason = check_liveness_pair(prev_row, face_row)
-                if not is_live:
-                    self.last_face_row = face_row
-                    return False, f"awaiting:{liveness_reason}"
-            self.last_face_row = face_row
-            return True, "confirmed"
-
-        self.last_face_row = face_row
-        return False, "awaiting"
+        if len(self.hits) < self.confirmations:
+            return False, "awaiting"
+        is_live, liveness_reason = check_liveness_sequence(
+            [row for _, row, _ in self.hits], self.liveness_policy
+        )
+        if not is_live:
+            # The hits stay: the oldest drops out as the next one arrives, so
+            # a person who moves still confirms without starting over.
+            return False, f"awaiting:{liveness_reason}"
+        self.confirmed_score = min(score for _, _, score in self.hits)
+        # One confirmation opens once; the next needs fresh sightings.
+        self.hits.clear()
+        return True, "confirmed"

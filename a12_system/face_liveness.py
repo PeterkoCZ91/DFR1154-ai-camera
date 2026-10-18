@@ -1,13 +1,33 @@
-"""3D parallax and motion liveness detection for YuNet detections.
+"""Landmark motion and parallax liveness for YuNet detections.
 
-Distinguishes physical human presence from static printed photos, replayed screens,
-and planar moving cutouts by checking inter-frame motion dynamics and 3D out-of-plane
-facial parallax.
+Distinguishes a face that moved in 3D from a frozen frame, a still photo and a
+photo or screen moved in front of the camera, using only YuNet's five
+landmarks of two or more observations.
+
+Planar test: anything flat (print, phone, tablet) moves between two views by a
+homography, and a homography is fixed exactly by four points. The eyes and
+mouth corners are close to one plane, so the homography they define predicts
+where the nose of a flat picture must land. A real nose sits ~2-4 cm in front
+of that plane and leaves it when the head turns or nods. The miss, divided by
+the eye distance, is the parallax. An affine fit is not enough: a tilted photo
+moves by a perspective map, which the affine model reads as non-planar.
+
+Limits, measured on this camera's own crops (2026-10-18): YuNet's landmarks
+jitter by roughly 10-15 % of the eye distance between two views of the very
+same image, which is as large as the parallax of a real head turn. With the
+0.06 default, replayed through FaceUnlockWindow: a frozen (identical) frame
+never passes, a photo held still passed 27 % of synthetic attempts, a photo
+moved or tilted 61-80 %. It does NOT reliably tell a moved photo from a live
+face and must not be the only factor between a photo and the latch.
+
+Coordinates must be in one frame: rows from different person crops have to be
+moved to frame pixels first (detection.face_row_in_frame), or the crop moving
+reads as the face moving.
 """
 
 from dataclasses import dataclass
 import math
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -15,10 +35,11 @@ import numpy as np
 
 @dataclass(frozen=True)
 class LivenessPolicy:
+    # Frame pixels / relative eye-distance change below which nothing moved.
     min_disp_px: float = 1.2
     min_scale_change: float = 0.015
-    min_affine_residual: float = 0.008
-    min_parallax_shift: float = 0.018
+    # Nose departure from the eyes+mouth homography, in eye distances.
+    min_parallax: float = 0.06
 
 
 class FaceGeometry(NamedTuple):
@@ -75,21 +96,61 @@ def compute_face_geometry(landmarks) -> FaceGeometry:
         return FaceGeometry(0.0, 0.0, 0.0, 1.0)
 
 
+# Eyes and mouth corners: the four points taken as the face plane.
+_PLANE = [0, 1, 3, 4]
+_NOSE = 2
+
+
+def nose_parallax(lm1, lm2) -> Optional[float]:
+    """How far the nose leaves the eyes+mouth plane between two views.
+
+    Symmetric (both directions, averaged) and divided by the mean eye distance.
+    None when the four plane points are degenerate, which the callers treat as
+    "no evidence", never as "live".
+    """
+    a = np.asarray(lm1, dtype=np.float64)
+    b = np.asarray(lm2, dtype=np.float64)
+    if a.shape != (5, 2) or b.shape != (5, 2) or not (np.isfinite(a).all() and np.isfinite(b).all()):
+        return None
+    d = 0.5 * (np.linalg.norm(a[1] - a[0]) + np.linalg.norm(b[1] - b[0]))
+    if d <= 1e-6:
+        return None
+    for pts in (a, b):
+        # The quadrilateral right eye, left eye, left mouth, right mouth must
+        # enclose real area, or the homography it defines is meaningless.
+        quad = pts[[0, 1, 4, 3]]
+        area = 0.5 * abs(np.dot(quad[:, 0], np.roll(quad[:, 1], -1)) - np.dot(quad[:, 1], np.roll(quad[:, 0], -1)))
+        if area < 0.1 * d * d:
+            return None
+    misses = []
+    for src, dst in ((a, b), (b, a)):
+        try:
+            H = cv2.getPerspectiveTransform(src[_PLANE].astype(np.float32), dst[_PLANE].astype(np.float32))
+        except cv2.error:
+            return None
+        if H is None or not np.isfinite(H).all():
+            return None
+        p = H @ np.array([src[_NOSE, 0], src[_NOSE, 1], 1.0])
+        if abs(p[2]) < 1e-9:
+            return None
+        misses.append(float(np.linalg.norm(p[:2] / p[2] - dst[_NOSE])))
+    value = float(np.mean(misses) / d)
+    return value if math.isfinite(value) else None
+
+
 def check_liveness_pair(
     face1_row,
     face2_row,
     policy: Optional[LivenessPolicy] = None,
 ) -> tuple[bool, str]:
-    """Establish whether two consecutive face observations demonstrate 3D physical presence.
+    """Whether two observations of a face show it moving in 3D.
 
-    Returns (is_live: bool, reason: str).
-    - If mean landmark displacement < min_disp_px and scale change < min_scale_change:
-      returns (False, "spoof_static")
-    - Estimates 2D affine transform using cv2.estimateAffine2D(lm1, lm2):
-      if normalized affine error < min_affine_residual and parallax shift < min_parallax_shift:
-      returns (False, "spoof_planar")
-    - If 3D parallax / natural non-planar motion is present:
-      returns (True, "live_confirmed")
+    Returns (is_live, reason):
+    - (False, "invalid_landmarks") when either row is missing or degenerate
+    - (False, "spoof_static") when the landmarks did not move or rescale
+    - (False, "spoof_planar") when the nose stayed on the plane of the other
+      four points (nose_parallax below policy.min_parallax)
+    - (True, "live_confirmed") otherwise
     """
     if policy is None:
         policy = LivenessPolicy()
@@ -110,22 +171,34 @@ def check_liveness_pair(
     if mean_disp < policy.min_disp_px and scale_change < policy.min_scale_change:
         return False, "spoof_static"
 
-    M, _inliers = cv2.estimateAffine2D(lm1, lm2)
-    if M is None:
-        norm_affine_error = 1.0
-    else:
-        pred_lm2 = (lm1 @ M[:, :2].T) + M[:, 2]
-        res_px = np.linalg.norm(pred_lm2 - lm2, axis=1)
-        norm_affine_error = float(np.mean(res_px) / max(geom2.d_eyes, 1e-6))
-
-    bary_shift = math.hypot(geom2.xi - geom1.xi, geom2.eta - geom1.eta)
-    yaw_shift = abs(geom2.r_yaw - geom1.r_yaw)
-    parallax_shift = max(bary_shift, yaw_shift)
-
-    if (
-        norm_affine_error < policy.min_affine_residual
-        and parallax_shift < policy.min_parallax_shift
-    ):
+    parallax = nose_parallax(lm1, lm2)
+    if parallax is None:
+        return False, "invalid_landmarks"
+    if parallax < policy.min_parallax:
         return False, "spoof_planar"
-
     return True, "live_confirmed"
+
+
+def check_liveness_sequence(
+    face_rows: Sequence,
+    policy: Optional[LivenessPolicy] = None,
+) -> tuple[bool, str]:
+    """Liveness over every observation that confirms one unlock. Fails closed.
+
+    Every row must carry landmarks; any consecutive pair that did not move at
+    all (a frozen stream, a picture held perfectly still) refuses; and the
+    first and last observation, the widest baseline the sequence has, must
+    show parallax. Judging only the newest pair let one lucky pair decide.
+    """
+    if policy is None:
+        policy = LivenessPolicy()
+    rows = list(face_rows)
+    if len(rows) < 2:
+        return False, "too_few_observations"
+    if any(row is None for row in rows):
+        return False, "invalid_landmarks"
+    for earlier, later in zip(rows, rows[1:]):
+        live, reason = check_liveness_pair(earlier, later, policy)
+        if reason in ("spoof_static", "invalid_landmarks"):
+            return False, reason
+    return check_liveness_pair(rows[0], rows[-1], policy)

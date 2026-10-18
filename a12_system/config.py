@@ -99,9 +99,23 @@ DEFAULT_CONFIG = {
         # so this sits well above it.
         "min_score": 0.60,
         "cooldown_seconds": 60.0,
+        # Fresh per-frame checks that must agree, on one person track, within
+        # window_seconds — not the episode verdict, which repeats every frame.
         "confirmations": 2,
         "window_seconds": 10.0,
+        # Per-check face quality; a face that cannot be measured never counts.
         "min_face_size": 60.0,
+        "min_sharpness": 0.0,
+        "min_visible_fraction": 0.9,
+        # Nose parallax (in eye distances) the confirming checks must show.
+        # Stops a frozen frame or a still picture most of the time; does NOT
+        # reliably stop a moved photo — see face_liveness.py.
+        "liveness_min_parallax": 0.06,
+        # Optional second factor: an HA entity (e.g. person.alice) that must
+        # read one of presence_states for the door to open. Empty disables it.
+        # Unreadable or any other state means no.
+        "presence_entity": "",
+        "presence_states": ["home"],
     },
     "telegram": {
         "enabled": False,
@@ -403,6 +417,11 @@ ENV_OVERRIDES = [
     ("FACE_UNLOCK_CONFIRMATIONS", "face_unlock.confirmations", _parse_int),
     ("FACE_UNLOCK_WINDOW_SECONDS", "face_unlock.window_seconds", _parse_float),
     ("FACE_UNLOCK_MIN_FACE_SIZE", "face_unlock.min_face_size", _parse_float),
+    ("FACE_UNLOCK_MIN_SHARPNESS", "face_unlock.min_sharpness", _parse_float),
+    ("FACE_UNLOCK_MIN_VISIBLE_FRACTION", "face_unlock.min_visible_fraction", _parse_float),
+    ("FACE_UNLOCK_LIVENESS_MIN_PARALLAX", "face_unlock.liveness_min_parallax", _parse_float),
+    ("FACE_UNLOCK_PRESENCE_ENTITY", "face_unlock.presence_entity", str),
+    ("FACE_UNLOCK_PRESENCE_STATES", "face_unlock.presence_states", _parse_csv),
     # MQTT
     ("MQTT_BROKER", "mqtt.broker_url", str),
     ("MQTT_PORT", "mqtt.port", _parse_int),

@@ -8,16 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-10-18
 
-### Added (A12 — 3D Parallax & Planar Anti-Spoofing Liveness)
-- **3D parallax and non-planar geometry verification on YuNet landmarks (`face_liveness.py`).** Computes normalized 2D affine residuals and barycentric nose-to-eye depth ratios across consecutive confirming frames. Rejects static printed photos and flat screens (`spoof_planar` / `spoof_static`) with zero extra heavy dependencies in <0.2 ms CPU time.
-- **Graceful awaiting state (`awaiting:spoof_static`):** A momentarily static face does not drop the person track or wipe confirmations, allowing natural micro-motion on subsequent frames to confirm unlock without lockout.
+### Fixed (A12 — face unlock decided by fresh checks, fail-closed)
+- **The confirmation window, quality policy and landmark liveness were never wired in.** `pipeline.face_window` stayed `None`, so the door opened on the episode verdict alone and `FACE_UNLOCK_CONFIRMATIONS` / `FACE_UNLOCK_WINDOW_SECONDS` / `FACE_UNLOCK_MIN_FACE_SIZE` did nothing. The lock now acts only on face checks that actually ran on a frame (an episode verdict repeated on every frame no longer counts as new evidence), within one person track, with a single face, the listed name, `FACE_UNLOCK_MIN_SCORE` on each check and the quality policy. Missing landmarks, quality, track or invalid settings mean no unlock.
+- **Liveness is plane + parallax, over the whole confirming sequence.** A homography from the eyes and mouth corners predicts the nose; a flat photo tilted in perspective no longer passes as "3D" the way it did with the affine residual. Landmark coordinates are moved from crop to full-frame pixels first.
+- **Limits, measured on this camera's crops:** YuNet's five landmarks jitter by 13–17 % of the eye distance, as much as a real head turn. Against synthetic photo/screen sequences the check blocks most still photos but a moved or tilted photo still unlocks most of the time, and a phone video defeats any geometric check. It is a hurdle, not anti-spoofing.
+- **Optional second factor `FACE_UNLOCK_PRESENCE_ENTITY`** (with `FACE_UNLOCK_PRESENCE_STATES`, default `home`): face unlock also requires that Home Assistant entity — e.g. the resident's phone tracker — to be in one of those states. Fail-closed, cached for 8 s. Off by default.
+
+### Fixed (A12 — Telegram, lock reporting, mute)
+- **`/mute` dropped every message**, including door opening, failed unlock and sabotage alerts. `send_telegram(..., critical=True)` now bypasses mute; door, sabotage and ESP32-stuck messages use it.
+- **`ha_lock` reported `locking` as locked.** It now waits for `locked`; `jammed`, `unknown` and `unavailable` fail at once. `ha_unlock` confirms an unlatch from an already-unlocked lock by its state timestamp instead of reporting a false failure.
+- **Bot buttons claimed "✅ Odemčeno" before anything happened;** they now say the request is in progress, and the confirmed result arrives as its own message. An unlock button on a notification older than 30 minutes no longer opens the door.
+- **`/enroll`** appends only to its own gallery file (it used to write every loaded gallery into the first one), saves atomically without numpy objects, validates the name and no longer fails on Markdown characters. `/status` is sent as plain text.
+- **`sanitize_gallery.py` wrote numpy-2 pickles** that the numpy-1.26 container could not read, which started the system with no enrolled faces. It now writes plain floats atomically.
 
 ### Added (A12 — Bidirectional Telegram Bot Service & Lock Control)
 - **Interactive `TelegramBotService` (`telegram_bot.py`).** Replaces problematic on-ESP32 getUpdates TLS polling with server-side background thread (`infinity_polling`), eliminating ESP32 heap fragmentation.
 - **Bot commands & short aliases:** `/help`, `/photo` / `/foto` (fresh camera frame capture), `/unlock` / `/odemknout` / `/od` (Nuki latch unlatch via HA `lock.open`), `/lock` / `/zamknout` / `/za` (Nuki door locking via HA `lock.lock`), `/status` / `/stav` (FPS, gallery count, Nuki status), `/mute [min]` & `/unmute` (temporary alert silencing), and `/enroll <name>` (add new face from photo directly in chat).
 - **Door locking support (`ha_lock` in `door_unlock.py`):** Integrates Home Assistant `lock.lock` service call with state reading before and verification polling after the call.
 - **Automatic command menu registration (`set_my_commands`):** Populates the Telegram UI command popup picker on startup via Telegram Bot API, providing quick selection of `/od`, `/za`, `/foto`, `/stav`, `/mute`, `/unmute`, and `/help`.
-- **Interactive inline keyboards:** Visitor and doorbell alerts include `[ 🔓 Odemknout ]` and `[ 🔕 Ztišit 15m ]` buttons with single-click execution and markup updates.
+- **Inline buttons:** callback handlers for `[ 🔓 Odemknout ]`, `[ 🔒 Zamknout ]` and `[ 🔕 Ztišit 15m ]` (`notifier.make_visitor_keyboard()`); visitor alerts do not attach them yet.
 - **Chat authorization:** Restricts command execution to configured `TELEGRAM_CHAT_ID`, dropping and logging unauthorized access attempts.
 
 ### Added (A12 — SFace Gallery Sanitization Tool)

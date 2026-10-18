@@ -29,15 +29,25 @@ def crop_person_box(frame: np.ndarray, box, margin: float = 0.25) -> np.ndarray:
     rather than to nothing, so a missing or degenerate box degrades to the old
     behaviour instead of silently skipping the check.
     """
+    return crop_person_box_with_origin(frame, box, margin)[0]
+
+
+def crop_person_box_with_origin(frame: np.ndarray, box, margin: float = 0.25):
+    """The crop of `crop_person_box` and the frame pixel of its top-left corner.
+
+    A face row found in the crop is in crop pixels, and the person box moves
+    between checks. Comparing two rows for motion is only meaningful once both
+    are moved back into the frame, which needs this origin.
+    """
     if box is None:
-        return frame
+        return frame, (0, 0)
     try:
         x1, y1, x2, y2 = (int(v) for v in box)
     except (TypeError, ValueError):
-        return frame
+        return frame, (0, 0)
     width, height = x2 - x1, y2 - y1
     if width < _MIN_BOX_PIXELS or height < _MIN_BOX_PIXELS:
-        return frame
+        return frame, (0, 0)
 
     pad_x, pad_y = int(width * margin), int(height * margin)
     frame_h, frame_w = frame.shape[:2]
@@ -46,8 +56,28 @@ def crop_person_box(frame: np.ndarray, box, margin: float = 0.25) -> np.ndarray:
     x2 = min(frame_w, x2 + pad_x)
     y2 = min(frame_h, y2 + pad_y)
     if x2 - x1 < _MIN_BOX_PIXELS or y2 - y1 < _MIN_BOX_PIXELS:
-        return frame
-    return frame[y1:y2, x1:x2]
+        return frame, (0, 0)
+    return frame[y1:y2, x1:x2], (x1, y1)
+
+
+def face_row_in_frame(face_row, origin):
+    """A YuNet row moved from crop pixels to frame pixels; None stays None.
+
+    Box corner and the five landmarks are positions; width, height and the
+    detector score are not, and are left alone.
+    """
+    if face_row is None:
+        return None
+    try:
+        row = np.array(face_row, dtype=np.float64).ravel()
+    except (TypeError, ValueError):
+        return None
+    if row.size < 14:
+        return None
+    dx, dy = float(origin[0]), float(origin[1])
+    row[[0, 4, 6, 8, 10, 12]] += dx
+    row[[1, 5, 7, 9, 11, 13]] += dy
+    return row
 
 
 class Detector:

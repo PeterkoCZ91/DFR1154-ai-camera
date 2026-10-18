@@ -248,7 +248,7 @@ def test_unlock_calls_trigger_nuki_unlock():
 
         pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram Admin")
         assert len(bot.sent_messages) == 1
-        assert "odemknout" in bot.sent_messages[0]["text"].lower() or "odemknutí" in bot.sent_messages[0]["text"].lower()
+        assert "Odemykám" in bot.sent_messages[0]["text"]
 
 
 # 4b. Test /lock, /zamknout, /za call _trigger_nuki_lock
@@ -264,7 +264,7 @@ def test_lock_calls_trigger_nuki_lock():
 
         pipeline._trigger_nuki_lock.assert_called_once_with("Telegram Admin")
         assert len(bot.sent_messages) == 1
-        assert "zamknutí" in bot.sent_messages[0]["text"].lower() or "zamknout" in bot.sent_messages[0]["text"].lower()
+        assert "Zamykám" in bot.sent_messages[0]["text"]
 
 
 # 5. Test /mute and /unmute correctly update mute state
@@ -307,10 +307,10 @@ def test_callback_query_unlock_door():
 
     pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram Callback")
     assert len(bot.answered_callbacks) == 1
-    assert "Dveře se odemykají" in bot.answered_callbacks[0]["text"]
+    assert "Odemykám" in bot.answered_callbacks[0]["text"]
     assert len(bot.edited_markups) == 1
     markup = bot.edited_markups[0]["reply_markup"]
-    assert "Odemčeno uživatelem Karel" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
+    assert "Odemykám (Karel)" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
 
 
 def test_callback_query_lock_door():
@@ -322,10 +322,10 @@ def test_callback_query_lock_door():
 
     pipeline._trigger_nuki_lock.assert_called_once_with("Telegram Callback")
     assert len(bot.answered_callbacks) == 1
-    assert "Dveře se zamykají" in bot.answered_callbacks[0]["text"]
+    assert "Zamykám" in bot.answered_callbacks[0]["text"]
     assert len(bot.edited_markups) == 1
     markup = bot.edited_markups[0]["reply_markup"]
-    assert "Zamčeno uživatelem Karel" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
+    assert "Zamykám (Karel)" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
 
 
 def test_callback_query_mute_15m():
@@ -407,11 +407,11 @@ def test_enroll_face_workflow(tmp_path):
     service.handle_enroll(msg)
 
     assert len(detector.known_face_names) == 1
-    assert detector.known_face_names[0] == "Eva"
+    assert detector.known_face_names[0] == "eva"
     assert len(detector.known_face_encodings) == 1
     assert os.path.exists(tmp_path / "known_faces_sface.pkl")
     assert len(bot.sent_messages) == 1
-    assert "Eva" in bot.sent_messages[0]["text"]
+    assert "eva" in bot.sent_messages[0]["text"]
 
 
 # 9. Test make_visitor_keyboard and send_telegram reply_markup
@@ -557,3 +557,85 @@ def test_send_telegram_passes_reply_markup():
     assert len(fake_bot.sent_messages) == 1
     assert fake_bot.sent_messages[0]["reply_markup"] is kb
 
+
+
+def test_unlock_button_on_old_notification_does_not_open():
+    pipeline = MagicMock()
+    service, bot, _ = _make_service(pipeline=pipeline)
+
+    call = FakeCallbackQuery(data="unlock_door")
+    call.message.date = int(time.time()) - 31 * 60
+    service.handle_callback_query(call)
+
+    pipeline._trigger_nuki_unlock.assert_not_called()
+    assert "vypršelo" in bot.answered_callbacks[0]["text"]
+
+
+def test_unlock_button_on_fresh_notification_opens_on_one_tap():
+    pipeline = MagicMock()
+    service, bot, _ = _make_service(pipeline=pipeline)
+
+    call = FakeCallbackQuery(data="unlock_door")
+    call.message.date = int(time.time()) - 60
+    service.handle_callback_query(call)
+
+    pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram Callback")
+
+
+def test_enroll_command_parsing():
+    from a12_system.telegram_bot import normalize_enroll_name, parse_enroll_command
+
+    assert parse_enroll_command("/enroll eva") == "eva"
+    assert parse_enroll_command("/enroll@A12Bot eva") == "eva"
+    assert parse_enroll_command("/enrollx eva") is None
+    assert normalize_enroll_name("Eva") == "eva"
+    assert normalize_enroll_name("e*va") is None
+    assert normalize_enroll_name("a" * 33) is None
+
+
+def _enroll_setup(tmp_path):
+    pipeline = MagicMock()
+    detector = MagicMock()
+    detector.models_dir = str(tmp_path)
+    detector.known_face_encodings = []
+    detector.known_face_names = []
+    detector._gallery_paths.return_value = [str(tmp_path / "known_faces_sface.pkl")]
+    backend = MagicMock()
+    backend.detect_and_embed.return_value = [
+        (np.zeros(15), np.ones(128, dtype=np.float32))
+    ]
+    detector.face_backend = backend
+    pipeline.detector = detector
+    return pipeline, detector
+
+
+def test_enroll_invalid_name_saves_nothing(tmp_path):
+    pipeline, detector = _enroll_setup(tmp_path)
+    service, bot, _ = _make_service(pipeline=pipeline)
+
+    service.handle_enroll(FakeMessage(text="/enroll e*va", photo=[MagicMock()]))
+
+    assert detector.known_face_names == []
+    assert not (tmp_path / "known_faces_sface.pkl").exists()
+    assert "Neplatné jméno" in bot.sent_messages[0]["text"]
+
+
+def test_enroll_appends_only_to_target_file_without_numpy(tmp_path):
+    import pickle
+
+    pipeline, detector = _enroll_setup(tmp_path)
+    gallery = tmp_path / "known_faces_sface.pkl"
+    with open(gallery, "wb") as f:
+        pickle.dump({"backend": "sface", "encodings": [[0.5] * 128], "names": ["alice"]}, f)
+    # Samples loaded from another gallery file must not be copied into this one.
+    detector.known_face_encodings = [np.ones(128), np.ones(128)]
+    detector.known_face_names = ["alice", "bob"]
+    service, bot, _ = _make_service(pipeline=pipeline)
+
+    service.handle_enroll(FakeMessage(text="/enroll eva", photo=[MagicMock()]))
+
+    raw = gallery.read_bytes()
+    assert b"numpy" not in raw
+    data = pickle.loads(raw)
+    assert data["names"] == ["alice", "eva"]
+    assert detector.known_face_names == ["alice", "bob", "eva"]

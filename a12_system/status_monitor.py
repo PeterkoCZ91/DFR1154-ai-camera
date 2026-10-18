@@ -107,12 +107,14 @@ class StatusMonitor(threading.Thread):
                     self.notifier.send_telegram(
                         f"SABOTAGE! Camera signal lost ({int(stream_lag)}s)!",
                         bypass_cooldown=True,
+                        critical=True,
                     )
                     self.mqtt_client.publish("camera/alarm/trigger", "ON")
                 else:
                     self.notifier.send_telegram(
                         f"Camera stream lost ({int(stream_lag)}s) — reconnecting...",
                         bypass_cooldown=True,
+                        critical=True,
                     )
 
                 self.sabotage_triggered = True
@@ -123,7 +125,7 @@ class StatusMonitor(threading.Thread):
                 self.mqtt_client.publish("camera/status/connection", "online")
                 # Pairs with the loss alert above: suppressing the recovery message
                 # leaves an operator staring at an unresolved alarm.
-                self.notifier.send_telegram("Camera signal recovered.", bypass_cooldown=True)
+                self.notifier.send_telegram("Camera signal recovered.", bypass_cooldown=True, critical=True)
                 self.sabotage_triggered = False
 
             self.mqtt_client.publish("camera/status/connection", "online")

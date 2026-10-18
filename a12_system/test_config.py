@@ -122,6 +122,11 @@ def test_face_unlock_env_overrides(tmp_path):
         "FACE_UNLOCK_CONFIRMATIONS": "3",
         "FACE_UNLOCK_WINDOW_SECONDS": "8.0",
         "FACE_UNLOCK_MIN_FACE_SIZE": "50.0",
+        "FACE_UNLOCK_MIN_SHARPNESS": "12.5",
+        "FACE_UNLOCK_MIN_VISIBLE_FRACTION": "0.8",
+        "FACE_UNLOCK_LIVENESS_MIN_PARALLAX": "0.05",
+        "FACE_UNLOCK_PRESENCE_ENTITY": "person.alice",
+        "FACE_UNLOCK_PRESENCE_STATES": "home,Doma",
     }
     old = {key: os.environ.get(key) for key in env}
     try:
@@ -134,6 +139,11 @@ def test_face_unlock_env_overrides(tmp_path):
         assert fu["confirmations"] == 3
         assert fu["window_seconds"] == 8.0
         assert fu["min_face_size"] == 50.0
+        assert fu["min_sharpness"] == 12.5
+        assert fu["min_visible_fraction"] == 0.8
+        assert fu["liveness_min_parallax"] == 0.05
+        assert fu["presence_entity"] == "person.alice"
+        assert fu["presence_states"] == ["home", "Doma"]
     finally:
         for key, value in old.items():
             if value is None:
@@ -141,6 +151,13 @@ def test_face_unlock_env_overrides(tmp_path):
             else:
                 os.environ[key] = value
 
+
+
+def test_face_unlock_second_factor_is_off_by_default():
+    fu = DEFAULT_CONFIG["face_unlock"]
+    assert fu["presence_entity"] == ""
+    assert fu["presence_states"] == ["home"]
+    assert fu["enabled"] is False and fu["dry_run"] is True
 
 
 def test_no_duplicate_flat_keys():

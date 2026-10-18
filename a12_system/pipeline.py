@@ -18,8 +18,12 @@ from .face_result import (
     notification_name,
     should_run_face_check,
 )
-from .detection import crop_person_box
-from .door_unlock import ha_lock, ha_unlock, unlock_decision
+from .detection import crop_person_box_with_origin, face_row_in_frame
+from .door_unlock import ha_lock, ha_unlock
+from .face_liveness import LivenessPolicy
+from .face_quality import QualityPolicy, quality_reasons
+from .face_window import FaceUnlockWindow
+from .presence_gate import PresenceGate
 from .flat_episode import FlatEpisodeState
 from .messages import translate
 
@@ -402,7 +406,12 @@ class DetectionPipeline:
         self._notify_thread.start()
 
         self._last_face_unlock_at = 0.0
+        # Built from face_unlock.* by _face_unlock_window(), after the HA
+        # settings below are known (the presence gate needs them).
         self.face_window = None
+        self.face_quality_policy = None
+        self.presence_gate = None
+        self._face_unlock_settings = None
         # Newest saved face crop, attached to the dry-run Telegram message.
         self._last_face_crop_path = None
 
@@ -421,6 +430,7 @@ class DetectionPipeline:
         self.ha_url = runtime_config.get("home_assistant_url", "")
         self.ha_token = runtime_config.get("home_assistant_token", "")
         self.nuki_entity_id = runtime_config.get("nuki_lock_entity_id", "lock.nuki_smart_lock")
+        self._face_unlock_window()
 
         # Suppress motion Telegram when known person was recently identified
         self._known_person_until = 0.0
@@ -466,7 +476,7 @@ class DetectionPipeline:
             else:
                 text = "Face recognised: {}. Latch opening confirmed.".format(name)
             delivered = self.notifier.send_telegram(
-                text, media_path=media_path, bypass_cooldown=True,
+                text, media_path=media_path, bypass_cooldown=True, critical=True,
             )
             if not delivered:
                 logging.warning(f"{self.log_prefix} Face opening notification was not delivered")
@@ -479,6 +489,7 @@ class DetectionPipeline:
                 "Latch opening NOT confirmed for {} ({})".format(name, detail),
                 media_path=media_path,
                 bypass_cooldown=True,
+                critical=True,
             )
 
     def _trigger_nuki_lock(self, name: str = "Telegram Admin"):
@@ -494,71 +505,135 @@ class DetectionPipeline:
         if locked:
             logging.info(f"{self.log_prefix} Nuki locking confirmed for '{name}' ({detail})")
             self.db.log_event("lock", name, 1.0)
-            self.notifier.send_telegram(f"🔒 Door locked ({name}).", bypass_cooldown=True)
+            self.notifier.send_telegram(
+                f"🔒 Door locked ({name}).", bypass_cooldown=True, critical=True,
+            )
         else:
             logging.error(f"{self.log_prefix} Nuki locking for '{name}' NOT CONFIRMED: {detail}")
             self.db.log_event("lock_failed", name, 0.0)
             self.notifier.send_telegram(
                 f"⚠️ Door locking NOT confirmed for {name} ({detail})",
                 bypass_cooldown=True,
+                critical=True,
             )
 
-    def _maybe_unlock_for_face(self, face) -> None:
-        """Open the door for an enrolled resident, or say what it would have done."""
+    def _face_unlock_window(self):
+        """The confirmation window for the current face_unlock.* settings.
+
+        Rebuilt when a setting changes at runtime (MQTT can change them), so a
+        new threshold applies at once and old confirmations made under the old
+        one do not carry over. An invalid setting leaves no window, and no
+        window means the door never opens from a face.
+        """
         cfg = self.runtime_config
+
+        def as_tuple(value):
+            # A runtime (MQTT) set can deliver "a,b" where a list is expected;
+            # tuple("alice") would be five one-letter names.
+            if isinstance(value, str):
+                value = value.split(",")
+            return tuple(str(v).strip() for v in (value or []) if str(v).strip())
+
+        settings = (
+            as_tuple(cfg.get("face_unlock.names", [])),
+            cfg.get("face_unlock.min_score", 0.60),
+            cfg.get("face_unlock.confirmations", 2),
+            cfg.get("face_unlock.window_seconds", 10.0),
+            cfg.get("face_unlock.min_face_size", 60.0),
+            cfg.get("face_unlock.min_sharpness", 0.0),
+            cfg.get("face_unlock.min_visible_fraction", 0.9),
+            cfg.get("face_unlock.liveness_min_parallax", 0.06),
+            cfg.get("face_unlock.presence_entity", "") or "",
+            as_tuple(cfg.get("face_unlock.presence_states", ["home"])),
+            getattr(self, "ha_url", ""),
+            getattr(self, "ha_token", ""),
+        )
+        if settings == getattr(self, "_face_unlock_settings", None):
+            return self.face_window
+        self._face_unlock_settings = settings
+        (names, min_score, confirmations, seconds, min_size, min_sharpness,
+         min_visible, min_parallax, presence_entity, presence_states, ha_url, ha_token) = settings
+        try:
+            self.face_window = FaceUnlockWindow(
+                allowed_names=names,
+                min_score=float(min_score),
+                confirmations=int(confirmations),
+                seconds=float(seconds),
+                liveness_policy=LivenessPolicy(min_parallax=float(min_parallax)),
+            )
+            self.face_quality_policy = QualityPolicy(
+                min_size=float(min_size),
+                min_sharpness=float(min_sharpness),
+                min_visible_fraction=float(min_visible),
+            )
+        except (TypeError, ValueError) as e:
+            logging.error(f"{self.log_prefix} Face unlock settings invalid, unlock off: {e}")
+            self.face_window = None
+            self.face_quality_policy = None
+        self.presence_gate = (
+            PresenceGate(ha_url, ha_token, presence_entity, presence_states)
+            if str(presence_entity).strip() else None
+        )
+        return self.face_window
+
+    def _maybe_unlock_for_face(self, face, check=None) -> None:
+        """Open the door for an enrolled resident, or say what it would have done.
+
+        `face` is the episode verdict and is NOT evidence for the lock: it is an
+        aggregate handed back on every frame, so feeding it in would count one
+        sighting many times. Only `check`, the face check that actually ran on
+        this frame (None when none ran), goes into the confirmation window.
+        """
+        cfg = self.runtime_config
+        if not bool(cfg.get("face_unlock.enabled", False)) or check is None:
+            return
+        window = self._face_unlock_window()
+        if window is None:
+            return
         now = time.time()
-        window = getattr(self, "face_window", None)
-        if window is not None:
-            track_id = (
-                (self.person_track_ids.get("pir") if getattr(self, "person_track_ids", None) else None)
-                or (self.person_track_ids.get("camera") if getattr(self, "person_track_ids", None) else None)
-                or "track"
-            )
-            quality_policy = getattr(self, "face_quality_policy", None)
-            quality_ok = True
-            if quality_policy is not None:
-                from .face_quality import quality_reasons
-                quality_ok = not quality_reasons(getattr(face, "quality", None), quality_policy)
-            allowed, reason = window.record(
-                face,
-                at=now,
-                track_id=track_id,
-                quality_ok=quality_ok,
-                face_row=getattr(face, "face_row", None),
-            )
-        else:
-            allowed, reason = unlock_decision(
-                face,
-                enabled=bool(cfg.get("face_unlock.enabled", False)),
-                allowed_names=cfg.get("face_unlock.names", []) or [],
-                min_score=float(cfg.get("face_unlock.min_score", 0.60)),
-                now=now,
-                last_unlock_at=self._last_face_unlock_at,
-                cooldown=float(cfg.get("face_unlock.cooldown_seconds", 60.0)),
-            )
+        track_ids = getattr(self, "person_track_ids", None) or {}
+        track_id = track_ids.get("pir") or track_ids.get("camera")
+        policy = self.face_quality_policy
+        # An unmeasured face (no box, no policy) is not a good-quality face.
+        quality_ok = policy is not None and not quality_reasons(check.quality, policy)
+        allowed, reason = window.record(
+            check, at=now, track_id=track_id, quality_ok=quality_ok, face_row=check.face_row,
+        )
         if not allowed:
-            if reason != "disabled" and not reason.startswith("awaiting") and face.is_resident:
-                logging.info(f"{self.log_prefix} Face unlock denied: {reason}")
-            elif reason.startswith("awaiting"):
+            if check.lead_name in window.allowed_names and reason != "awaiting":
+                logging.info(f"{self.log_prefix} Face unlock denied for '{check.lead_name}': {reason}")
+            else:
                 logging.debug(f"{self.log_prefix} Face unlock waiting: {reason}")
             return
+        name, score = check.lead_name, window.confirmed_score
+        if now - self._last_face_unlock_at < float(cfg.get("face_unlock.cooldown_seconds", 60.0)):
+            logging.debug(f"{self.log_prefix} Face unlock for '{name}' within cooldown")
+            return
+        gate = getattr(self, "presence_gate", None)
+        if gate is not None:
+            present, presence_reason = gate.allows()
+            if not present:
+                logging.info(f"{self.log_prefix} Face unlock denied for '{name}': {presence_reason}")
+                return
         self._last_face_unlock_at = now
-        faces = face.faces or 1
+        faces = check.faces or 1
         if cfg.get("face_unlock.dry_run", True):
             logging.info(
                 f"{self.log_prefix} Face unlock DRY RUN: would open for "
-                f"'{face.lead_name}' (score {face.lead_score:.3f}, faces in view: {faces})"
+                f"'{name}' (score {score:.3f}, faces in view: {faces})"
             )
-            self.db.log_event("unlock_dry_run", face.lead_name, float(face.lead_score))
+            self.db.log_event("unlock_dry_run", name, float(score))
             self.notifier.send_telegram(
                 "DRY RUN: would unlock for {} (score {:.2f}, faces in view: {})".format(
-                    face.lead_name, face.lead_score, faces
+                    name, score, faces
                 ),
                 media_path=getattr(self, "_last_face_crop_path", None),
                 bypass_cooldown=True,
+                critical=True,
             )
             return
-        self._trigger_nuki_unlock(face.lead_name, faces)
+        logging.info(f"{self.log_prefix} Face unlock confirmed for '{name}' (score {score:.3f})")
+        self._trigger_nuki_unlock(name, faces)
 
     def _caption(self, template: str, value) -> str:
         """Render one piece of a clip caption in the operator's language.
@@ -1112,8 +1187,8 @@ class DetectionPipeline:
                 and self._current_face_episode(current_time).usable_checks < self._face_max_checks
                 and current_time - getattr(self, "person_confirmation_seen_at", {}).get("pir", 0.0) < getattr(self, "person_confirmation_max_gap", 3.0)
             ):
-                face = self._face_verdict(frame)
-                self._maybe_unlock_for_face(face)
+                face, check = self._face_check(frame)
+                self._maybe_unlock_for_face(face, check)
             return
 
         # YOLO inference
@@ -1520,6 +1595,10 @@ class DetectionPipeline:
         followed by the same name four times, and the daily summary read
         "4 known faces" for one person.
         """
+        # Confirmations for the lock never outlive the occurrence they came from.
+        window = getattr(self, "face_window", None)
+        if window is not None:
+            window.reset()
         if self._face_episode_logged or self._face_episode.checks_done == 0:
             return
         verdict = self._face_episode.verdict()
@@ -1596,16 +1675,22 @@ class DetectionPipeline:
             logging.debug(f"Could not save face debug crop: {e}")
 
     def _face_verdict(self, frame) -> FaceResult:
-        """Spend at most one face check on this frame, then answer for the episode.
+        """Spend at most one face check on this frame, then answer for the episode."""
+        return self._face_check(frame)[0]
+
+    def _face_check(self, frame):
+        """Spend at most one face check on this frame: (episode verdict, check).
 
         The check only runs while somebody is actually at the door, on the
         person box rather than the whole frame, a bounded number of times per
-        occurrence. The answer returned is always the episode's, never this
-        one frame's — a single frame's opinion is what the old code shipped
-        and what the aggregation is meant to replace.
+        occurrence. The verdict is always the episode's — what alerts and the
+        audit use. `check` is this frame's own result when a check ran, else
+        None; it is the only thing the lock may count, with its face row moved
+        from crop to frame pixels so two checks on different crops compare.
         """
         now = time.time()
         episode = self._current_face_episode(now)
+        check = None
         if episode.checks_done < self._face_max_attempts and should_run_face_check(
             enabled=True,
             pir_window_active=self._pir_window_active(now),
@@ -1619,15 +1704,17 @@ class DetectionPipeline:
         ):
             # The box is already computed and thrown away today; a face is a
             # few percent of a 640x480 frame.
-            crop = crop_person_box(
+            crop, origin = crop_person_box_with_origin(
                 frame, self.detector.last_person_box, self._face_box_margin
             )
             check = self.detector.identify_person(crop)
             self._save_face_debug_crop(crop, check, now)
+            if getattr(check, "face_row", None) is not None:
+                check = check._replace(face_row=face_row_in_frame(check.face_row, origin))
             episode.record(check)
             self._last_face_check_at = now
             self.stats.record_face_attempt(check)
-        return episode.verdict()
+        return episode.verdict(), check
 
     def _buffer_clip_frame_if_needed(self, frame, current_time: float) -> None:
         """Keep a rolling pre-event buffer at idle FPS; ramp to clip_fps during active windows.
@@ -1770,8 +1857,8 @@ class DetectionPipeline:
             # matching face or spend the PIR window waiting to save a clip.
             face = None
             if self.groq_vision is None and self.runtime_config.get("face_recognition", {}).get("enabled", False):
-                face = self._face_verdict(frame)
-                self._maybe_unlock_for_face(face)
+                face, check = self._face_check(frame)
+                self._maybe_unlock_for_face(face, check)
 
             # Recording/notification cooldown
             if label in self.last_save_time:

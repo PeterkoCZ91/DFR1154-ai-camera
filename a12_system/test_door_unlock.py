@@ -124,17 +124,77 @@ def test_open_uses_unlatch_service_and_accepts_a_completed_transition():
     assert calls[0][1]["json"] == {"entity_id": "lock.x"}
 
 
-def test_attribute_update_alone_does_not_confirm_opening():
-    states = iter([
+def _unlock_with(bodies, settle_seconds=3):
+    seq = iter(bodies)
+    last = {"v": bodies[-1]}
+
+    def get(*a, **k):
+        try:
+            last["v"] = next(seq)
+        except StopIteration:
+            pass
+        return _Resp(body=last["v"])
+
+    return ha_unlock(
+        "http://ha:8123", "tok", "lock.x",
+        post=lambda *a, **k: _Resp(), get=get,
+        sleep=lambda s: None, settle_seconds=settle_seconds,
+    )
+
+
+def test_unlatch_from_unlocked_confirmed_by_last_updated():
+    # Prod: Nuki unlatched an already-unlocked door, the state never left
+    # `unlocked` and last_changed did not move, but HA did record the update.
+    assert _unlock_with([
         {"state": "unlocked", "last_changed": "same", "last_updated": "before"},
         {"state": "unlocked", "last_changed": "same", "last_updated": "after"},
-    ])
+    ]) == (True, "unlocked")
+
+
+def test_unlatch_from_unlocked_confirmed_by_a_transient_state():
+    assert _unlock_with([
+        {"state": "unlocked", "last_changed": "t0", "last_updated": "t0"},
+        {"state": "unlocked", "last_changed": "t0", "last_updated": "t0"},
+        {"state": "unlatching", "last_changed": "t1", "last_updated": "t1"},
+    ]) == (True, "unlatching")
+    assert _unlock_with([
+        {"state": "unlocked", "last_changed": "t0", "last_updated": "t0"},
+        {"state": "unlatched", "last_changed": "t1", "last_updated": "t1"},
+    ]) == (True, "unlatched")
+
+
+def test_stale_unlocked_state_with_unchanged_timestamps_is_not_success():
+    stale = {"state": "unlocked", "last_changed": "t0", "last_updated": "t0"}
+    assert _unlock_with([stale, stale]) == (False, "open_not_confirmed:unlocked")
+
+
+def test_timestamp_advance_into_a_locked_state_is_not_an_opening():
+    assert _unlock_with([
+        {"state": "unlocked", "last_changed": "t0", "last_updated": "t0"},
+        {"state": "locked", "last_changed": "t1", "last_updated": "t1"},
+    ]) == (False, "open_not_confirmed:locked")
+
+
+def test_missing_timestamps_are_not_evidence():
+    assert _unlock_with([
+        {"state": "unlocked"},
+        {"state": "unlocked", "last_updated": "t1"},
+    ]) == (False, "open_not_confirmed:unlocked")
+
+
+def test_jammed_lock_fails_the_opening_at_once():
+    polls = []
+    bodies = iter([{"state": "locked"}, {"state": "jammed"}, {"state": "unlocked"}])
+
+    def get(*a, **k):
+        polls.append(1)
+        return _Resp(body=next(bodies))
+
     assert ha_unlock(
         "http://ha:8123", "tok", "lock.x",
-        post=lambda *a, **k: _Resp(),
-        get=lambda *a, **k: _Resp(body=next(states)),
-        settle_seconds=0,
-    ) == (False, "open_not_confirmed:unlocked")
+        post=lambda *a, **k: _Resp(), get=get, sleep=lambda s: None,
+    ) == (False, "open_failed:jammed")
+    assert len(polls) == 2
 
 
 def test_missing_ha_config_never_calls_out():
@@ -164,7 +224,6 @@ def run_lock(post_status=200, states=("unlocked", "locked")):
 
 def test_confirmed_lock():
     assert run_lock(states=("unlocked", "locked")) == (True, "locked")
-    assert run_lock(states=("unlocked", "locking")) == (True, "locking")
     assert run_lock(states=("locked", "locked")) == (True, "locked")
 
 
@@ -184,6 +243,32 @@ def test_lock_initial_state_failure_is_not_reported_as_locked():
 def test_lock_timeout_not_reaching_locked_state():
     ok, detail = run_lock(states=("unlocked",))
     assert ok is False and detail == "lock_not_confirmed:unlocked"
+
+
+def test_locking_is_waited_out_until_locked():
+    # Prod logged "Nuki locking confirmed (locking)": the motor had only started.
+    assert run_lock(states=("unlocked", "locking", "locking", "locked")) == (True, "locked")
+
+
+def test_lock_stuck_in_locking_is_not_reported_as_locked():
+    assert run_lock(states=("unlocked", "locking")) == (False, "lock_not_confirmed:locking")
+
+
+def test_jammed_or_lost_lock_fails_at_once():
+    for bad in ("jammed", "unavailable", "unknown"):
+        assert run_lock(states=("unlocked", "locking", bad, "locked")) == (
+            False, f"lock_failed:{bad}")
+
+
+def test_unavailable_lock_is_not_sent_a_command():
+    called = []
+    assert ha_lock(
+        "http://ha:8123", "tok", "lock.x",
+        post=lambda *a, **k: called.append(1) or _Resp(),
+        get=lambda *a, **k: _Resp(body={"state": "unavailable"}),
+        sleep=lambda s: None,
+    ) == (False, "lock_failed:unavailable")
+    assert not called
 
 
 def test_lock_uses_lock_service():
@@ -230,53 +315,6 @@ def test_lock_polling_network_error():
     assert "lock_not_confirmed:unreadable" in detail
 
 
-class _Cfg(dict):
-    pass
-
-
-def _pipeline(dry_run):
-    from types import SimpleNamespace
-
-    from a12_system.pipeline import DetectionPipeline as P
-
-    events, sent, opened = [], [], []
-    cfg = {
-        "face_unlock.enabled": True, "face_unlock.dry_run": dry_run,
-        "face_unlock.names": ["alice"], "face_unlock.min_score": 0.6,
-        "face_unlock.cooldown_seconds": 60.0,
-    }
-    fake = SimpleNamespace(
-        runtime_config=SimpleNamespace(get=lambda k, d=None: cfg.get(k, d)),
-        _last_face_unlock_at=0.0, log_prefix="[t]",
-        db=SimpleNamespace(log_event=lambda *a, **k: events.append(a)),
-        notifier=SimpleNamespace(send_telegram=lambda m, **k: sent.append(m)),
-        _trigger_nuki_unlock=lambda name, faces=None: opened.append((name, faces)),
-    )
-    return P._maybe_unlock_for_face, fake, events, sent, opened
-
-
-def test_dry_run_reports_but_never_opens_and_respects_cooldown():
-    fn, fake, events, sent, opened = _pipeline(dry_run=True)
-    fn(fake, RESIDENT)
-    fn(fake, RESIDENT)  # second call falls inside the cooldown
-    assert opened == [] and len(sent) == 1 and events[0][0] == "unlock_dry_run"
-    assert "faces in view: 1" in sent[0]
-
-
-def test_dry_run_message_carries_the_face_count():
-    fn, fake, events, sent, opened = _pipeline(dry_run=True)
-    fn(fake, res(faces=3))
-    assert "faces in view: 3" in sent[0]
-
-
-def test_live_mode_opens_once_for_the_listed_resident():
-    fn, fake, events, sent, opened = _pipeline(dry_run=False)
-    fn(fake, res(faces=2))
-    fn(fake, FaceResult(FaceOutcome.STRANGER))
-    fn(fake, RESIDENT)
-    assert opened == [("alice", 2)]
-
-
 def test_resident_behind_a_stranger_does_not_open_the_door():
     """The verdict names a resident (right for muting an alert), but the nearest
     face matched nobody, so the door has no one to open for."""
@@ -301,15 +339,6 @@ def test_verdict_reports_the_most_faces_seen():
     assert ep.verdict().faces == 3
 
 
-def test_dry_run_message_attaches_the_latest_face_crop():
-    fn, fake, events, sent, opened = _pipeline(dry_run=True)
-    attached = []
-    fake.notifier.send_telegram = lambda m, **k: attached.append(k.get("media_path"))
-    fake._last_face_crop_path = "/data/face_debug/x.jpg"
-    fn(fake, RESIDENT)
-    assert attached == ["/data/face_debug/x.jpg"]
-
-
 def test_confirmed_opening_notifies_with_name_and_captured_photo(monkeypatch):
     from types import SimpleNamespace
     from a12_system import pipeline
@@ -326,7 +355,7 @@ def test_confirmed_opening_notifies_with_name_and_captured_photo(monkeypatch):
     assert events == [("unlock", "alice", 1.0)]
     text, options = sent[0]
     assert "alice" in text and "confirmed" in text
-    assert options == {"media_path": "/data/face_debug/match.jpg", "bypass_cooldown": True}
+    assert options == {"media_path": "/data/face_debug/match.jpg", "bypass_cooldown": True, "critical": True}
     assert translate_outgoing(text, "cz") == CZECH[
         "Face recognised: {}. Latch opening confirmed."
     ].format("alice")
@@ -371,7 +400,7 @@ def test_confirmed_locking_notifies_and_logs(monkeypatch):
     assert events == [("lock", "Telegram Admin", 1.0)]
     text, options = sent[0]
     assert "Telegram Admin" in text and "Door locked" in text
-    assert options == {"bypass_cooldown": True}
+    assert options == {"bypass_cooldown": True, "critical": True}
     assert translate_outgoing(text, "cz") == CZECH["🔒 Door locked ({})."].format("Telegram Admin")
 
     monkeypatch.setattr(pipeline, "ha_lock", lambda *args: (False, "lock_not_confirmed:unlocked"))

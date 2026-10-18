@@ -287,6 +287,20 @@ class _StubMqtt:
         self.published.append((topic, payload))
 
 
+def _live_checks(name, count, score=0.8):
+    """Per-frame checks of one live resident: a good face, a new head pose each."""
+    from a12_system.face_quality import FaceQuality
+    from a12_system.test_face_liveness import live_row
+
+    return [
+        FaceResult(
+            FaceOutcome.RESIDENT, name, score, faces=1, lead_name=name, lead_score=score,
+            quality=FaceQuality(100.0, 1.0, 100.0, 0.0, 0.0), face_row=live_row(step),
+        )
+        for step in range(count)
+    ]
+
+
 def _face_rows(p):
     return [(label, value) for typ, label, value in p.db.events if typ == "face"]
 
@@ -366,13 +380,12 @@ def test_detected_faces_still_have_a_separate_budget():
 
 def test_recording_cooldown_does_not_delay_face_confirmation_or_unlock(monkeypatch):
     from unittest.mock import Mock
-    from a12_system.face_result import FaceResult
 
     clock = {"t": 1000.0}
     monkeypatch.setattr("a12_system.pipeline.time.time", lambda: clock["t"])
-    match = FaceResult(FaceOutcome.RESIDENT, "alice", .8, faces=1,
-                       lead_name="alice", lead_score=.8)
-    p = _pipeline(_StubDetector([match, match]))
+    first, second = _live_checks("alice", 2)
+    p = _pipeline(_StubDetector([first, second]))
+    p.person_track_ids = {"pir": "pir_1", "camera": None}
     p.runtime_config = {
         "face_recognition": {"enabled": True},
         "face_unlock.enabled": True, "face_unlock.names": ["alice"],
@@ -636,9 +649,9 @@ def test_intermediate_face_checks_run_between_yolo_cycles_for_fast_unlock(monkey
     import queue
     from unittest.mock import Mock
 
-    match = FaceResult(FaceOutcome.RESIDENT, "Resident", 0.8, faces=1, lead_name="Resident", lead_score=0.8)
-    det = _StubDetector([match, match])
+    det = _StubDetector(_live_checks("Resident", 2))
     p = _pipeline(det, _face_min_check_interval=0.5)
+    p.person_track_ids = {"pir": "pir_1", "camera": None}
     p.running = True
     p.shared_state = {
         "external_yolo_until": 2000.0,
@@ -727,7 +740,7 @@ def test_approaching_resident_not_locked_out_by_early_distance():
     assert episode.checks_done == 7
 
     # Resident reaches the door and confirms twice
-    res = FaceResult(FaceOutcome.RESIDENT, "Petr", score=0.76, faces=1, lead_name="Petr", lead_score=0.76)
+    res = FaceResult(FaceOutcome.RESIDENT, "alice", score=0.76, faces=1, lead_name="alice", lead_score=0.76)
     episode.record(res)
     episode.record(res)
     assert episode.usable_checks == 3
@@ -735,7 +748,7 @@ def test_approaching_resident_not_locked_out_by_early_distance():
 
     verdict = episode.verdict()
     assert verdict.is_resident
-    assert verdict.name == "Petr"
-    assert verdict.lead_name == "Petr"
+    assert verdict.name == "alice"
+    assert verdict.lead_name == "alice"
     assert verdict.lead_score == 0.76
 

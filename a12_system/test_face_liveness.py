@@ -8,8 +8,10 @@ from a12_system.face_liveness import (
     FaceGeometry,
     LivenessPolicy,
     check_liveness_pair,
+    check_liveness_sequence,
     compute_face_geometry,
     extract_landmarks,
+    nose_parallax,
 )
 from a12_system.face_result import FaceOutcome, FaceResult
 from a12_system.face_window import FaceUnlockWindow
@@ -23,6 +25,33 @@ def make_yunet_row(landmarks, bbox=(10.0, 10.0, 100.0, 100.0), score=0.95):
         row.extend([float(pt[0]), float(pt[1])])
     row.append(score)
     return np.array(row, dtype=np.float64)
+
+
+# Eyes, nose tip (protruding 35 units towards the camera) and mouth corners.
+FACE_3D = np.array([
+    [-50.0, 0.0, 0.0],
+    [50.0, 0.0, 0.0],
+    [0.0, 40.0, 35.0],
+    [-30.0, 70.0, 5.0],
+    [30.0, 70.0, 5.0],
+], dtype=np.float64)
+
+
+def project_face(yaw=0.0, pitch=0.0, distance=600.0, focal=500.0, shift=(320.0, 240.0)):
+    """Pinhole projection of FACE_3D after turning the head."""
+    ry, rx = np.radians(yaw), np.radians(pitch)
+    Ry = np.array([[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]])
+    Rx = np.array([[1, 0, 0], [0, np.cos(rx), -np.sin(rx)], [0, np.sin(rx), np.cos(rx)]])
+    rotated = FACE_3D @ Rx.T @ Ry.T
+    z = rotated[:, 2] + distance
+    return np.column_stack([
+        rotated[:, 0] * focal / z + shift[0], rotated[:, 1] * focal / z + shift[1],
+    ])
+
+
+def live_row(step):
+    """Landmark row of a live head, turned a further 15 degrees each step."""
+    return make_yunet_row(project_face(yaw=-15.0 + 15.0 * (step % 3), pitch=4.0 * (step % 2)))
 
 
 @pytest.fixture
@@ -145,51 +174,65 @@ def test_planar_moving_photo_rejection(base_landmarks):
 
 
 def test_real_3d_head_movement_passes():
-    # 3D points representing eyes, nose tip (with 35mm depth protrusion), and mouth
-    pts_3d = np.array([
-        [-50.0, 0.0, 0.0],    # right eye
-        [50.0, 0.0, 0.0],     # left eye
-        [0.0, 40.0, 35.0],    # nose tip (protrudes towards camera)
-        [-30.0, 70.0, 5.0],   # right mouth corner
-        [30.0, 70.0, 5.0],    # left mouth corner
-    ], dtype=np.float64)
-
-    def project_3d_face(pts, rot_y_deg=0.0, rot_x_deg=0.0, distance=600.0, focal=500.0):
-        yaw = np.radians(rot_y_deg)
-        pitch = np.radians(rot_x_deg)
-        Ry = np.array([
-            [np.cos(yaw), 0, np.sin(yaw)],
-            [0, 1, 0],
-            [-np.sin(yaw), 0, np.cos(yaw)],
-        ])
-        Rx = np.array([
-            [1, 0, 0],
-            [0, np.cos(pitch), -np.sin(pitch)],
-            [0, np.sin(pitch), np.cos(pitch)],
-        ])
-        rotated = pts @ Rx.T @ Ry.T
-        z = rotated[:, 2] + distance
-        x = rotated[:, 0] * focal / z + 320.0
-        y = rotated[:, 1] * focal / z + 240.0
-        return np.column_stack([x, y])
-
-    # Neutral pose vs 8 degrees yaw turn
-    lm_neutral = project_3d_face(pts_3d, rot_y_deg=0.0)
-    lm_yaw = project_3d_face(pts_3d, rot_y_deg=8.0)
-
-    row1 = make_yunet_row(lm_neutral)
-    row2 = make_yunet_row(lm_yaw)
-
-    is_live, reason = check_liveness_pair(row1, row2)
+    # A 15 degree turn and a 12 degree nod move the nose ~0.08 eye distances
+    # off the eyes+mouth plane, above the 0.06 default.
+    row1 = make_yunet_row(project_face())
+    is_live, reason = check_liveness_pair(row1, make_yunet_row(project_face(yaw=15.0)))
     assert is_live
     assert reason == "live_confirmed"
 
-    # Pitch movement (nodding down 6 degrees)
-    lm_pitch = project_3d_face(pts_3d, rot_x_deg=6.0)
-    row_pitch = make_yunet_row(lm_pitch)
-    is_live_pitch, reason_pitch = check_liveness_pair(row1, row_pitch)
+    is_live_pitch, reason_pitch = check_liveness_pair(row1, make_yunet_row(project_face(pitch=12.0)))
     assert is_live_pitch
     assert reason_pitch == "live_confirmed"
+
+
+def test_small_turn_is_below_the_default_threshold():
+    """Calibration fact, pinned: a 5 degree turn is ~0.027, under the 0.06 bar."""
+    lm1, lm2 = project_face(), project_face(yaw=5.0)
+    assert 0.02 < nose_parallax(lm1, lm2) < 0.035
+    assert not check_liveness_pair(make_yunet_row(lm1), make_yunet_row(lm2))[0]
+
+
+def test_tilted_photo_is_planar_under_perspective():
+    """A flat photo turned 25 degrees moves by a homography, not an affine map.
+
+    The old affine-residual test read this perspective as 3D motion; the
+    homography of the eyes and mouth predicts the nose exactly.
+    """
+    flat = FACE_3D.copy()
+    flat[:, 2] = 0.0
+    def project_flat(yaw, distance=250.0):
+        ry = np.radians(yaw)
+        Ry = np.array([[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]])
+        r = flat @ Ry.T
+        z = r[:, 2] + distance
+        return np.column_stack([r[:, 0] * 500 / z + 320, r[:, 1] * 500 / z + 240])
+    lm1, lm2 = project_flat(0.0), project_flat(25.0)
+    assert nose_parallax(lm1, lm2) < 1e-6
+    assert check_liveness_pair(make_yunet_row(lm1), make_yunet_row(lm2)) == (False, "spoof_planar")
+
+
+def test_sequence_fails_closed_on_missing_or_static_rows(base_landmarks):
+    moving = [live_row(0), live_row(1)]
+    assert check_liveness_sequence(moving) == (True, "live_confirmed")
+    assert check_liveness_sequence([live_row(0)]) == (False, "too_few_observations")
+    assert check_liveness_sequence([live_row(0), None]) == (False, "invalid_landmarks")
+    assert check_liveness_sequence([None, None]) == (False, "invalid_landmarks")
+    # A frozen pair anywhere in the sequence refuses, even if the ends moved.
+    frozen = [live_row(0), live_row(1), live_row(1)]
+    assert check_liveness_sequence(frozen) == (False, "spoof_static")
+
+
+def test_sequence_judges_first_against_last_not_only_the_newest_pair():
+    """Turned, frontal, turned again and shifted: the newest pair shows parallax,
+    but the first and last are the same pose moved in the image plane."""
+    rows = [
+        make_yunet_row(project_face(yaw=-15.0)),
+        make_yunet_row(project_face()),
+        make_yunet_row(project_face(yaw=-15.0, shift=(330.0, 245.0))),
+    ]
+    assert check_liveness_pair(rows[1], rows[2])[0]
+    assert check_liveness_sequence(rows) == (False, "spoof_planar")
 
 
 def test_face_unlock_window_graceful_awaiting(base_landmarks):
@@ -230,26 +273,7 @@ def test_face_unlock_window_graceful_awaiting(base_landmarks):
     assert len(w.hits) == 2
 
     # Frame 4: natural 3D head motion occurs with out-of-plane parallax -> confirmed!
-    pts_3d = np.array([
-        [-50.0, 0.0, 0.0],
-        [50.0, 0.0, 0.0],
-        [0.0, 40.0, 35.0],
-        [-30.0, 70.0, 5.0],
-        [30.0, 70.0, 5.0],
-    ], dtype=np.float64)
-
-    yaw = np.radians(8.0)
-    Ry = np.array([
-        [np.cos(yaw), 0, np.sin(yaw)],
-        [0, 1, 0],
-        [-np.sin(yaw), 0, np.cos(yaw)],
-    ])
-    rotated = pts_3d @ Ry.T
-    z = rotated[:, 2] + 600.0
-    x = rotated[:, 0] * 500.0 / z + 320.0
-    y = rotated[:, 1] * 500.0 / z + 240.0
-    row_3d = make_yunet_row(np.column_stack([x, y]))
-
+    row_3d = make_yunet_row(project_face(yaw=15.0))
     allowed4, reason4 = w.record(res, at=2.5, track_id="track1", quality_ok=True, face_row=row_3d)
     assert allowed4
     assert reason4 == "confirmed"

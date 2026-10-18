@@ -7,10 +7,17 @@ import pytest
 from a12_system.face_quality import QualityPolicy, measure_face_quality, quality_reasons
 from a12_system.face_result import FaceOutcome, FaceResult
 from a12_system.face_window import FaceUnlockWindow
+from a12_system.test_face_liveness import live_row
+
+_step = {"n": 0}
 
 
-def match(name="alice", score=.8, faces=1):
-    return FaceResult(FaceOutcome.RESIDENT, name, score, faces, name, score)
+def match(name="alice", score=.8, faces=1, face_row=...):
+    """A matching check whose landmarks show a live head, a new pose each call."""
+    if face_row is ...:
+        _step["n"] += 1
+        face_row = live_row(_step["n"])
+    return FaceResult(FaceOutcome.RESIDENT, name, score, faces, name, score, face_row=face_row)
 
 
 def test_quality_measures_face_not_detailed_background():
@@ -76,3 +83,38 @@ def test_different_allowed_names_do_not_share_confirmations():
     assert not w.record(match(), at=1, track_id="track", quality_ok=True)[0]
     assert not w.record(match("bob"), at=2, track_id="track", quality_ok=True)[0]
     assert w.record(match("bob"), at=3, track_id="track", quality_ok=True)[0]
+
+
+def test_check_without_landmarks_never_confirms():
+    """Fail closed: no face row means no liveness evidence, means no opening."""
+    w = FaceUnlockWindow(allowed_names=["alice"])
+    for at in range(1, 8):
+        assert w.record(match(face_row=None), at=at, track_id="track", quality_ok=True) == (
+            False, "no_landmarks"
+        )
+    # One row-less check also erases the confirmation before it.
+    assert not w.record(match(), at=10, track_id="track", quality_ok=True)[0]
+    assert not w.record(match(face_row=None), at=11, track_id="track", quality_ok=True)[0]
+    assert not w.record(match(), at=12, track_id="track", quality_ok=True)[0]
+
+
+def test_no_face_frames_neither_count_nor_erase():
+    """78% of person frames hold no face; they are not evidence either way."""
+    w = FaceUnlockWindow(allowed_names=["alice"], seconds=5)
+    assert not w.record(match(), at=1, track_id="track", quality_ok=True)[0]
+    assert w.record(FaceResult(FaceOutcome.NO_FACE), at=2, track_id="track", quality_ok=False) == (
+        False, "no_face"
+    )
+    assert w.record(match(), at=3, track_id="track", quality_ok=True)[0]
+    # ...but the window still ages them out.
+    assert not w.record(match(), at=10, track_id="track", quality_ok=True)[0]
+    assert not w.record(FaceResult(FaceOutcome.NO_FACE), at=12, track_id="track", quality_ok=True)[0]
+    assert not w.record(match(), at=16, track_id="track", quality_ok=True)[0]
+
+
+def test_one_confirmation_opens_once():
+    w = FaceUnlockWindow(allowed_names=["alice"])
+    assert not w.record(match(), at=1, track_id="track", quality_ok=True)[0]
+    assert w.record(match(score=.7), at=2, track_id="track", quality_ok=True)[0]
+    assert w.confirmed_score == .7
+    assert not w.record(match(), at=3, track_id="track", quality_ok=True)[0]

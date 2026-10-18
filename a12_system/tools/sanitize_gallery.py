@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import pickle
 import sys
+import tempfile
 from typing import Any, Optional
 
 import numpy as np
@@ -369,6 +370,61 @@ def print_stats_report(report: dict[str, Any]) -> None:
     print("=" * 60 + "\n")
 
 
+def to_plain(value: Any) -> Any:
+    """Turn numpy arrays and scalars into plain Python lists, floats and ints.
+
+    A pickle of a numpy array names numpy's internal modules, and those moved
+    in numpy 2 (`numpy._core`). A gallery written on a numpy 2 machine then
+    fails to load in the numpy 1.26 container with "No module named
+    'numpy._core.numeric'" and A12 runs with no enrolled faces at all. Plain
+    lists of floats load anywhere; the matcher calls np.asarray on each
+    encoding, so it accepts them unchanged. float32 values widen to Python
+    floats exactly, so no precision is lost.
+    """
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {to_plain(k): to_plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(to_plain(v) for v in value)
+    return value
+
+
+def write_gallery(path: str | Path, gallery: dict[str, Any]) -> None:
+    """Write a gallery pickle free of numpy objects, atomically.
+
+    The container reads this file on start; a half-written pickle would leave
+    it with no faces, so the bytes go to a temporary file in the same directory
+    and replace the target only once complete.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plain = to_plain(gallery)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            # Protocol 4 is readable by every Python the container could run.
+            pickle.dump(plain, handle, protocol=4)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp creates 0600; the container may read as another user, so
+        # keep the old file's mode, or the usual 0644 for a new one.
+        try:
+            mode = path.stat().st_mode & 0o777
+        except FileNotFoundError:
+            mode = 0o644
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", "-i", required=True, help="Input gallery pkl path")
@@ -420,9 +476,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as handle:
-        pickle.dump(cleaned, handle)
+    write_gallery(output_path, cleaned)
 
     print(f"Wrote cleaned gallery with {len(cleaned['encodings'])} encodings to {output_path}")
 

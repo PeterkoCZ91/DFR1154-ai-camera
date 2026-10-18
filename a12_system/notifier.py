@@ -102,28 +102,37 @@ class Notifier:
         media_path: str = None,
         bypass_cooldown: bool = False,
         reply_markup=None,
+        critical: bool = False,
     ) -> bool:
         """Send Telegram message/photo/video/GIF with cooldown.
 
         Returns True only when Telegram accepted the message. Callers that must not
         lose an event should check the result — a False here means nothing was
         delivered.
+
+        `critical` marks a message that /mute must not swallow: door opened or
+        locked, an unlock that failed, sabotage. It is separate from
+        `bypass_cooldown` on purpose — PIR clips skip the cooldown by default,
+        so tying mute to that flag would let every visitor clip through a mute.
+        A critical message also skips the cooldown, but still honours a 429
+        backoff.
         """
+        bypass_cooldown = bypass_cooldown or critical
         current_time = time.time()
         cooldown = self.config.get("telegram_cooldown_seconds", 60)
 
         with self._send_lock:
-            if self.is_muted():
-                logging.info(
-                    f"Telegram notification muted for another "
-                    f"{self._muted_until - current_time:.0f}s; dropping message"
-                )
-                return False
-
             if current_time < self._rate_limited_until:
                 logging.warning(
                     f"Telegram rate-limited for another "
                     f"{self._rate_limited_until - current_time:.0f}s; dropping message"
+                )
+                return False
+
+            if self.is_muted() and not critical:
+                logging.info(
+                    f"Telegram notification muted for another "
+                    f"{self._muted_until - current_time:.0f}s; dropping message"
                 )
                 return False
 

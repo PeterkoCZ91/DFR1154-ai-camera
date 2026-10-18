@@ -147,3 +147,45 @@ def test_non_429_api_error_does_not_start_a_window():
     n = _notifier(bot)
     assert n.send_telegram("bad request", bypass_cooldown=True) is False
     assert n._rate_limited_until == 0.0
+
+
+def test_mute_drops_routine_messages_even_without_cooldown():
+    # PIR clips go out with bypass_cooldown=True by default; mute must still
+    # silence them, or the "mute 15m" button does nothing.
+    bot = _FakeBot()
+    n = _notifier(bot)
+    n.mute_until(time.time() + 60)
+    assert n.send_telegram("visitor clip", bypass_cooldown=True) is False
+    assert n.send_telegram("motion") is False
+    assert bot.sent == []
+
+
+def test_critical_message_goes_out_while_muted():
+    bot = _FakeBot()
+    n = _notifier(bot)
+    n.mute_until(time.time() + 60)
+    assert n.send_telegram("Latch opening confirmed.", critical=True) is True
+    assert n.send_telegram("SABOTAGE!", bypass_cooldown=True, critical=True) is True
+    assert bot.sent == ["Latch opening confirmed.", "SABOTAGE!"]
+
+
+def test_critical_message_skips_cooldown():
+    bot = _FakeBot()
+    n = _notifier(bot)
+    assert n.send_telegram("first") is True
+    assert n.send_telegram("door opened", critical=True) is True
+    assert bot.sent == ["first", "door opened"]
+
+
+def test_critical_message_still_respects_rate_limit_while_muted():
+    n = _notifier(_FakeBot(raises=_FakeApiException(429, retry_after=30)))
+    n.mute_until(time.time() + 60)
+    assert n.send_telegram("boom", critical=True) is False
+    assert n._rate_limited_until > time.time()
+    # Mute must neither hide the backoff nor let a critical send hammer the API.
+    n.bot = _FakeBot()
+    assert n.send_telegram("after", critical=True) is False
+    assert n.bot.sent == []
+    n._rate_limited_until = 0.0
+    assert n.send_telegram("after", critical=True) is True
+    assert n.bot.sent == ["after"]

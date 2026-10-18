@@ -2,7 +2,8 @@
 
 Provides bidirectional remote control and query interface for A12:
 - /photo & /foto: Live snapshot from camera pipeline
-- /unlock & /odemknout: Remote door unlock via Nuki
+- /unlock & /odemknout & /od: Remote door unlock via Nuki
+- /lock & /zamknout & /za: Remote door lock via Nuki
 - /status & /stav: System health, FPS, residents, events, mute status
 - /mute [min] & /unmute: Temporary notification suppression
 - /enroll <name>: One-shot face enrollment from photos
@@ -12,6 +13,8 @@ Provides bidirectional remote control and query interface for A12:
 import logging
 import os
 import pickle
+import re
+import tempfile
 import threading
 import time
 from typing import Optional
@@ -19,7 +22,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from .face_backend import SFACE_BACKEND
+from .face_backend import SFACE_BACKEND, read_gallery
 
 class _FallbackBotCommand:
     def __init__(self, command: str, description: str):
@@ -50,6 +53,90 @@ except ImportError:
     InlineKeyboardButton = object
 
 
+# An unlock button on an old notification opens nothing: whoever presses it
+# hours later is answering a visitor who has long gone. /od is always fresh.
+VISITOR_UNLOCK_TTL_SECONDS = 30 * 60
+CB_UNLOCK_DOOR = "unlock_door"
+
+
+# Enrolment names: like the existing gallery names (lowercase ASCII).
+ENROLL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_ENROLL_CMD_RE = re.compile(r"^/enroll(?:@\w+)?(?:\s+(?P<rest>.*))?$", re.DOTALL)
+
+
+def parse_enroll_command(text: Optional[str]) -> Optional[str]:
+    """Return the argument string of an /enroll command, or None if `text`
+    is not an /enroll command at all ("/enrollx" is not)."""
+    match = _ENROLL_CMD_RE.match((text or "").strip())
+    if not match:
+        return None
+    return (match.group("rest") or "").strip()
+
+
+def normalize_enroll_name(raw: str) -> Optional[str]:
+    """Lowercased name if valid, otherwise None."""
+    name = (raw or "").strip().lower()
+    return name if ENROLL_NAME_RE.match(name) else None
+
+
+def _embedding_to_list(embedding) -> list:
+    """Plain-float form: unpickles without numpy, independent of its version."""
+    return [float(x) for x in np.asarray(embedding, dtype=np.float64).ravel()]
+
+
+def save_gallery_atomic(path: str, encodings: list, names: list) -> None:
+    """Write an SFace gallery so a crash never leaves a half-written file and
+    the pickle contains no numpy objects (a numpy-2 pickle broke 1.26 once)."""
+    data = {
+        "backend": SFACE_BACKEND,
+        "encodings": [_embedding_to_list(e) for e in encodings],
+        "names": [str(n) for n in names],
+    }
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".tmp_" + os.path.basename(path) + ".", dir=directory
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            pickle.dump(data, handle, protocol=4)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
+        except FileNotFoundError:
+            os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def append_to_gallery_file(path: str, name: str, embedding) -> int:
+    """Append one sample to the gallery at `path` only (never merges other
+    galleries in). Returns the sample count of that file. Raises if the
+    existing file cannot be read as an SFace gallery, so it is never clobbered.
+    """
+    encodings: list = []
+    names: list = []
+    if os.path.exists(path):
+        with open(path, "rb") as handle:
+            data = pickle.load(handle)
+        if not (isinstance(data, dict) and data.get("backend") == SFACE_BACKEND):
+            raise ValueError(f"{path} is not an SFace gallery; refusing to overwrite it")
+        encodings, names = read_gallery(data, SFACE_BACKEND)
+        if len(encodings) != len(data.get("names") or []) or (
+            data.get("encodings") and not encodings
+        ):
+            raise ValueError(f"{path} is inconsistent; refusing to overwrite it")
+    encodings = list(encodings) + [embedding]
+    names = list(names) + [name]
+    save_gallery_atomic(path, encodings, names)
+    return len(names)
+
+
 class TelegramBotService:
     """Background service providing interactive Telegram bot commands and callbacks."""
 
@@ -65,6 +152,8 @@ class TelegramBotService:
         self.pipeline = pipeline
         self.runtime_config = runtime_config
         self.bot = getattr(notifier, "bot", None)
+        # Serialises gallery read-modify-write and the in-memory list swap.
+        self._enroll_lock = threading.Lock()
 
         tg_cfg = self.config.get("telegram") or {}
         token = tg_cfg.get("token")
@@ -132,6 +221,55 @@ class TelegramBotService:
         )
         return False
 
+    def _safe_reply(self, message, text: str) -> None:
+        """Best-effort plain-text reply used from error paths."""
+        try:
+            chat_id, _ = self._get_chat_and_user_id(message)
+            if self.bot and chat_id:
+                self.bot.send_message(chat_id, text)
+        except Exception as e:
+            logging.warning(f"Could not send Telegram error reply: {e}")
+
+    def _answer(self, call, text: Optional[str] = None, show_alert: bool = False) -> None:
+        if not hasattr(self.bot, "answer_callback_query"):
+            return
+        try:
+            if text is None:
+                self.bot.answer_callback_query(call.id)
+            elif show_alert:
+                self.bot.answer_callback_query(call.id, text, show_alert=True)
+            else:
+                self.bot.answer_callback_query(call.id, text)
+        except Exception as e:
+            logging.warning(f"Could not answer callback query: {e}")
+
+    def _set_markup(self, call, markup) -> None:
+        msg = getattr(call, "message", None)
+        chat_id = getattr(getattr(msg, "chat", None), "id", None)
+        message_id = getattr(msg, "message_id", None)
+        if not (chat_id and message_id):
+            return
+        try:
+            self.bot.edit_message_reply_markup(
+                chat_id=chat_id, message_id=message_id, reply_markup=markup
+            )
+        except Exception as e:
+            logging.warning(f"Could not update reply markup: {e}")
+
+    def _set_status_markup(self, call, label: str) -> None:
+        """Replace the buttons by a single inert label."""
+        if not TELEGRAM_AVAILABLE:
+            return
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton(label, callback_data="noop"))
+        self._set_markup(call, markup)
+
+    def _unlock_available(self) -> bool:
+        return bool(
+            self.pipeline
+            and callable(getattr(self.pipeline, "_trigger_nuki_unlock", None))
+        )
+
     def _register_handlers(self) -> None:
         if not self.bot or not hasattr(self.bot, "register_message_handler"):
             return
@@ -166,16 +304,11 @@ class TelegramBotService:
         )
         self.bot.register_message_handler(
             self.handle_enroll,
-            func=lambda m: bool(
-                m
-                and (
-                    getattr(m, "text", None)
-                    or getattr(m, "caption", None)
-                    or ""
-                )
-                .strip()
-                .startswith("/enroll")
-            ),
+            func=lambda m: bool(m)
+            and parse_enroll_command(
+                getattr(m, "text", None) or getattr(m, "caption", None)
+            )
+            is not None,
             content_types=["text", "photo"],
         )
         if hasattr(self.bot, "register_callback_query_handler"):
@@ -233,6 +366,7 @@ class TelegramBotService:
             self.bot.send_message(chat_id, help_text, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Error handling /help: {e}")
+            self._safe_reply(message, "⚠️ Nápovědu se nepodařilo zobrazit.")
 
     def handle_photo(self, message) -> None:
         """Handle /photo and /foto commands."""
@@ -271,6 +405,7 @@ class TelegramBotService:
             )
         except Exception as e:
             logging.error(f"Error handling /photo: {e}")
+            self._safe_reply(message, "⚠️ Snímek se nepodařilo odeslat.")
 
     def handle_unlock(self, message) -> None:
         """Handle /unlock, /odemknout, and /od commands."""
@@ -279,10 +414,10 @@ class TelegramBotService:
                 return
 
             chat_id, _ = self._get_chat_and_user_id(message)
-            if self.pipeline and callable(getattr(self.pipeline, "_trigger_nuki_unlock", None)):
+            if self._unlock_available():
                 self.pipeline._trigger_nuki_unlock("Telegram Admin")
                 self.bot.send_message(
-                    chat_id, "🔓 Požadavek na odemknutí dveří (Telegram Admin) byl odeslán."
+                    chat_id, "⏳ Odemykám… (výsledek přijde zprávou)"
                 )
             else:
                 self.bot.send_message(
@@ -290,6 +425,7 @@ class TelegramBotService:
                 )
         except Exception as e:
             logging.error(f"Error handling /unlock: {e}")
+            self._safe_reply(message, "⚠️ Požadavek na odemknutí se nepodařilo zpracovat.")
 
     def handle_lock(self, message) -> None:
         """Handle /lock, /zamknout, and /za commands."""
@@ -301,7 +437,7 @@ class TelegramBotService:
             if self.pipeline and callable(getattr(self.pipeline, "_trigger_nuki_lock", None)):
                 self.pipeline._trigger_nuki_lock("Telegram Admin")
                 self.bot.send_message(
-                    chat_id, "🔒 Požadavek na zamknutí dveří (Telegram Admin) byl odeslán."
+                    chat_id, "⏳ Zamykám… (výsledek přijde zprávou)"
                 )
             else:
                 self.bot.send_message(
@@ -309,6 +445,7 @@ class TelegramBotService:
                 )
         except Exception as e:
             logging.error(f"Error handling /lock: {e}")
+            self._safe_reply(message, "⚠️ Požadavek na zamknutí se nepodařilo zpracovat.")
 
     def handle_status(self, message) -> None:
         """Handle /status and /stav commands."""
@@ -332,7 +469,7 @@ class TelegramBotService:
             residents: list[str] = []
             if self.pipeline and getattr(self.pipeline, "detector", None):
                 names = getattr(self.pipeline.detector, "known_face_names", [])
-                residents = sorted(set(names))
+                residents = sorted(set(str(n) for n in names))
             elif self.runtime_config:
                 residents = sorted(set(self.runtime_config.get("face_unlock.names", [])))
 
@@ -365,17 +502,20 @@ class TelegramBotService:
             else:
                 mute_str = "🔔 Aktivní (neztišeno)"
 
+            # Plain text on purpose: values come from the DB and gallery, and a
+            # stray Markdown character would make Telegram reject the message.
             status_msg = (
-                "📊 *Přehled stavu A12:*\n"
-                f"• Pipeline stav: `{p_state}`\n"
-                f"• Kamera FPS: `{fps}`\n"
-                f"• Obyvatelé (tváře): `{residents_str}`\n"
-                f"• Poslední událost: `{last_event_str}`\n"
+                "📊 Přehled stavu A12:\n"
+                f"• Pipeline stav: {p_state}\n"
+                f"• Kamera FPS: {fps}\n"
+                f"• Obyvatelé (tváře): {residents_str}\n"
+                f"• Poslední událost: {last_event_str}\n"
                 f"• Notifikace: {mute_str}"
             )
-            self.bot.send_message(chat_id, status_msg, parse_mode="Markdown")
+            self.bot.send_message(chat_id, status_msg)
         except Exception as e:
             logging.error(f"Error handling /status: {e}")
+            self._safe_reply(message, "⚠️ Stav systému se nepodařilo zjistit.")
 
     def handle_mute(self, message) -> None:
         """Handle /mute [minutes] command."""
@@ -402,6 +542,7 @@ class TelegramBotService:
                 self.bot.send_message(chat_id, "⚠️ Notifikátor není dostupný.")
         except Exception as e:
             logging.error(f"Error handling /mute: {e}")
+            self._safe_reply(message, "⚠️ Ztišení se nepodařilo nastavit.")
 
     def handle_unmute(self, message) -> None:
         """Handle /unmute command."""
@@ -419,6 +560,36 @@ class TelegramBotService:
                 self.bot.send_message(chat_id, "⚠️ Notifikátor není dostupný.")
         except Exception as e:
             logging.error(f"Error handling /unmute: {e}")
+            self._safe_reply(message, "⚠️ Ztišení se nepodařilo zrušit.")
+
+    def _unlock_names(self) -> set[str]:
+        """Names whose recognition opens the door (face_unlock.names)."""
+        source = self.runtime_config
+        if source is None and self.pipeline is not None:
+            source = getattr(self.pipeline, "runtime_config", None)
+        names = []
+        if source is not None and callable(getattr(source, "get", None)):
+            try:
+                names = source.get("face_unlock.names", []) or []
+            except Exception as e:
+                logging.warning(f"Could not read face_unlock.names: {e}")
+        else:
+            names = (self.config.get("face_unlock") or {}).get("names") or []
+        if isinstance(names, str):
+            names = names.split(",")
+        return {str(n).strip().lower() for n in names if str(n).strip()}
+
+    def _target_gallery(self, detector) -> str:
+        models_dir = getattr(
+            detector, "models_dir", getattr(self.pipeline, "script_dir", ".")
+        )
+        gallery_paths = []
+        if hasattr(detector, "_gallery_paths"):
+            face_cfg = (getattr(detector, "config", {}) or {}).get("face_recognition", {})
+            gallery_paths = detector._gallery_paths(face_cfg, models_dir)
+        if gallery_paths:
+            return gallery_paths[0]
+        return os.path.join(models_dir, "known_faces_sface.pkl")
 
     def handle_enroll(self, message) -> None:
         """Handle /enroll <name> with photo or replied photo."""
@@ -427,20 +598,24 @@ class TelegramBotService:
                 return
 
             chat_id, _ = self._get_chat_and_user_id(message)
-            text = (
-                getattr(message, "text", None)
-                or getattr(message, "caption", None)
-                or ""
-            ).strip()
+            text = getattr(message, "text", None) or getattr(message, "caption", None)
+            raw_name = parse_enroll_command(text)
+            if raw_name is None:
+                return
 
-            parts = text.split(maxsplit=1)
-            name = parts[1].strip() if len(parts) > 1 else ""
-
-            if not name:
+            if not raw_name:
                 self.bot.send_message(
                     chat_id,
-                    "⚠️ Uveďte prosím jméno osoby: `/enroll <jméno>` (přiložte fotku nebo odpovězte na fotku).",
-                    parse_mode="Markdown",
+                    "⚠️ Uveďte prosím jméno osoby: /enroll <jméno> (přiložte fotku nebo odpovězte na fotku).",
+                )
+                return
+
+            name = normalize_enroll_name(raw_name)
+            if name is None:
+                self.bot.send_message(
+                    chat_id,
+                    "⚠️ Neplatné jméno. Povolená jsou malá písmena bez diakritiky, "
+                    "číslice, _ a - (nejvýše 32 znaků), např. /enroll alice",
                 )
                 return
 
@@ -493,171 +668,127 @@ class TelegramBotService:
 
             _, embedding = found[0]
 
-            # Append to detector
-            if not hasattr(detector, "known_face_encodings"):
-                detector.known_face_encodings = []
-            if not hasattr(detector, "known_face_names"):
-                detector.known_face_names = []
-
-            detector.known_face_encodings.append(embedding)
-            detector.known_face_names.append(name)
-
-            # Persist to gallery file if possible
-            saved_path = None
-            models_dir = getattr(
-                detector, "models_dir", getattr(self.pipeline, "script_dir", ".")
-            )
-            gallery_paths = []
-            if hasattr(detector, "_gallery_paths"):
-                face_cfg = getattr(detector, "config", {}).get("face_recognition", {})
-                gallery_paths = detector._gallery_paths(face_cfg, models_dir)
-
-            target_gallery = (
-                gallery_paths[0]
-                if gallery_paths
-                else os.path.join(models_dir, "known_faces_sface.pkl")
-            )
-            try:
-                with open(target_gallery, "wb") as f:
-                    pickle.dump(
-                        {
-                            "backend": SFACE_BACKEND,
-                            "encodings": detector.known_face_encodings,
-                            "names": detector.known_face_names,
-                        },
-                        f,
-                    )
-                saved_path = target_gallery
-            except Exception as e:
-                logging.error(f"Failed to save face gallery: {e}")
-
-            # Update whitelist in runtime_config if available
-            if self.runtime_config:
-                try:
-                    wl = list(
-                        self.runtime_config.get("face_recognition.whitelisted_names", [])
-                    )
-                    if name not in wl:
-                        wl.append(name)
-                        self.runtime_config.set(
-                            "face_recognition.whitelisted_names", sorted(wl)
-                        )
-                except Exception as e:
-                    logging.warning(f"Could not update runtime whitelist: {e}")
-
-            saved_note = (
-                f" a uloženo do `{os.path.basename(saved_path)}`" if saved_path else ""
-            )
-            self.bot.send_message(
-                chat_id,
-                f"✅ Osoba *{name}* byla úspěšně zaregistrována{saved_note}!\n"
-                f"Celkem uloženo v databázi: {len(detector.known_face_names)} vzorů.",
-                parse_mode="Markdown",
-            )
+            if name in self._unlock_names():
+                # This sample opens the door for whoever the photo shows.
+                logging.warning(f"Telegram enrolment adds an unlock-capable sample for '{name}'")
+            self._finish_enroll(chat_id, name, embedding)
         except Exception as e:
             logging.error(f"Error handling /enroll: {e}")
+            self._safe_reply(message, "⚠️ Registraci obličeje se nepodařilo dokončit.")
+
+    def _finish_enroll(self, chat_id, name: str, embedding) -> None:
+        """Persist one sample to its gallery file, then publish it in memory."""
+        detector = getattr(self.pipeline, "detector", None) if self.pipeline else None
+        if detector is None:
+            self.bot.send_message(chat_id, "⚠️ Detektor není dostupný.")
+            return
+
+        target_gallery = self._target_gallery(detector)
+        with self._enroll_lock:
+            try:
+                file_count = append_to_gallery_file(target_gallery, name, embedding)
+            except Exception as e:
+                logging.error(f"Failed to save face gallery {target_gallery}: {e}")
+                self.bot.send_message(
+                    chat_id,
+                    f"⚠️ Galerii {os.path.basename(target_gallery)} se nepodařilo uložit, "
+                    "osoba nebyla zaregistrována.",
+                )
+                return
+
+            # Build new lists and swap them in, never mutate in place. The
+            # detection thread reads both attributes and pairs them with zip(),
+            # so at worst it sees one list a sample longer for one frame, which
+            # zip simply truncates.
+            new_encodings = list(getattr(detector, "known_face_encodings", None) or [])
+            new_names = list(getattr(detector, "known_face_names", None) or [])
+            new_encodings.append(np.asarray(embedding, dtype=np.float32).ravel())
+            new_names.append(name)
+            detector.known_face_encodings = new_encodings
+            detector.known_face_names = new_names
+            total = len(new_names)
+
+        # Update whitelist in runtime_config if available
+        if self.runtime_config:
+            try:
+                wl = list(
+                    self.runtime_config.get("face_recognition.whitelisted_names", [])
+                )
+                if name not in wl:
+                    wl.append(name)
+                    self.runtime_config.set(
+                        "face_recognition.whitelisted_names", sorted(wl)
+                    )
+            except Exception as e:
+                logging.warning(f"Could not update runtime whitelist: {e}")
+
+        self.bot.send_message(
+            chat_id,
+            f"✅ Osoba {name} byla úspěšně zaregistrována a uložena do "
+            f"{os.path.basename(target_gallery)} ({file_count} vzorů v souboru).\n"
+            f"Celkem načteno v paměti: {total} vzorů.",
+        )
 
     def handle_callback_query(self, call) -> None:
         """Handle inline button callback queries."""
         try:
             if not self._authorized(call):
-                if hasattr(self.bot, "answer_callback_query"):
-                    self.bot.answer_callback_query(
-                        call.id, "Neautorizovaný přístup!", show_alert=True
-                    )
+                self._answer(call, "Neautorizovaný přístup!", show_alert=True)
                 return
 
-            user_name = "uživatelem"
+            user_name = "uživatel"
             if getattr(call, "from_user", None) and call.from_user.first_name:
                 user_name = call.from_user.first_name
 
-            msg = getattr(call, "message", None)
-            chat_id = getattr(getattr(msg, "chat", None), "id", None)
-            message_id = getattr(msg, "message_id", None)
+            data = getattr(call, "data", "") or ""
 
-            if call.data == "unlock_door":
-                if self.pipeline and callable(
-                    getattr(self.pipeline, "_trigger_nuki_unlock", None)
+            if data == CB_UNLOCK_DOOR:
+                msg_date = getattr(getattr(call, "message", None), "date", None)
+                if isinstance(msg_date, (int, float)) and (
+                    time.time() - msg_date > VISITOR_UNLOCK_TTL_SECONDS
                 ):
-                    self.pipeline._trigger_nuki_unlock("Telegram Callback")
+                    self._answer(call, "⌛ Tlačítko vypršelo, použij /od.", show_alert=True)
+                    self._set_status_markup(call, "⌛ Tlačítko vypršelo")
+                    return
+                if not self._unlock_available():
+                    self._answer(call, "⚠️ Funkce odemknutí dveří není dostupná.", show_alert=True)
+                    return
+                self.pipeline._trigger_nuki_unlock("Telegram Callback")
+                self._answer(call, "⏳ Odemykám…")
+                # The worker is fire-and-forget; the real outcome arrives as a
+                # separate notifier message, so claim nothing here.
+                self._set_status_markup(
+                    call, f"⏳ Odemykám ({user_name})… výsledek přijde zprávou"
+                )
 
-                if hasattr(self.bot, "answer_callback_query"):
-                    self.bot.answer_callback_query(call.id, "🔓 Dveře se odemykají...")
-
-                if TELEGRAM_AVAILABLE and chat_id and message_id:
-                    try:
-                        markup = InlineKeyboardMarkup()
-                        markup.row(
-                            InlineKeyboardButton(
-                                f"✅ Odemčeno uživatelem {user_name}",
-                                callback_data="noop",
-                            )
-                        )
-                        self.bot.edit_message_reply_markup(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            reply_markup=markup,
-                        )
-                    except Exception as e:
-                        logging.warning(f"Could not update unlock reply markup: {e}")
-
-            elif call.data == "lock_door":
+            elif data == "lock_door":
                 if self.pipeline and callable(
                     getattr(self.pipeline, "_trigger_nuki_lock", None)
                 ):
                     self.pipeline._trigger_nuki_lock("Telegram Callback")
+                    self._answer(call, "⏳ Zamykám…")
+                    self._set_status_markup(
+                        call, f"⏳ Zamykám ({user_name})… výsledek přijde zprávou"
+                    )
+                else:
+                    self._answer(call, "⚠️ Funkce zamknutí dveří není dostupná.", show_alert=True)
 
-                if hasattr(self.bot, "answer_callback_query"):
-                    self.bot.answer_callback_query(call.id, "🔒 Dveře se zamykají...")
-
-                if TELEGRAM_AVAILABLE and chat_id and message_id:
-                    try:
-                        markup = InlineKeyboardMarkup()
-                        markup.row(
-                            InlineKeyboardButton(
-                                f"🔒 Zamčeno uživatelem {user_name}",
-                                callback_data="noop",
-                            )
-                        )
-                        self.bot.edit_message_reply_markup(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            reply_markup=markup,
-                        )
-                    except Exception as e:
-                        logging.warning(f"Could not update lock reply markup: {e}")
-
-            elif call.data == "mute_15m":
+            elif data == "mute_15m":
                 if self.notifier and callable(getattr(self.notifier, "mute_until", None)):
                     self.notifier.mute_until(time.time() + 15 * 60)
+                    self._answer(call, "🔕 Notifikace ztišeny na 15 minut.")
+                    self._set_status_markup(call, "🔕 Ztišeno na 15m")
+                else:
+                    self._answer(call, "⚠️ Notifikátor není dostupný.", show_alert=True)
 
-                if hasattr(self.bot, "answer_callback_query"):
-                    self.bot.answer_callback_query(
-                        call.id, "🔕 Notifikace ztišeny na 15 minut."
-                    )
+            elif data == "noop":
+                self._answer(call)
 
-                if TELEGRAM_AVAILABLE and chat_id and message_id:
-                    try:
-                        markup = InlineKeyboardMarkup()
-                        markup.row(
-                            InlineKeyboardButton(
-                                "🔕 Ztišeno na 15m",
-                                callback_data="noop",
-                            )
-                        )
-                        self.bot.edit_message_reply_markup(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            reply_markup=markup,
-                        )
-                    except Exception as e:
-                        logging.warning(f"Could not update mute reply markup: {e}")
-
-            elif call.data == "noop":
-                if hasattr(self.bot, "answer_callback_query"):
-                    self.bot.answer_callback_query(call.id)
+            else:
+                self._answer(call, "⚠️ Neznámé tlačítko.")
         except Exception as e:
             logging.error(f"Error handling callback query: {e}")
+            self._answer(call, "⚠️ Akci se nepodařilo provést.", show_alert=True)
 
     def start(self) -> None:
         """Start polling loop in background daemon thread."""

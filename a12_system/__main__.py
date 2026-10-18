@@ -389,7 +389,7 @@ class Application:
                 if stream_response:
                     if stuck_notified:
                         logging.info("ESP32 recovered!")
-                        notifier.send_telegram("ESP32 is back online!", bypass_cooldown=True)
+                        notifier.send_telegram("ESP32 is back online!", bypass_cooldown=True, critical=True)
                         stuck_notified = False
                         shared_state["send_recovery_snapshot"] = True
 
@@ -426,7 +426,7 @@ class Application:
                     )
 
                     if consecutive_failures >= STUCK_THRESHOLD and not stuck_notified:
-                        notifier.send_telegram("ESP32 not responding (STUCK)!", bypass_cooldown=True)
+                        notifier.send_telegram("ESP32 not responding (STUCK)!", bypass_cooldown=True, critical=True)
                         stuck_notified = True
 
                     time.sleep(retry_sleep)

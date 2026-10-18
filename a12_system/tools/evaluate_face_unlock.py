@@ -55,12 +55,21 @@ def identify(backend, frame, gallery, names):
         matches.append((names[index] if score >= .363 else None, score))
     lead = max(range(len(pairs)), key=lambda i: float(pairs[i][0][2]) * float(pairs[i][0][3]))
     known = [(name, score) for name, score in matches if name is not None]
+    quality = measure_face_quality(frame, pairs[lead][0])
+    # The unlock window fails closed without landmarks and quality, so the
+    # replay has to carry both or it can never confirm anybody.
     if known:
         name, score = max(known, key=lambda pair: pair[1])
-        result = FaceResult(FaceOutcome.RESIDENT, name, score, len(pairs), *matches[lead])
+        result = FaceResult(
+            FaceOutcome.RESIDENT, name, score, len(pairs), *matches[lead],
+            quality=quality, face_row=pairs[lead][0],
+        )
     else:
-        result = FaceResult(FaceOutcome.STRANGER, score=max(score for _, score in matches), faces=len(pairs))
-    return result, measure_face_quality(frame, pairs[lead][0])
+        result = FaceResult(
+            FaceOutcome.STRANGER, score=max(score for _, score in matches), faces=len(pairs),
+            quality=quality, face_row=pairs[lead][0],
+        )
+    return result, quality
 
 
 def baseline_allowed(face, allowed_names):

@@ -300,3 +300,72 @@ def test_compute_sample_metrics_and_greedy_helpers():
     # Greedy selection with max_internal_sim = 0.5 collapses duplicate
     kept = select_exemplars_greedy(sim[np.ix_([0, 2], [0, 2])], [0, 2], max_internal_sim=0.5)
     assert len(kept) == 1
+
+
+class _NoGlobalsUnpickler(pickle.Unpickler):
+    """Refuse every class/function reference: plain data needs none."""
+
+    def find_class(self, module, name):
+        raise pickle.UnpicklingError(f"pickle references {module}.{name}")
+
+
+def test_written_gallery_has_no_numpy_objects(tmp_path):
+    """The prod container runs numpy 1.26; a numpy 2 pickle of an ndarray
+    names numpy._core and fails there, leaving A12 with zero faces."""
+    from a12_system.face_backend import read_gallery
+    from a12_system.tools.sanitize_gallery import main
+
+    base = _make_unit_vector(seed=90)
+    samples = [np.asarray(v, dtype=np.float32)
+               for v in _make_cluster(base, target_sim=0.85, n=4, seed=910)]
+    src = tmp_path / "in.pkl"
+    with open(src, "wb") as f:
+        pickle.dump({
+            "backend": SFACE_BACKEND,
+            "encodings": samples,
+            "names": ["eva"] * 4,
+            "sources": ["/img/%d.jpg" % i for i in range(4)],
+            "threshold": np.float32(0.45),
+            "shape": (np.int64(4), np.int64(128)),
+        }, f)
+    out = tmp_path / "sub" / "out.pkl"
+
+    assert main(["--input", str(src), "--output", str(out), "--max-internal-sim", "0.99"]) == 0
+
+    raw = out.read_bytes()
+    assert b"numpy" not in raw
+    with open(out, "rb") as f:
+        clean = _NoGlobalsUnpickler(f).load()
+    assert clean["shape"] == (4, 128) and isinstance(clean["threshold"], float)
+    assert all(type(x) is float for enc in clean["encodings"] for x in enc)
+    # float32 -> Python float is exact, so nothing about matching changes.
+    kept = {tuple(np.asarray(e, dtype=np.float32)) for e in clean["encodings"]}
+    assert kept <= {tuple(s) for s in samples} and kept
+
+    encodings, names = read_gallery(clean, SFACE_BACKEND)
+    assert len(encodings) == len(names) > 0
+    assert cosine_similarity(encodings[0], np.asarray(encodings[0])) == pytest.approx(1.0)
+    assert oct(out.stat().st_mode & 0o777) == oct(0o644 & ~_umask())
+    assert [p.name for p in out.parent.iterdir()] == ["out.pkl"]
+
+
+def _umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+def test_failed_write_leaves_the_old_gallery_untouched(tmp_path, monkeypatch):
+    from a12_system.tools import sanitize_gallery as sg
+
+    out = tmp_path / "gallery.pkl"
+    out.write_bytes(b"old")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sg.pickle, "dump", boom)
+    with pytest.raises(OSError):
+        sg.write_gallery(out, {"backend": SFACE_BACKEND, "encodings": [], "names": []})
+    assert out.read_bytes() == b"old"
+    assert [p.name for p in tmp_path.iterdir()] == ["gallery.pkl"]
