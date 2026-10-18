@@ -13,6 +13,7 @@ import numpy as np
 from . import scorer_client
 from .face_backend import (
     DEFAULT_COSINE_THRESHOLD,
+    DEFAULT_MIN_FACE_SIZE,
     SFACE_BACKEND,
     SFaceBackend,
     best_match,
@@ -123,12 +124,14 @@ class Detector:
         self.face_cosine_threshold = float(
             cfg.get("cosine_threshold", DEFAULT_COSINE_THRESHOLD)
         )
+        min_face_size = int(cfg.get("min_face_size", DEFAULT_MIN_FACE_SIZE))
         try:
             self.face_backend = SFaceBackend.from_paths(
                 detector_path,
                 recognizer_path,
                 self.face_cosine_threshold,
                 float(cfg.get("detector_score_threshold", 0.6)),
+                min_face_size=min_face_size,
             )
         except Exception as e:
             logging.error(f"SFace backend init failed: {e}")
@@ -400,6 +403,23 @@ class Detector:
             pairs = detect(frame)
         else:
             pairs = [(None, e) for e in backend.embed(frame)]
+
+        cfg = getattr(self, "config", {}).get("face_recognition", {}) or {}
+        min_face_size = int(
+            cfg.get("min_face_size", getattr(backend, "min_face_size", DEFAULT_MIN_FACE_SIZE))
+        )
+        if min_face_size > 0 and pairs:
+            valid_pairs = []
+            for face_row, embedding in pairs:
+                if face_row is not None:
+                    try:
+                        if float(face_row[2]) < min_face_size or float(face_row[3]) < min_face_size:
+                            continue
+                    except (IndexError, TypeError, ValueError):
+                        pass
+                valid_pairs.append((face_row, embedding))
+            pairs = valid_pairs
+
         if not pairs:
             self.last_lead_face_row = None
             return FaceResult(FaceOutcome.NO_FACE)

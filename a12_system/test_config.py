@@ -249,6 +249,39 @@ def test_camera_instance_env_overrides():
     print("[OK] Camera instance env overrides work")
 
 
+def test_face_recognition_config():
+    """Verify face recognition defaults and env overrides."""
+    import tempfile
+    face_cfg = DEFAULT_CONFIG["face_recognition"]
+    assert face_cfg["max_checks_per_episode"] == 20
+    assert face_cfg["max_attempts_per_episode"] == 30
+    assert face_cfg["min_face_size"] == 40
+
+    old_checks = os.environ.get("FACE_MAX_CHECKS_PER_EPISODE")
+    old_attempts = os.environ.get("FACE_MAX_ATTEMPTS_PER_EPISODE")
+    old_min_size = os.environ.get("FACE_MIN_FACE_SIZE")
+    try:
+        os.environ["FACE_MAX_CHECKS_PER_EPISODE"] = "25"
+        os.environ["FACE_MAX_ATTEMPTS_PER_EPISODE"] = "40"
+        os.environ["FACE_MIN_FACE_SIZE"] = "50"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = load_config(tmpdir)
+        assert config["face_recognition"]["max_checks_per_episode"] == 25
+        assert config["face_recognition"]["max_attempts_per_episode"] == 40
+        assert config["face_recognition"]["min_face_size"] == 50
+    finally:
+        for k, v in [
+            ("FACE_MAX_CHECKS_PER_EPISODE", old_checks),
+            ("FACE_MAX_ATTEMPTS_PER_EPISODE", old_attempts),
+            ("FACE_MIN_FACE_SIZE", old_min_size),
+        ]:
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    print("[OK] Face recognition config defaults and env overrides work")
+
+
 def test_load_config_no_crash():
     """Verify load_config doesn't crash with empty directory."""
     import tempfile
@@ -277,5 +310,6 @@ if __name__ == "__main__":
     test_pir_yolo_gate_defaults()
     test_pir_yolo_gate_env_override()
     test_camera_instance_env_overrides()
+    test_face_recognition_config()
     test_load_config_no_crash()
     print("\n=== All tests passed ===")

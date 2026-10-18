@@ -684,3 +684,58 @@ def test_intermediate_face_checks_run_between_yolo_cycles_for_fast_unlock(monkey
     p.process_frame(_frame())
     assert len(det.calls) == 2
     p._trigger_nuki_unlock.assert_called_once_with("Resident", 1)
+
+
+def test_tiny_face_returns_no_face_and_does_not_consume_usable_checks():
+    """Tiny faces (<40px) filtered to NO_FACE do not burn the usable_checks budget."""
+    ep = FaceEpisode(required_confirmations=2)
+    assert ep.usable_checks == 0
+    assert ep.checks_done == 0
+
+    # 5 distant frames where face was too small
+    for _ in range(5):
+        ep.record(NO_FACE)
+
+    assert ep.checks_done == 5
+    assert ep.usable_checks == 0
+    assert ep.verdict().outcome is FaceOutcome.NO_FACE
+
+
+def test_default_check_budget_is_20_and_attempts_is_30():
+    """Default check budget allows up to 20 usable checks and 30 attempts per episode."""
+    p = _pipeline(_StubDetector([]))
+    assert p._face_max_checks == 20
+    assert p._face_max_attempts == 30
+
+
+def test_approaching_resident_not_locked_out_by_early_distance():
+    """When a resident approaches from distance, early distant frames (<40px -> NO_FACE)
+    and even a borderline stranger frame must not exhaust the budget before arrival."""
+    p = _pipeline(_StubDetector([]))
+    p._face_min_check_interval = 0.5
+    # Simulate 6 distant frames (NO_FACE), followed by 1 ambiguous frame (STRANGER),
+    # then 2 clear resident frames at the door.
+    episode = p._face_episode
+    for _ in range(6):
+        episode.record(NO_FACE)
+    assert episode.usable_checks == 0
+    assert episode.checks_done == 6
+
+    # 1 stranger frame
+    episode.record(STRANGER)
+    assert episode.usable_checks == 1
+    assert episode.checks_done == 7
+
+    # Resident reaches the door and confirms twice
+    res = FaceResult(FaceOutcome.RESIDENT, "Petr", score=0.76, faces=1, lead_name="Petr", lead_score=0.76)
+    episode.record(res)
+    episode.record(res)
+    assert episode.usable_checks == 3
+    assert episode.checks_done == 9
+
+    verdict = episode.verdict()
+    assert verdict.is_resident
+    assert verdict.name == "Petr"
+    assert verdict.lead_name == "Petr"
+    assert verdict.lead_score == 0.76
+

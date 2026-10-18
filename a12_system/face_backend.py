@@ -25,6 +25,11 @@ SFACE_BACKEND = "sface"
 # key. Higher is more similar, the opposite sense to a dlib distance.
 DEFAULT_COSINE_THRESHOLD = 0.363
 
+# Minimum face width/height in pixels. Faces smaller than this (e.g. distant
+# approaching person) produce degraded embeddings and match nobody, generating
+# false STRANGER outcomes that exhaust the check budget before arrival.
+DEFAULT_MIN_FACE_SIZE = 40
+
 # Below this a crop cannot contain a face worth embedding, and running the
 # detector on it only costs time.
 _MIN_FRAME_PIXELS = 32
@@ -103,11 +108,13 @@ class SFaceBackend:
         recognizer,
         threshold: float = DEFAULT_COSINE_THRESHOLD,
         enhance_contrast: bool = True,
+        min_face_size: int = DEFAULT_MIN_FACE_SIZE,
     ):
         self.detector = detector
         self.recognizer = recognizer
         self.threshold = float(threshold)
         self.enhance_contrast = bool(enhance_contrast)
+        self.min_face_size = int(min_face_size)
 
     @classmethod
     def from_paths(
@@ -117,12 +124,19 @@ class SFaceBackend:
         threshold: float = DEFAULT_COSINE_THRESHOLD,
         score_threshold: float = 0.6,
         enhance_contrast: bool = True,
+        min_face_size: int = DEFAULT_MIN_FACE_SIZE,
     ) -> "SFaceBackend":
         import cv2
 
         detector = cv2.FaceDetectorYN_create(detector_path, "", (320, 320), score_threshold)
         recognizer = cv2.FaceRecognizerSF_create(recognizer_path, "")
-        return cls(detector, recognizer, threshold, enhance_contrast=enhance_contrast)
+        return cls(
+            detector,
+            recognizer,
+            threshold,
+            enhance_contrast=enhance_contrast,
+            min_face_size=min_face_size,
+        )
 
     def embed(self, frame: np.ndarray) -> list:
         """Every face found in this frame, as a 128-d SFace feature."""
@@ -166,6 +180,13 @@ class SFaceBackend:
 
             embeddings = []
             for face in faces:
+                if self.min_face_size > 0:
+                    try:
+                        w, h = float(face[2]), float(face[3])
+                        if w < self.min_face_size or h < self.min_face_size:
+                            continue
+                    except (IndexError, TypeError, ValueError):
+                        pass
                 aligned = self.recognizer.alignCrop(active_frame, face)
                 feature = self.recognizer.feature(aligned)
                 if feature is None:

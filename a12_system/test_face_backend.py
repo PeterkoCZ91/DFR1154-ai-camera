@@ -92,6 +92,12 @@ def test_the_default_threshold_is_the_documented_sface_value():
     assert DEFAULT_COSINE_THRESHOLD == 0.363
 
 
+def test_the_default_min_face_size_is_40_pixels():
+    from a12_system.face_backend import DEFAULT_MIN_FACE_SIZE
+
+    assert DEFAULT_MIN_FACE_SIZE == 40
+
+
 # --- the gallery -----------------------------------------------------------
 
 
@@ -176,6 +182,34 @@ def test_a_detected_face_yields_one_embedding():
     embeddings = backend.embed(_frame())
     assert len(embeddings) == 1
     assert embeddings[0].shape == (128,)
+
+
+def test_faces_smaller_than_min_face_size_are_ignored():
+    """Tiny smudges (<40px) at a distance must not produce bad embeddings."""
+    # 20px wide, 25px tall - should be filtered out under default min_face_size (40)
+    tiny_face = np.array([10, 10, 20, 25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.9], dtype=np.float32)
+    backend = SFaceBackend(_FakeDetector(np.array([tiny_face])), _FakeRecognizer())
+    assert backend.detect_and_embed(_frame()) == []
+    assert backend.embed(_frame()) == []
+
+
+def test_faces_at_or_above_min_face_size_are_embedded():
+    # 50px wide, 55px tall - >= min_face_size (40)
+    good_face = np.array([10, 10, 50, 55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.9], dtype=np.float32)
+    backend = SFaceBackend(_FakeDetector(np.array([good_face])), _FakeRecognizer())
+    pairs = backend.detect_and_embed(_frame())
+    assert len(pairs) == 1
+    assert pairs[0][1].shape == (128,)
+
+
+def test_custom_min_face_size_configuration():
+    face_30px = np.array([10, 10, 30, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.9], dtype=np.float32)
+    # With min_face_size=20, 30px face passes
+    backend_lenient = SFaceBackend(_FakeDetector(np.array([face_30px])), _FakeRecognizer(), min_face_size=20)
+    assert len(backend_lenient.detect_and_embed(_frame())) == 1
+    # With min_face_size=50, 30px face is rejected
+    backend_strict = SFaceBackend(_FakeDetector(np.array([face_30px])), _FakeRecognizer(), min_face_size=50)
+    assert backend_strict.detect_and_embed(_frame()) == []
 
 
 def test_the_detector_is_told_the_real_frame_size():

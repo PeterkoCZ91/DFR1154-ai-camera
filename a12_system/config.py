@@ -70,10 +70,10 @@ DEFAULT_CONFIG = {
         # 35px in ordinary passage) and it bounds an always-on cost to a few
         # frames per occurrence.
         "require_pir_window": True,
-        "max_checks_per_episode": 5,
+        "max_checks_per_episode": 20,
         # Missing faces and backend errors do not consume the usable-face
         # budget, but all attempts remain bounded to cap CPU and disk work.
-        "max_attempts_per_episode": 15,
+        "max_attempts_per_episode": 30,
         "min_check_interval_seconds": 0.5,
         # YOLO person boxes clip the crown; a face detector needs the head.
         "person_box_margin": 0.25,
@@ -82,6 +82,7 @@ DEFAULT_CONFIG = {
         "episode_resident_confirmations": 2,
         # Quiet time after which the next person starts a fresh episode.
         "episode_gap_seconds": 30.0,
+        "min_face_size": 40,
     },
     # Opening the door from a face verdict. Off, and when switched on it starts
     # as a dry run: it logs and messages what it WOULD have done, so the score
@@ -391,6 +392,7 @@ ENV_OVERRIDES = [
     ("FACE_BACKEND", "face_recognition.backend", str),
     ("FACE_COSINE_THRESHOLD", "face_recognition.cosine_threshold", _parse_float),
     ("FACE_DETECTOR_SCORE_THRESHOLD", "face_recognition.detector_score_threshold", _parse_float),
+    ("FACE_MIN_FACE_SIZE", "face_recognition.min_face_size", _parse_int),
     ("FACE_DEBUG_CROP_DIR", "face_recognition.debug_crop_dir", str),
     ("FACE_DEBUG_CROP_LIMIT", "face_recognition.debug_crop_limit", _parse_int),
     ("FACE_UNLOCK_ENABLED", "face_unlock.enabled", _parse_bool),

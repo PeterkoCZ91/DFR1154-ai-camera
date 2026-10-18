@@ -1521,9 +1521,9 @@ class DetectionPipeline:
         # somebody is standing in the doorway.
         self._face_episode_logged = False
         self._face_require_pir_window = bool(face_cfg.get("require_pir_window", True))
-        self._face_max_checks = max(1, int(face_cfg.get("max_checks_per_episode", 5)))
+        self._face_max_checks = max(1, int(face_cfg.get("max_checks_per_episode", 20)))
         self._face_max_attempts = max(
-            self._face_max_checks, int(face_cfg.get("max_attempts_per_episode", 15)),
+            self._face_max_checks, int(face_cfg.get("max_attempts_per_episode", 30)),
         )
         self._face_min_check_interval = max(
             0.0, float(face_cfg.get("min_check_interval_seconds", 0.5))
