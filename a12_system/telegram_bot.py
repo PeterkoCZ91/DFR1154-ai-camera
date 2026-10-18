@@ -21,9 +21,19 @@ import numpy as np
 
 from .face_backend import SFACE_BACKEND
 
+class _FallbackBotCommand:
+    def __init__(self, command: str, description: str):
+        self.command = command
+        self.description = description
+
+    def __repr__(self):
+        return f"BotCommand('{self.command}', '{self.description}')"
+
+
 try:
     import telebot
     from telebot.types import (
+        BotCommand,
         CallbackQuery,
         InlineKeyboardButton,
         InlineKeyboardMarkup,
@@ -33,6 +43,7 @@ try:
 except ImportError:
     telebot = None
     TELEGRAM_AVAILABLE = False
+    BotCommand = _FallbackBotCommand
     Message = object
     CallbackQuery = object
     InlineKeyboardMarkup = object
@@ -172,6 +183,34 @@ class TelegramBotService:
                 self.handle_callback_query,
                 func=lambda call: True,
             )
+
+    def _register_commands_menu(self) -> None:
+        """Register the official command list in Telegram UI command menu / popup picker."""
+        if not self.bot or not hasattr(self.bot, "set_my_commands"):
+            return
+
+        try:
+            from telebot.types import BotCommand as TelebotBotCommand
+
+            cmd_cls = TelebotBotCommand
+        except (ImportError, AttributeError):
+            cmd_cls = BotCommand
+
+        commands = [
+            cmd_cls("od", "🔓 Odemknout dveře (střelka)"),
+            cmd_cls("za", "🔒 Zamknout dveře"),
+            cmd_cls("foto", "📷 Aktuální snímek z kamery"),
+            cmd_cls("stav", "📊 Celkový stav systému"),
+            cmd_cls("mute", "🔕 Ztišit notifikace"),
+            cmd_cls("unmute", "🔔 Obnovit notifikace"),
+            cmd_cls("help", "❓ Nápověda k příkazům"),
+        ]
+
+        try:
+            self.bot.set_my_commands(commands)
+            logging.info("Telegram command menu successfully registered via set_my_commands")
+        except Exception as e:
+            logging.warning(f"Failed to register Telegram command menu: {e}")
 
     def handle_help(self, message) -> None:
         """Handle /start and /help commands."""
@@ -628,6 +667,8 @@ class TelegramBotService:
         if self._running:
             logging.info("TelegramBotService is already running")
             return
+
+        self._register_commands_menu()
 
         self._running = True
         self._thread = threading.Thread(

@@ -70,8 +70,13 @@ class FakeBot:
         self.files_downloaded: list[str] = []
         self.registered_handlers: list[dict] = []
         self.registered_callback_handlers: list[dict] = []
+        self.registered_commands: list = []
         self.polling_started = False
         self.polling_stopped = False
+
+    def set_my_commands(self, commands, **kwargs):
+        self.registered_commands = commands
+        return True
 
     def register_message_handler(self, handler, **kwargs):
         self.registered_handlers.append({"handler": handler, **kwargs})
@@ -455,6 +460,33 @@ def test_service_start_and_stop():
     service.stop()
     assert service._running is False
     assert bot.polling_stopped is True
+
+
+def test_service_start_registers_commands_menu():
+    service, bot, _ = _make_service()
+    service.start()
+    try:
+        assert len(bot.registered_commands) == 7
+        expected = [
+            ("od", "🔓 Odemknout dveře (střelka)"),
+            ("za", "🔒 Zamknout dveře"),
+            ("foto", "📷 Aktuální snímek z kamery"),
+            ("stav", "📊 Celkový stav systému"),
+            ("mute", "🔕 Ztišit notifikace"),
+            ("unmute", "🔔 Obnovit notifikace"),
+            ("help", "❓ Nápověda k příkazům"),
+        ]
+        actual = [(cmd.command, cmd.description) for cmd in bot.registered_commands]
+        assert actual == expected
+    finally:
+        service.stop()
+
+
+def test_service_register_commands_menu_handles_exception():
+    service, bot, _ = _make_service()
+    bot.set_my_commands = MagicMock(side_effect=RuntimeError("API network error"))
+    # Should not raise exception
+    service._register_commands_menu()
 
 
 # 11. Test graceful error handling
