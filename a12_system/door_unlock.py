@@ -17,8 +17,8 @@ from .face_result import FaceResult
 
 # Lock states that mean the door is, or is about to be, open. Nuki reports
 # `unlocking` while the motor runs and `open`/`unlatched` once the latch is
-# pulled; anything else after the service call means it did not work.
 _OPENED_STATES = frozenset({"unlocked", "unlocking", "unlatched", "open", "opening"})
+_LOCKED_STATES = frozenset({"locked", "locking"})
 
 
 def unlock_decision(
@@ -111,5 +111,60 @@ def ha_unlock(
             state = f"unreadable:{e}"
         if waited >= settle_seconds:
             return False, f"open_not_confirmed:{state}"
+        sleep(1.0)
+        waited += 1.0
+
+
+def ha_lock(
+    ha_url: str,
+    token: str,
+    entity_id: str,
+    *,
+    post: Callable = requests.post,
+    get: Callable = requests.get,
+    sleep: Callable[[float], None] = time.sleep,
+    settle_seconds: float = 6.0,
+    timeout: float = 5.0,
+) -> Tuple[bool, str]:
+    """Call lock.lock and observe a locked state.
+
+    A 2xx from the service call only says HA accepted the request. The state
+    is read before and polled after the call to ensure the lock actually engaged.
+    """
+    if not ha_url or not token:
+        return False, "no_ha_config"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    base = ha_url.rstrip("/")
+    try:
+        before = get(f"{base}/api/states/{entity_id}", headers=headers, timeout=timeout)
+        before.raise_for_status()
+        _initial = before.json()
+    except Exception as e:
+        return False, f"state_before_lock_failed:{e}"
+    try:
+        resp = post(
+            f"{base}/api/services/lock/lock",
+            headers=headers,
+            json={"entity_id": entity_id},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        return False, f"service_call_failed:{e}"
+
+    state: Optional[str] = None
+    waited = 0.0
+    while True:
+        try:
+            r = get(f"{base}/api/states/{entity_id}", headers=headers, timeout=timeout)
+            r.raise_for_status()
+            current = r.json()
+            state = current.get("state")
+            if state in _LOCKED_STATES:
+                return True, str(state)
+        except Exception as e:
+            state = f"unreadable:{e}"
+        if waited >= settle_seconds:
+            return False, f"lock_not_confirmed:{state}"
         sleep(1.0)
         waited += 1.0

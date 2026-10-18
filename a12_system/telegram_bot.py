@@ -135,7 +135,11 @@ class TelegramBotService:
         )
         self.bot.register_message_handler(
             self.handle_unlock,
-            commands=["unlock", "odemknout"],
+            commands=["unlock", "odemknout", "od"],
+        )
+        self.bot.register_message_handler(
+            self.handle_lock,
+            commands=["lock", "zamknout", "za"],
         )
         self.bot.register_message_handler(
             self.handle_status,
@@ -178,7 +182,8 @@ class TelegramBotService:
             help_text = (
                 "🛡️ *A12 Bezpečnostní Systém - Příkazy:*\n\n"
                 "📷 `/photo`, `/foto` - Aktuální snímek z kamery\n"
-                "🔓 `/unlock`, `/odemknout` - Odemknout vchodové dveře (Nuki)\n"
+                "🔓 `/unlock`, `/odemknout`, `/od` - Odemknout vchodové dveře (Nuki)\n"
+                "🔒 `/lock`, `/zamknout`, `/za` - Zamknout vchodové dveře (Nuki)\n"
                 "📊 `/status`, `/stav` - Zobrazit celkový stav systému\n"
                 "🔕 `/mute [minuty]` - Ztišit notifikace na danou dobu (výchozí 15 min)\n"
                 "🔔 `/unmute` - Zrušit ztišení a obnovit notifikace\n"
@@ -229,7 +234,7 @@ class TelegramBotService:
             logging.error(f"Error handling /photo: {e}")
 
     def handle_unlock(self, message) -> None:
-        """Handle /unlock and /odemknout commands."""
+        """Handle /unlock, /odemknout, and /od commands."""
         try:
             if not self._authorized(message):
                 return
@@ -246,6 +251,25 @@ class TelegramBotService:
                 )
         except Exception as e:
             logging.error(f"Error handling /unlock: {e}")
+
+    def handle_lock(self, message) -> None:
+        """Handle /lock, /zamknout, and /za commands."""
+        try:
+            if not self._authorized(message):
+                return
+
+            chat_id, _ = self._get_chat_and_user_id(message)
+            if self.pipeline and callable(getattr(self.pipeline, "_trigger_nuki_lock", None)):
+                self.pipeline._trigger_nuki_lock("Telegram Admin")
+                self.bot.send_message(
+                    chat_id, "🔒 Požadavek na zamknutí dveří (Telegram Admin) byl odeslán."
+                )
+            else:
+                self.bot.send_message(
+                    chat_id, "⚠️ Funkce zamknutí dveří není v systému dostupná."
+                )
+        except Exception as e:
+            logging.error(f"Error handling /lock: {e}")
 
     def handle_status(self, message) -> None:
         """Handle /status and /stav commands."""
@@ -537,6 +561,32 @@ class TelegramBotService:
                         )
                     except Exception as e:
                         logging.warning(f"Could not update unlock reply markup: {e}")
+
+            elif call.data == "lock_door":
+                if self.pipeline and callable(
+                    getattr(self.pipeline, "_trigger_nuki_lock", None)
+                ):
+                    self.pipeline._trigger_nuki_lock("Telegram Callback")
+
+                if hasattr(self.bot, "answer_callback_query"):
+                    self.bot.answer_callback_query(call.id, "🔒 Dveře se zamykají...")
+
+                if TELEGRAM_AVAILABLE and chat_id and message_id:
+                    try:
+                        markup = InlineKeyboardMarkup()
+                        markup.row(
+                            InlineKeyboardButton(
+                                f"🔒 Zamčeno uživatelem {user_name}",
+                                callback_data="noop",
+                            )
+                        )
+                        self.bot.edit_message_reply_markup(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            reply_markup=markup,
+                        )
+                    except Exception as e:
+                        logging.warning(f"Could not update lock reply markup: {e}")
 
             elif call.data == "mute_15m":
                 if self.notifier and callable(getattr(self.notifier, "mute_until", None)):

@@ -68,8 +68,16 @@ class FakeBot:
         self.answered_callbacks: list[dict] = []
         self.edited_markups: list[dict] = []
         self.files_downloaded: list[str] = []
+        self.registered_handlers: list[dict] = []
+        self.registered_callback_handlers: list[dict] = []
         self.polling_started = False
         self.polling_stopped = False
+
+    def register_message_handler(self, handler, **kwargs):
+        self.registered_handlers.append({"handler": handler, **kwargs})
+
+    def register_callback_query_handler(self, handler, **kwargs):
+        self.registered_callback_handlers.append({"handler": handler, **kwargs})
 
     def send_message(self, chat_id, text, **kwargs):
         self.sent_messages.append({"chat_id": chat_id, "text": text, **kwargs})
@@ -127,6 +135,7 @@ def _make_service(chat_id=12345, bot=None, pipeline=None, notifier=None):
     notifier.chat_id = str(chat_id)
     service = TelegramBotService(cfg, notifier=notifier, pipeline=pipeline)
     service.bot = bot
+    service._register_handlers()
     return service, bot, notifier
 
 
@@ -147,6 +156,9 @@ def test_unauthorized_chat_id_rejection():
     assert len(bot.sent_messages) == 0
 
     service.handle_unlock(msg_unauth)
+    assert len(bot.sent_messages) == 0
+
+    service.handle_lock(msg_unauth)
     assert len(bot.sent_messages) == 0
 
     service.handle_photo(msg_unauth)
@@ -177,6 +189,9 @@ def test_help_output():
     assert sent["chat_id"] == "12345"
     assert "/photo" in sent["text"]
     assert "/unlock" in sent["text"]
+    assert "/od" in sent["text"]
+    assert "/lock" in sent["text"]
+    assert "/za" in sent["text"]
     assert "/status" in sent["text"]
     assert "/mute" in sent["text"]
     assert "/unmute" in sent["text"]
@@ -215,16 +230,36 @@ def test_photo_when_no_frame_available():
     assert "k dispozici" in bot.sent_messages[0]["text"]
 
 
-# 4. Test /unlock calls _trigger_nuki_unlock
+# 4. Test /unlock, /odemknout, /od call _trigger_nuki_unlock
 def test_unlock_calls_trigger_nuki_unlock():
     pipeline = MagicMock()
     service, bot, _ = _make_service(pipeline=pipeline)
-    msg = FakeMessage(text="/unlock")
-    service.handle_unlock(msg)
 
-    pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram Admin")
-    assert len(bot.sent_messages) == 1
-    assert "odemknout" in bot.sent_messages[0]["text"].lower() or "odemknutí" in bot.sent_messages[0]["text"].lower()
+    for cmd in ["/unlock", "/odemknout", "/od"]:
+        pipeline.reset_mock()
+        bot.sent_messages.clear()
+        msg = FakeMessage(text=cmd)
+        service.handle_unlock(msg)
+
+        pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram Admin")
+        assert len(bot.sent_messages) == 1
+        assert "odemknout" in bot.sent_messages[0]["text"].lower() or "odemknutí" in bot.sent_messages[0]["text"].lower()
+
+
+# 4b. Test /lock, /zamknout, /za call _trigger_nuki_lock
+def test_lock_calls_trigger_nuki_lock():
+    pipeline = MagicMock()
+    service, bot, _ = _make_service(pipeline=pipeline)
+
+    for cmd in ["/lock", "/zamknout", "/za"]:
+        pipeline.reset_mock()
+        bot.sent_messages.clear()
+        msg = FakeMessage(text=cmd)
+        service.handle_lock(msg)
+
+        pipeline._trigger_nuki_lock.assert_called_once_with("Telegram Admin")
+        assert len(bot.sent_messages) == 1
+        assert "zamknutí" in bot.sent_messages[0]["text"].lower() or "zamknout" in bot.sent_messages[0]["text"].lower()
 
 
 # 5. Test /mute and /unmute correctly update mute state
@@ -273,6 +308,21 @@ def test_callback_query_unlock_door():
     assert "Odemčeno uživatelem Karel" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
 
 
+def test_callback_query_lock_door():
+    pipeline = MagicMock()
+    service, bot, _ = _make_service(pipeline=pipeline)
+
+    call = FakeCallbackQuery(data="lock_door", first_name="Karel")
+    service.handle_callback_query(call)
+
+    pipeline._trigger_nuki_lock.assert_called_once_with("Telegram Callback")
+    assert len(bot.answered_callbacks) == 1
+    assert "Dveře se zamykají" in bot.answered_callbacks[0]["text"]
+    assert len(bot.edited_markups) == 1
+    markup = bot.edited_markups[0]["reply_markup"]
+    assert "Zamčeno uživatelem Karel" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
+
+
 def test_callback_query_mute_15m():
     service, bot, notifier = _make_service()
 
@@ -295,6 +345,10 @@ def test_callback_query_unauthorized():
     pipeline._trigger_nuki_unlock.assert_not_called()
     assert len(bot.answered_callbacks) == 1
     assert "Neautorizovaný" in bot.answered_callbacks[0]["text"]
+
+    call_unauth_lock = FakeCallbackQuery(data="lock_door", chat_id=99999, user_id=99999)
+    service.handle_callback_query(call_unauth_lock)
+    pipeline._trigger_nuki_lock.assert_not_called()
 
 
 # 7. Test status overview
@@ -416,9 +470,13 @@ def test_graceful_handling_when_pipeline_is_none():
     assert len(bot.sent_messages) == 2
     assert "není" in bot.sent_messages[1]["text"]
 
-    service.handle_status(FakeMessage(text="/status"))
+    service.handle_lock(FakeMessage(text="/lock"))
     assert len(bot.sent_messages) == 3
-    assert "neaktivní" in bot.sent_messages[2]["text"]
+    assert "není" in bot.sent_messages[2]["text"]
+
+    service.handle_status(FakeMessage(text="/status"))
+    assert len(bot.sent_messages) == 4
+    assert "neaktivní" in bot.sent_messages[3]["text"]
 
 
 def test_graceful_handling_when_telebot_raises_error():
@@ -433,9 +491,25 @@ def test_graceful_handling_when_telebot_raises_error():
     service.handle_help(FakeMessage(text="/help"))
     service.handle_status(FakeMessage(text="/status"))
     service.handle_unlock(FakeMessage(text="/unlock"))
+    service.handle_lock(FakeMessage(text="/lock"))
     service.handle_mute(FakeMessage(text="/mute"))
     service.handle_unmute(FakeMessage(text="/unmute"))
     service.handle_callback_query(FakeCallbackQuery(data="unlock_door"))
+    service.handle_callback_query(FakeCallbackQuery(data="lock_door"))
+
+
+def test_registered_command_aliases():
+    bot = FakeBot()
+    service, _, _ = _make_service(bot=bot)
+    commands_map = {tuple(h["commands"]): h["handler"] for h in bot.registered_handlers if "commands" in h}
+
+    unlock_cmds = next(cmds for cmds in commands_map if "unlock" in cmds)
+    assert set(unlock_cmds) == {"unlock", "odemknout", "od"}
+    assert commands_map[unlock_cmds] == service.handle_unlock
+
+    lock_cmds = next(cmds for cmds in commands_map if "lock" in cmds)
+    assert set(lock_cmds) == {"lock", "zamknout", "za"}
+    assert commands_map[lock_cmds] == service.handle_lock
 
 
 def test_send_telegram_passes_reply_markup():

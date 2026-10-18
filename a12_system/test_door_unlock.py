@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from a12_system.door_unlock import ha_unlock, unlock_decision
+from a12_system.door_unlock import ha_lock, ha_unlock, unlock_decision
 from a12_system.face_result import FaceEpisode, FaceOutcome, FaceResult
 
 RESIDENT = FaceResult(FaceOutcome.RESIDENT, "alice", 0.70, faces=1,
@@ -144,6 +144,92 @@ def test_missing_ha_config_never_calls_out():
     assert not called
 
 
+def run_lock(post_status=200, states=("unlocked", "locked")):
+    seq = iter(states)
+    last = {"v": states[-1]}
+
+    def get(url, **kw):
+        try:
+            last["v"] = next(seq)
+        except StopIteration:
+            pass
+        return _Resp(200, {"state": last["v"]})
+
+    return ha_lock(
+        "http://ha:8123/", "tok", "lock.x",
+        post=lambda url, **kw: _Resp(post_status),
+        get=get, sleep=lambda s: None, settle_seconds=3,
+    )
+
+
+def test_confirmed_lock():
+    assert run_lock(states=("unlocked", "locked")) == (True, "locked")
+    assert run_lock(states=("unlocked", "locking")) == (True, "locking")
+    assert run_lock(states=("locked", "locked")) == (True, "locked")
+
+
+def test_lock_http_error_is_not_reported_as_locked():
+    ok, detail = run_lock(post_status=401)
+    assert ok is False and "401" in detail
+
+
+def test_lock_initial_state_failure_is_not_reported_as_locked():
+    res = ha_lock(
+        "http://ha:8123/", "tok", "lock.x",
+        get=lambda *a, **k: _Resp(401),
+    )
+    assert res[0] is False and "state_before_lock_failed" in res[1]
+
+
+def test_lock_timeout_not_reaching_locked_state():
+    ok, detail = run_lock(states=("unlocked",))
+    assert ok is False and detail == "lock_not_confirmed:unlocked"
+
+
+def test_lock_uses_lock_service():
+    calls = []
+    states = iter([
+        {"state": "unlocked"},
+        {"state": "locked"},
+    ])
+    result = ha_lock(
+        "http://ha:8123/", "tok", "lock.x",
+        post=lambda url, **kw: calls.append((url, kw)) or _Resp(),
+        get=lambda *a, **k: _Resp(body=next(states)),
+    )
+    assert result == (True, "locked")
+    assert calls[0][0] == "http://ha:8123/api/services/lock/lock"
+    assert calls[0][1]["json"] == {"entity_id": "lock.x"}
+
+
+def test_lock_missing_ha_config_never_calls_out():
+    called = []
+    assert ha_lock("", "", "lock.x", post=lambda *a, **k: called.append(1)) == (
+        False, "no_ha_config"
+    )
+    assert not called
+
+
+def test_lock_polling_network_error():
+    call_count = {"n": 0}
+
+    def flaky_get(url, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _Resp(200, {"state": "unlocked"})
+        raise ConnectionResetError("network error")
+
+    ok, detail = ha_lock(
+        "http://ha:8123/", "tok", "lock.x",
+        post=lambda *a, **k: _Resp(),
+        get=flaky_get,
+        sleep=lambda s: None,
+        settle_seconds=0,
+    )
+    assert ok is False
+    assert "lock_not_confirmed:unreadable" in detail
+
+
 class _Cfg(dict):
     pass
 
@@ -267,3 +353,46 @@ def test_opening_thread_keeps_photo_from_the_recognition(monkeypatch):
     pipeline.DetectionPipeline._trigger_nuki_unlock(fake, "alice", 2)
     fake._last_face_crop_path = "/data/face_debug/next-person.jpg"
     assert jobs[0]["args"] == ("alice", 2, "/data/face_debug/match.jpg")
+
+
+def test_confirmed_locking_notifies_and_logs(monkeypatch):
+    from types import SimpleNamespace
+    from a12_system import pipeline
+    from a12_system.messages import CZECH, translate_outgoing
+
+    events, sent = [], []
+    fake = SimpleNamespace(
+        ha_url="http://ha", ha_token="test", nuki_entity_id="lock.x", log_prefix="[t]",
+        db=SimpleNamespace(log_event=lambda *args: events.append(args)),
+        notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append((text, kw)) or True),
+    )
+    monkeypatch.setattr(pipeline, "ha_lock", lambda *args: (True, "locked"))
+    pipeline.DetectionPipeline._nuki_lock_worker(fake, "Telegram Admin")
+    assert events == [("lock", "Telegram Admin", 1.0)]
+    text, options = sent[0]
+    assert "Telegram Admin" in text and "Door locked" in text
+    assert options == {"bypass_cooldown": True}
+    assert translate_outgoing(text, "cz") == CZECH["🔒 Door locked ({})."].format("Telegram Admin")
+
+    monkeypatch.setattr(pipeline, "ha_lock", lambda *args: (False, "lock_not_confirmed:unlocked"))
+    pipeline.DetectionPipeline._nuki_lock_worker(fake, "Telegram Admin")
+    assert events[-1] == ("lock_failed", "Telegram Admin", 0.0)
+    fail_text = sent[-1][0]
+    assert "Door locking NOT confirmed" in fail_text
+    assert translate_outgoing(fail_text, "cz") == CZECH[
+        "⚠️ Door locking NOT confirmed for {} ({})"
+    ].format("Telegram Admin", "lock_not_confirmed:unlocked")
+
+
+def test_locking_thread_starts(monkeypatch):
+    from types import SimpleNamespace
+    from a12_system import pipeline
+
+    jobs = []
+    monkeypatch.setattr(
+        pipeline.threading, "Thread",
+        lambda **kw: SimpleNamespace(start=lambda: jobs.append(kw)),
+    )
+    fake = SimpleNamespace(_nuki_lock_worker=object())
+    pipeline.DetectionPipeline._trigger_nuki_lock(fake, "Telegram Admin")
+    assert jobs[0]["args"] == ("Telegram Admin",)

@@ -19,7 +19,7 @@ from .face_result import (
     should_run_face_check,
 )
 from .detection import crop_person_box
-from .door_unlock import ha_unlock, unlock_decision
+from .door_unlock import ha_lock, ha_unlock, unlock_decision
 from .flat_episode import FlatEpisodeState
 from .messages import translate
 
@@ -478,6 +478,28 @@ class DetectionPipeline:
             self.notifier.send_telegram(
                 "Latch opening NOT confirmed for {} ({})".format(name, detail),
                 media_path=media_path,
+                bypass_cooldown=True,
+            )
+
+    def _trigger_nuki_lock(self, name: str = "Telegram Admin"):
+        """Lock the door without holding up caller or frame processing."""
+        threading.Thread(
+            target=self._nuki_lock_worker,
+            args=(name,),
+            daemon=True,
+        ).start()
+
+    def _nuki_lock_worker(self, name: str):
+        locked, detail = ha_lock(self.ha_url, self.ha_token, self.nuki_entity_id)
+        if locked:
+            logging.info(f"{self.log_prefix} Nuki locking confirmed for '{name}' ({detail})")
+            self.db.log_event("lock", name, 1.0)
+            self.notifier.send_telegram(f"🔒 Door locked ({name}).", bypass_cooldown=True)
+        else:
+            logging.error(f"{self.log_prefix} Nuki locking for '{name}' NOT CONFIRMED: {detail}")
+            self.db.log_event("lock_failed", name, 0.0)
+            self.notifier.send_telegram(
+                f"⚠️ Door locking NOT confirmed for {name} ({detail})",
                 bypass_cooldown=True,
             )
 

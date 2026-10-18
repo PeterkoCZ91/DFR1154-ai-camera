@@ -32,11 +32,13 @@ CZECH: dict[str, str] = {
     '{} detected': 'Detekce: {}',
     '{} - local MP4 saved': '{} – MP4 uloženo lokálně',
 
-    # pipeline.py — Nuki unlock
+    # pipeline.py — Nuki unlock and lock
     'Face recognised: {}. Latch opening confirmed.': '🔓 Rozpoznán: {}. Otevření střelky potvrzeno.',
     'Face recognised: {}. Latch opening confirmed ({} faces in view).': '🔓 Rozpoznán: {}. Otevření střelky potvrzeno (obličejů v záběru: {}).',
     'Latch opening NOT confirmed for {} ({})': '⚠️ Rozpoznán: {}. Otevření střelky se nepodařilo potvrdit ({}).',
     'DRY RUN: would unlock for {} (score {:.2f}, faces in view: {})': 'TEST: odemklo by se pro {} (skóre {:.2f}, obličejů v záběru: {})',
+    '🔒 Door locked ({}).': '🔒 Dveře uzamčeny ({}).',
+    '⚠️ Door locking NOT confirmed for {} ({})': '⚠️ Uzamčení dveří NEPOTVRZENO pro {} ({})',
 
     # status_monitor.py — sabotage watchdog and health checks
     'SABOTAGE! Camera signal lost ({}s)!': 'SABOTÁŽ! Ztracen signál z kamery ({} s)!',
