@@ -154,7 +154,11 @@ class Notifier:
         # Rendered here rather than at the call sites, so the pipeline keeps
         # producing English and the tests that pin down what an alert says stay
         # about the sentence, not the language.
-        message = translate_outgoing(message, self.language())
+        try:
+            message = translate_outgoing(message, self.language())
+        except Exception as e:
+            # An untranslated alert beats a lost one.
+            logging.warning(f"Could not translate outgoing message: {e}")
 
         kwargs = {}
         if reply_markup is not None:
@@ -189,10 +193,19 @@ class Notifier:
                 logging.warning(f"Telegram 429: suppressing sends for {retry_after}s")
                 with self._send_lock:
                     self._rate_limited_until = time.time() + retry_after
-            else:
-                logging.error(f"Telegram API error {e.error_code}: {e}")
+                return False
+            logging.error(f"Telegram API error {e.error_code}: {e}")
         except Exception as e:
             logging.error(f"Telegram error: {e}")
+        # A door opened or a lock failed must not vanish because the photo
+        # could not be uploaded: say it again without the attachment.
+        if critical and media_path:
+            try:
+                self.bot.send_message(self.chat_id, message, **kwargs)
+                logging.info(f"Telegram sent without media: {message[:50]}...")
+                return True
+            except Exception as e:
+                logging.error(f"Telegram text-only retry failed: {e}")
         return False
 
     def create_gif(

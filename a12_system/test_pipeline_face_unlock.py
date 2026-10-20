@@ -39,6 +39,7 @@ def unlock_pipeline(monkeypatch, answers, *, dry_run=False, box=(100, 50, 200, 2
     p.person_track_ids = {"pir": "pir_1", "camera": None}
     p._last_face_unlock_at = 0.0
     p._last_face_crop_path = "/data/face_debug/x.jpg"
+    p._last_face_crop_at = clock["t"]
     p.events = []
     p.sent = []
     p.opened = []
@@ -260,3 +261,117 @@ def test_presence_gate_is_built_from_settings(monkeypatch):
 def test_names_given_as_text_are_split_not_spelled(monkeypatch):
     p = unlock_pipeline(monkeypatch, [], **{"face_unlock.names": "alice, bob"})
     assert p._face_unlock_window().allowed_names == {"alice", "bob"}
+
+
+def test_shadow_threshold_only_logs_and_never_opens(monkeypatch):
+    rows = [check(live_row(i), score=0.43) for i in range(4)]
+    p = unlock_pipeline(monkeypatch, rows, **{"face_unlock.shadow_min_score": 0.42})
+    run_checks(p, 4)
+    assert p.opened == []
+    shadow = [e for e in p.db.events if e[0] == "unlock_shadow"]
+    assert shadow and shadow[0][1] == "alice" and shadow[0][2] == pytest.approx(0.43)
+
+
+def test_shadow_is_silent_when_the_real_rule_opens(monkeypatch):
+    rows = [check(live_row(i), score=0.8) for i in range(2)]
+    p = unlock_pipeline(monkeypatch, rows, **{"face_unlock.shadow_min_score": 0.42})
+    run_checks(p, 2)
+    assert p.opened == [("alice", 1)]
+    assert [e for e in p.db.events if e[0] == "unlock_shadow"] == []
+
+
+def _log_entry(who, action="Unlatch", at=(2026, 10, 20, 18, 30, 55)):
+    y, mo, d, h, mi, s = at
+    return {"index": 1, "authorizationName": who, "type": "LockAction", "action": action,
+            "trigger": "system", "completionStatus": "success", "timeYear": y, "timeMonth": mo,
+            "timeDay": d, "timeHour": h, "timeMinute": mi, "timeSecond": s}
+
+
+def test_door_opened_by_a_phone_is_not_opened_again_by_the_face(monkeypatch):
+    import json
+    from datetime import datetime, timezone
+    from a12_system.nuki_log import NukiActivity
+
+    opened_at = datetime(2026, 10, 20, 18, 30, 55, tzinfo=timezone.utc).timestamp()
+    p = unlock_pipeline(monkeypatch, [check(live_row(i)) for i in range(8)],
+                        **{"face_unlock.skip_after_external_open_seconds": 300.0})
+    p.clock["t"] = opened_at + 5
+    p.nuki_activity = NukiActivity(["NukiHub"])
+    p.nuki_activity.observe(json.dumps([_log_entry("NukiHub", at=(2026, 10, 20, 15, 43, 14)),
+                                        _log_entry("Phone")]))
+    run_checks(p, 4)
+    assert p.opened == []
+    # Past the window the face opens again.
+    p.clock["t"] = opened_at + 400
+    run_checks(p, 4)
+    assert p.opened == [("alice", 1)]
+
+
+def test_openings_by_a12_itself_or_old_ones_do_not_block_the_face(monkeypatch):
+    import json
+    from datetime import datetime, timezone
+    from a12_system.nuki_log import NukiActivity
+
+    now = datetime(2026, 10, 20, 18, 31, 0, tzinfo=timezone.utc).timestamp()
+    p = unlock_pipeline(monkeypatch, [check(live_row(i)) for i in range(4)])
+    p.clock["t"] = now
+    p.nuki_activity = NukiActivity(["NukiHub"])
+    p.nuki_activity.observe(json.dumps([
+        _log_entry("NukiHub"),                                   # A12's own opening
+        _log_entry("Phone", at=(2026, 10, 20, 17, 23, 37)),      # an hour ago
+        _log_entry("Phone", action="Lock"),                      # not an opening
+    ]))
+    run_checks(p, 4)
+    assert p.opened == [("alice", 1)]
+
+
+def test_nuki_activity_ignores_garbage():
+    from a12_system.nuki_log import NukiActivity
+
+    a = NukiActivity()
+    for payload in ("--", "", "null", "[1, 2]", '{"type": "LockAction"}'):
+        a.observe(payload)
+    assert a.recent_opening(0.0, 300) is None
+
+
+def test_telegram_opening_blocks_the_face_for_the_window(monkeypatch):
+    p = unlock_pipeline(monkeypatch, [check(live_row(i)) for i in range(4)])
+    p._last_manual_open_at, p._last_manual_open_by = p.clock["t"] - 10, "Telegram: Admin"
+    run_checks(p, 4)
+    assert p.opened == []
+
+
+def test_face_opening_waits_for_the_fresh_log_and_skips_a_phone_opening(monkeypatch):
+    import json
+    import time as real_time
+    from types import SimpleNamespace
+    from a12_system import pipeline
+    from a12_system.nuki_log import NukiActivity
+
+    now = real_time.time()
+    stamp = real_time.gmtime(now - 2)
+    entry = {"authorizationName": "Phone", "type": "LockAction", "action": "Unlatch",
+             "completionStatus": "success", "timeYear": stamp.tm_year, "timeMonth": stamp.tm_mon,
+             "timeDay": stamp.tm_mday, "timeHour": stamp.tm_hour, "timeMinute": stamp.tm_min,
+             "timeSecond": stamp.tm_sec}
+    activity = NukiActivity()
+    # Nuki Hub answers the query with the phone's opening.
+    mqtt = SimpleNamespace(query_nuki_lock=lambda: activity.observe(json.dumps([entry])) or True)
+    p = SimpleNamespace(runtime_config={}, nuki_activity=activity, mqtt_client=mqtt, log_prefix="[t]",
+                        _last_lock_query_at=0.0, _last_manual_open_at=0.0)
+    for m in ("_recent_external_opening", "_query_lock_log", "_opened_by_someone_else_meanwhile"):
+        setattr(p, m, getattr(pipeline.DetectionPipeline, m).__get__(p))
+    assert p._opened_by_someone_else_meanwhile("alice") is True
+    # Nothing new in the log: the face goes ahead.
+    quiet = NukiActivity()
+    p.nuki_activity = quiet
+    p.mqtt_client = SimpleNamespace(query_nuki_lock=lambda: quiet.observe("[]") or True)
+    assert p._opened_by_someone_else_meanwhile("alice") is False
+
+
+def test_rolling_and_short_log_topics_are_subscribed():
+    from a12_system.mqtt_client import MQTTClient
+
+    c = MQTTClient.__new__(MQTTClient)
+    c.config = {"mqtt": {"nuki_log_topic": "nukihub/lock/log"}}
+    assert c._nuki_log_topics() == ("nukihub/lock/log", "nukihub/lock/shortLog", "nukihub/lock/rollingLog")

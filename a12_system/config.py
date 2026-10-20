@@ -116,6 +116,16 @@ DEFAULT_CONFIG = {
         # Unreadable or any other state means no.
         "presence_entity": "",
         "presence_states": ["home"],
+        # A phone opens the door over Bluetooth without A12; the lock's
+        # activity log (Nuki Hub over MQTT) says so. For this long after such
+        # an opening a recognised face does not open the door a second time.
+        # 0 turns it off.
+        "skip_after_external_open_seconds": 300.0,
+        # Authorization names in that log that are A12 itself (via Nuki Hub).
+        "own_lock_names": ["NukiHub"],
+        # Before a face opens: ask Nuki Hub for the lock's log and wait up to
+        # this long for it, so a phone opening at the same moment is seen.
+        "external_open_hold_seconds": 5.0,
     },
     "telegram": {
         "enabled": False,
@@ -130,6 +140,7 @@ DEFAULT_CONFIG = {
     "detection_cooldown_seconds": 5,
     "periodic_yolo_interval": 30,
     "external_trigger_yolo_window_seconds": 15.0,
+    "external_trigger_yolo_hold_seconds": 120.0,
     "external_trigger_yolo_interval_seconds": 2.0,
     "stream_idle_mode_enabled": False,
     "stream_idle_poll_seconds": 1.0,
@@ -146,6 +157,8 @@ DEFAULT_CONFIG = {
         "discovery": True,
         "discovery_prefix": "homeassistant",
         "discovery_node": None,
+        # Nuki Hub's published activity log; empty turns the subscription off.
+        "nuki_log_topic": "nukihub/lock/log",
     },
     "audio_enabled": True,
     "audio": {
@@ -414,6 +427,10 @@ ENV_OVERRIDES = [
     ("FACE_UNLOCK_NAMES", "face_unlock.names", _parse_csv),
     ("FACE_UNLOCK_MIN_SCORE", "face_unlock.min_score", _parse_float),
     ("FACE_UNLOCK_COOLDOWN_SECONDS", "face_unlock.cooldown_seconds", _parse_float),
+    ("FACE_UNLOCK_SHADOW_MIN_SCORE", "face_unlock.shadow_min_score", _parse_float),
+    ("FACE_UNLOCK_TRACK_MIN_CONFIDENCE", "face_unlock.track_min_confidence", _parse_float),
+    ("FACE_UNLOCK_TRACK_GAP_SECONDS", "face_unlock.track_gap_seconds", _parse_float),
+    ("FACE_BUDGET_REFILL_SECONDS", "face_recognition.budget_refill_seconds", _parse_float),
     ("FACE_UNLOCK_CONFIRMATIONS", "face_unlock.confirmations", _parse_int),
     ("FACE_UNLOCK_WINDOW_SECONDS", "face_unlock.window_seconds", _parse_float),
     ("FACE_UNLOCK_MIN_FACE_SIZE", "face_unlock.min_face_size", _parse_float),
@@ -422,6 +439,9 @@ ENV_OVERRIDES = [
     ("FACE_UNLOCK_LIVENESS_MIN_PARALLAX", "face_unlock.liveness_min_parallax", _parse_float),
     ("FACE_UNLOCK_PRESENCE_ENTITY", "face_unlock.presence_entity", str),
     ("FACE_UNLOCK_PRESENCE_STATES", "face_unlock.presence_states", _parse_csv),
+    ("FACE_UNLOCK_SKIP_AFTER_EXTERNAL_OPEN_SECONDS", "face_unlock.skip_after_external_open_seconds", _parse_float),
+    ("FACE_UNLOCK_OWN_LOCK_NAMES", "face_unlock.own_lock_names", _parse_csv),
+    ("FACE_UNLOCK_EXTERNAL_OPEN_HOLD_SECONDS", "face_unlock.external_open_hold_seconds", _parse_float),
     # MQTT
     ("MQTT_BROKER", "mqtt.broker_url", str),
     ("MQTT_PORT", "mqtt.port", _parse_int),
@@ -429,6 +449,7 @@ ENV_OVERRIDES = [
     ("MQTT_PASSWORD", "mqtt.password", str),
     ("MQTT_BASE_TOPIC", "mqtt.base_topic", str),
     ("MQTT_DISCOVERY_NODE", "mqtt.discovery_node", str),
+    ("NUKI_LOG_TOPIC", "mqtt.nuki_log_topic", str),
     # Audio
     ("AUDIO_ENABLED", "audio_enabled", _parse_bool),
     ("AUDIO_BUFFER_SECONDS", "audio.buffer_seconds", _parse_int),
@@ -473,6 +494,7 @@ ENV_OVERRIDES = [
     # Periodic YOLO
     ("PERIODIC_YOLO_INTERVAL", "periodic_yolo_interval", _parse_int),
     ("EXTERNAL_TRIGGER_YOLO_WINDOW_SECONDS", "external_trigger_yolo_window_seconds", _parse_float),
+    ("EXTERNAL_TRIGGER_YOLO_HOLD_SECONDS", "external_trigger_yolo_hold_seconds", _parse_float),
     ("EXTERNAL_TRIGGER_YOLO_INTERVAL_SECONDS", "external_trigger_yolo_interval_seconds", _parse_float),
     ("STREAM_IDLE_MODE_ENABLED", "stream_idle_mode_enabled", _parse_bool),
     ("STREAM_IDLE_POLL_SECONDS", "stream_idle_poll_seconds", _parse_float),

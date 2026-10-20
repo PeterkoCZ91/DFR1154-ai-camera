@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased] - 2026-10-20
+
+### Fixed (A12 — face unlock rarely got two confirmations at the door)
+- **The YOLO window closed 25 s after the PIR edge** while the person was still at the door. It is now held open while the Home Assistant sensor reports motion, up to `EXTERNAL_TRIGGER_YOLO_HOLD_SECONDS` (120 s) after the last edge.
+- **One weak YOLO frame restarted the confirmation count.** The lock now keeps its own person track (`FACE_UNLOCK_TRACK_MIN_CONFIDENCE` 0.40, gaps up to `FACE_UNLOCK_TRACK_GAP_SECONDS` 4 s), and faces are checked on that track even when the alert path rejects the frame.
+- **The per-episode check budget ran out after ~20 s.** It refills every `FACE_BUDGET_REFILL_SECONDS` (30 s) while the sensor is active.
+- **Debug crops stopped at the 5000-file limit**, which would have frozen the photo attached to unlock messages. They now rotate, oldest first.
+
+### Fixed (A12 — Telegram)
+- **Manual `/od` / `/za` attached a stale face crop** from whoever was last seen. Manual actions now send no photo; automatic unlocks attach a crop only if it is at most 30 s old.
+- Messages name who requested the action; a second door command while one is running gets "door busy" instead of racing; `/foto` says how old a frame is when the stream has stalled; critical messages fall back to text when the photo upload fails.
+
+### Added (A12 — diagnostics)
+- One `Face check:` log line per check (outcome, lead face, score, threshold, face count, track, quality, landmarks, decision reason).
+- **Shadow unlock rule** `FACE_UNLOCK_SHADOW_MIN_SCORE`: logs and records an `unlock_shadow` event when a lower threshold would have opened and the real one did not. It never opens the door.
+
+### Added (A12 — door opened by a phone)
+- Face unlock reads the lock's activity log that Nuki Hub publishes over MQTT (`NUKI_LOG_TOPIC`, default `nukihub/lock/log`). After an opening by anyone other than A12 itself (`FACE_UNLOCK_OWN_LOCK_NAMES`, default `NukiHub`), e.g. a phone over Bluetooth, a recognised face does not open the door again for `FACE_UNLOCK_SKIP_AFTER_EXTERNAL_OPEN_SECONDS` (default 300; 0 = off). Unlatching an unlocked lock often never shows as a state change in HA, so the log is the only reliable trace. Requires the lock PIN in Nuki Hub and "Publish authorization log" enabled.
+- The log is read from `log`, `shortLog` and `rollingLog`: Nuki Hub sends the latter two right after it reads the lock, the full log only later. On every face check (at most every 20 s) A12 asks Nuki Hub to re-read the lock (`query/lockstate`), and before a face actually opens it asks again and waits up to `FACE_UNLOCK_EXTERNAL_OPEN_HOLD_SECONDS` (default 5) for the fresh log, so a phone opening at the same moment is seen.
+- A Telegram opening (`/od`, button) blocks face opening for the same window: the person who asked is walking in.
+
+### Fixed (A12 — locking)
+- `/za` reported "locking NOT confirmed" for a lock that did lock: the motor plus Nuki Hub's report took 12 s and the wait was 10 s. It is now 30 s.
+
 ## [Unreleased] - 2026-10-18
 
 ### Fixed (A12 — face unlock decided by fresh checks, fail-closed)

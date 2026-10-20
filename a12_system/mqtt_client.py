@@ -109,6 +109,35 @@ class MQTTClient:
             self._last_connect_fail_log = now
             logging.warning(f"{self.log_prefix} MQTT broker unavailable; retrying in background")
 
+    def _nuki_log_topic(self) -> str:
+        return str(self.config.get("mqtt", {}).get("nuki_log_topic") or "").strip()
+
+    def _nuki_log_topics(self) -> tuple:
+        """The full log, plus the two Nuki Hub sends first: `shortLog` right
+        after every read of the lock and `rollingLog` once per new entry. The
+        full `log` can follow only seconds later."""
+        log_topic = self._nuki_log_topic()
+        if not log_topic:
+            return ()
+        if not log_topic.endswith("/log"):
+            return (log_topic,)
+        base = log_topic[: -len("/log")]
+        return (log_topic, base + "/shortLog", base + "/rollingLog")
+
+    def query_nuki_lock(self) -> bool:
+        """Ask Nuki Hub to read the lock state now. Every read that finds the
+        lock locked or unlocked also fetches and republishes the activity log,
+        so this is how A12 gets an opening a phone made seconds ago."""
+        log_topic = self._nuki_log_topic()
+        if not log_topic.endswith("/log") or not self.client or not self.connected:
+            return False
+        try:
+            self.client.publish(log_topic[: -len("/log")] + "/query/lockstate", "1")
+            return True
+        except Exception as e:
+            logging.error(f"{self.log_prefix} Nuki lock query failed: {e}")
+            return False
+
     def _esp32_device_name(self) -> str:
         """Name the camera publishes under: esp32cam/<name>/motion.
 
@@ -152,6 +181,8 @@ class MQTTClient:
             self.esp32_uncertain_topic = f"esp32cam/{esp32_device}/person_uncertain"
             self.client.subscribe(self.esp32_motion_topic)
             self.client.subscribe(self.esp32_uncertain_topic)
+            for nuki_topic in self._nuki_log_topics():
+                self.client.subscribe(nuki_topic)
 
             logging.info(
                 f"Subscribed to {base_topic}/ir/*, zigbee2mqtt/+, camera/config/set/#, "
@@ -237,6 +268,13 @@ class MQTTClient:
                     self.callback("esp32_person_uncertain", {"confidence": confidence})
                 except Exception as e:
                     logging.error(f"ESP32 person_uncertain callback error: {e}")
+
+            # Nuki Hub activity log: who opened the door, including phones
+            if topic in self._nuki_log_topics() and self.callback:
+                try:
+                    self.callback("nuki_log", {"payload": payload})
+                except Exception as e:
+                    logging.error(f"Nuki log callback error: {e}")
 
             # Config Updates
             if topic.startswith("camera/config/set/") and self.callback:

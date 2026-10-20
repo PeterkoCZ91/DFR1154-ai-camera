@@ -67,3 +67,13 @@ telegram_crash_report.md
 docs/superpowers/
 *face_review*.json
 eval_output/
+face_review/
+face_review_door/
+
+# Local-only working data: door/gallery evaluation staging, config and
+# gallery backups made before production changes, ad-hoc MQTT captures
+door_stage/
+*.bak
+*.bak-*
+config.env.bak*
+known_faces*.pkl*

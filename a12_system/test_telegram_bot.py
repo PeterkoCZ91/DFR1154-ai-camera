@@ -246,7 +246,7 @@ def test_unlock_calls_trigger_nuki_unlock():
         msg = FakeMessage(text=cmd)
         service.handle_unlock(msg)
 
-        pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram Admin")
+        pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram: TestUser", manual=True)
         assert len(bot.sent_messages) == 1
         assert "Odemykám" in bot.sent_messages[0]["text"]
 
@@ -262,7 +262,7 @@ def test_lock_calls_trigger_nuki_lock():
         msg = FakeMessage(text=cmd)
         service.handle_lock(msg)
 
-        pipeline._trigger_nuki_lock.assert_called_once_with("Telegram Admin")
+        pipeline._trigger_nuki_lock.assert_called_once_with("Telegram: TestUser")
         assert len(bot.sent_messages) == 1
         assert "Zamykám" in bot.sent_messages[0]["text"]
 
@@ -302,30 +302,30 @@ def test_callback_query_unlock_door():
     pipeline = MagicMock()
     service, bot, _ = _make_service(pipeline=pipeline)
 
-    call = FakeCallbackQuery(data="unlock_door", first_name="Karel")
+    call = FakeCallbackQuery(data="unlock_door", first_name="Bob")
     service.handle_callback_query(call)
 
-    pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram Callback")
+    pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram: Bob", manual=True)
     assert len(bot.answered_callbacks) == 1
     assert "Odemykám" in bot.answered_callbacks[0]["text"]
     assert len(bot.edited_markups) == 1
     markup = bot.edited_markups[0]["reply_markup"]
-    assert "Odemykám (Karel)" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
+    assert "Odemykám (Bob)" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
 
 
 def test_callback_query_lock_door():
     pipeline = MagicMock()
     service, bot, _ = _make_service(pipeline=pipeline)
 
-    call = FakeCallbackQuery(data="lock_door", first_name="Karel")
+    call = FakeCallbackQuery(data="lock_door", first_name="Bob")
     service.handle_callback_query(call)
 
-    pipeline._trigger_nuki_lock.assert_called_once_with("Telegram Callback")
+    pipeline._trigger_nuki_lock.assert_called_once_with("Telegram: Bob")
     assert len(bot.answered_callbacks) == 1
     assert "Zamykám" in bot.answered_callbacks[0]["text"]
     assert len(bot.edited_markups) == 1
     markup = bot.edited_markups[0]["reply_markup"]
-    assert "Zamykám (Karel)" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
+    assert "Zamykám (Bob)" in str(markup.to_dict() if hasattr(markup, "to_dict") else markup)
 
 
 def test_callback_query_mute_15m():
@@ -579,7 +579,7 @@ def test_unlock_button_on_fresh_notification_opens_on_one_tap():
     call.message.date = int(time.time()) - 60
     service.handle_callback_query(call)
 
-    pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram Callback")
+    pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram: Alice", manual=True)
 
 
 def test_enroll_command_parsing():

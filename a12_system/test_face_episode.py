@@ -497,6 +497,25 @@ def test_saving_is_bounded_so_it_cannot_fill_the_disk(tmp_path):
     assert len(list(tmp_path.iterdir())) == 3
 
 
+def test_past_the_quota_the_oldest_crop_makes_room_for_the_newest(tmp_path):
+    """The unlock photo comes from the debug crop. Once the quota filled up it
+    froze at an old crop, so an unlock arrived with a stranger's days-old face;
+    and the evidence for tuning stopped at the same moment."""
+    det = _StubDetector([NO_FACE] * 50)
+    p = _pipeline(
+        det, _face_debug_dir=str(tmp_path), _face_debug_limit=2,
+        _face_max_checks=50, _face_episode_gap=1e9,
+    )
+    for _ in range(5):
+        p._face_verdict(_frame())
+    names = sorted(f.name for f in tmp_path.iterdir())
+    assert len(names) == 2
+    assert p._last_face_crop_path == str(tmp_path / names[-1])
+    assert "-0004-" in names[-1] and "-0003-" in names[0], "kept the two newest"
+    assert p._fresh_face_crop_path() == p._last_face_crop_path
+    assert p._fresh_face_crop_path(now=p._last_face_crop_at + 31) is None
+
+
 def test_a_failed_write_does_not_break_the_check(tmp_path):
     """Debug output is a convenience; it must never cost a detection."""
     det = _StubDetector([STRANGER])
@@ -676,6 +695,9 @@ def test_intermediate_face_checks_run_between_yolo_cycles_for_fast_unlock(monkey
     p.external_yolo_interval = 2.0  # YOLO runs every 2.0s
     p.person_confirmation_seen_at = {"pir": 1000.0, "camera": 0.0}
     p.person_confirmation_max_gap = 3.0
+    # The last YOLO run left a person box: the lock's face track is fresh.
+    p._face_track_id = "face_1"
+    p._face_track_seen_at = 1000.0
     p._last_face_unlock_at = 0.0
     p.last_clip_buffer_sample = 0.0
     p.clip_frame_size = (640, 480)

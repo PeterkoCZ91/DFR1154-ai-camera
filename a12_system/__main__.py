@@ -215,6 +215,13 @@ class Application:
                 force_yolo_event.set()
                 logging.info(f"ESP32 person_uncertain: conf={confidence:.2f} → forcing YOLO")
 
+            elif event_type == "nuki_log":
+                # The pipeline is built after MQTT connects; a retained log
+                # arriving first only holds openings older than any window.
+                activity = getattr(self.pipeline, "nuki_activity", None)
+                if activity is not None:
+                    activity.observe(payload.get("payload", ""))
+
             elif event_type == "config":
                 topic = payload.get("topic", "")
                 value = payload.get("payload", "")

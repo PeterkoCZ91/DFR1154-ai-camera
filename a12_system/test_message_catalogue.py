@@ -190,6 +190,8 @@ def test_catalogue_has_no_entry_for_text_nobody_sends():
         "A12 daily summary", "Events (24h):", "(none)", "PIR/HA triggers",
         "Local clips", "Confirmed person", "Dog", "Audio alerts",
         "Stream interruptions",
+        # Detection labels in clip captions (pipeline.LABEL_NAMES).
+        "Person", "Cat", "Motion",
         "Scorer (since start): {} OK / {} errors / {} fallbacks, p95 {}s",
         "Faces (24h): {} known / {} strangers / {} with no readable face",
     }

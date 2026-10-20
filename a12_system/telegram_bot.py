@@ -24,6 +24,15 @@ import numpy as np
 
 from .face_backend import SFACE_BACKEND, read_gallery
 
+
+def _format_age(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 120:
+        return f"{seconds} s"
+    if seconds < 7200:
+        return f"{seconds // 60} min"
+    return f"{seconds // 3600} h"
+
 class _FallbackBotCommand:
     def __init__(self, command: str, description: str):
         self.command = command
@@ -57,6 +66,9 @@ except ImportError:
 # hours later is answering a visitor who has long gone. /od is always fresh.
 VISITOR_UNLOCK_TTL_SECONDS = 30 * 60
 CB_UNLOCK_DOOR = "unlock_door"
+# A stream frame older than this is not "current".
+PHOTO_MAX_AGE_SECONDS = 15.0
+BUSY_DOOR_TEXT = "⏳ Dveře se právě ovládají, výsledek přijde zprávou."
 
 
 # Enrolment names: like the existing gallery names (lowercase ASCII).
@@ -264,6 +276,13 @@ class TelegramBotService:
         markup.row(InlineKeyboardButton(label, callback_data="noop"))
         self._set_markup(call, markup)
 
+    @staticmethod
+    def _actor(message_or_call) -> str:
+        """Who asked, for the door log and the result message."""
+        user = getattr(message_or_call, "from_user", None)
+        name = getattr(user, "first_name", None) or getattr(user, "username", None)
+        return f"Telegram: {name}" if isinstance(name, str) and name else "Telegram"
+
     def _unlock_available(self) -> bool:
         return bool(
             self.pipeline
@@ -376,16 +395,27 @@ class TelegramBotService:
 
             chat_id, _ = self._get_chat_and_user_id(message)
             frame = None
+            caption = "📷 Aktuální snímek z kamery"
 
             if self.pipeline:
                 frame = getattr(self.pipeline, "latest_frame", None)
-                if frame is None:
+                shared = getattr(self.pipeline, "shared_state", None) or {}
+                frame_at = shared.get("last_frame") if isinstance(shared, dict) else None
+                age = time.time() - frame_at if isinstance(frame_at, (int, float)) else None
+                # The stream frame is never cleared, so a dead stream would
+                # hand out an hours-old picture as "current".
+                stale = frame is None or (age is not None and age > PHOTO_MAX_AGE_SECONDS)
+                if stale:
                     cam = getattr(self.pipeline, "camera", None)
                     if cam and callable(getattr(cam, "snapshot", None)):
                         try:
-                            frame = cam.snapshot()
+                            fresh = cam.snapshot()
+                            if fresh is not None:
+                                frame, age, stale = fresh, None, False
                         except Exception as e:
                             logging.warning(f"Camera snapshot call failed: {e}")
+                if frame is not None and stale and age is not None:
+                    caption = f"📷 Poslední snímek, starý {_format_age(age)} — stream neběží?"
 
             if frame is not None:
                 success, encoded = cv2.imencode(".jpg", frame)
@@ -393,7 +423,7 @@ class TelegramBotService:
                     self.bot.send_photo(
                         chat_id,
                         encoded.tobytes(),
-                        caption="📷 Aktuální snímek z kamery",
+                        caption=caption,
                     )
                     return
                 else:
@@ -415,10 +445,12 @@ class TelegramBotService:
 
             chat_id, _ = self._get_chat_and_user_id(message)
             if self._unlock_available():
-                self.pipeline._trigger_nuki_unlock("Telegram Admin")
-                self.bot.send_message(
-                    chat_id, "⏳ Odemykám… (výsledek přijde zprávou)"
-                )
+                if self.pipeline._trigger_nuki_unlock(self._actor(message), manual=True) is False:
+                    self.bot.send_message(chat_id, BUSY_DOOR_TEXT)
+                    return
+                # The door is already moving: a failed acknowledgement must not
+                # turn into "request failed".
+                self._safe_reply(message, "⏳ Odemykám… (výsledek přijde zprávou)")
             else:
                 self.bot.send_message(
                     chat_id, "⚠️ Funkce odemknutí dveří není v systému dostupná."
@@ -435,10 +467,12 @@ class TelegramBotService:
 
             chat_id, _ = self._get_chat_and_user_id(message)
             if self.pipeline and callable(getattr(self.pipeline, "_trigger_nuki_lock", None)):
-                self.pipeline._trigger_nuki_lock("Telegram Admin")
-                self.bot.send_message(
-                    chat_id, "⏳ Zamykám… (výsledek přijde zprávou)"
-                )
+                if self.pipeline._trigger_nuki_lock(self._actor(message)) is False:
+                    self.bot.send_message(chat_id, BUSY_DOOR_TEXT)
+                    return
+                # The door is already moving: a failed acknowledgement must not
+                # turn into "request failed".
+                self._safe_reply(message, "⏳ Zamykám… (výsledek přijde zprávou)")
             else:
                 self.bot.send_message(
                     chat_id, "⚠️ Funkce zamknutí dveří není v systému dostupná."
@@ -753,7 +787,9 @@ class TelegramBotService:
                 if not self._unlock_available():
                     self._answer(call, "⚠️ Funkce odemknutí dveří není dostupná.", show_alert=True)
                     return
-                self.pipeline._trigger_nuki_unlock("Telegram Callback")
+                if self.pipeline._trigger_nuki_unlock(self._actor(call), manual=True) is False:
+                    self._answer(call, BUSY_DOOR_TEXT, show_alert=True)
+                    return
                 self._answer(call, "⏳ Odemykám…")
                 # The worker is fire-and-forget; the real outcome arrives as a
                 # separate notifier message, so claim nothing here.
@@ -765,7 +801,9 @@ class TelegramBotService:
                 if self.pipeline and callable(
                     getattr(self.pipeline, "_trigger_nuki_lock", None)
                 ):
-                    self.pipeline._trigger_nuki_lock("Telegram Callback")
+                    if self.pipeline._trigger_nuki_lock(self._actor(call)) is False:
+                        self._answer(call, BUSY_DOOR_TEXT, show_alert=True)
+                        return
                     self._answer(call, "⏳ Zamykám…")
                     self._set_status_markup(
                         call, f"⏳ Zamykám ({user_name})… výsledek přijde zprávou"

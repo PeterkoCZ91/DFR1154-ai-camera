@@ -149,10 +149,14 @@ def ha_lock(
     post: Callable = requests.post,
     get: Callable = requests.get,
     sleep: Callable[[float], None] = time.sleep,
-    settle_seconds: float = 10.0,
+    settle_seconds: float = 30.0,
     timeout: float = 5.0,
 ) -> Tuple[bool, str]:
     """Call lock.lock and observe a locked state.
+
+    Locking is slow: the motor turns for several seconds and Nuki Hub reports
+    the end over Bluetooth, so `locked` reached HA 12 s after the call once —
+    hence the 30 s wait.
 
     A 2xx from the service call only says HA accepted the request, so the
     state is polled until it reads `locked`. `locking` only says the motor
