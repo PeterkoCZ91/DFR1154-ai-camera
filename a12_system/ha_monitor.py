@@ -36,6 +36,10 @@ class HAMonitor(threading.Thread):
         # State tracking
         self.sensor_states: dict[str, str] = {}
         self.sensor_last_active: dict[str, float] = {}
+        # Last poll HA actually answered. A sensor that was "on" when HA went
+        # away would otherwise stay "on" forever and hold every PIR window open.
+        self._last_ok_at = 0.0
+        self.max_state_age_seconds = float(config.get("ha_state_max_age_seconds", 30.0))
 
         logging.info(f"HA Monitor initialized (polling every {self.poll_interval}s)")
         logging.info(f"   Monitoring {len(self.monitored_sensors)} sensors")
@@ -50,6 +54,7 @@ class HAMonitor(threading.Thread):
             )
             if response.status_code == 200:
                 all_states = response.json()
+                self._last_ok_at = time.monotonic()
                 return {
                     s["entity_id"]: s
                     for s in all_states
@@ -84,7 +89,15 @@ class HAMonitor(threading.Thread):
                     new_state = state_obj.get("state")
                     old_state = self.sensor_states.get(entity_id, "unknown")
 
-                    if old_state != new_state and new_state != "unavailable":
+                    if new_state in ("unavailable", "unknown", None):
+                        # Remember it so a stale "on" is dropped, but a lost
+                        # sensor is not an event: no callback.
+                        if old_state == "on":
+                            logging.info(f"HA Sensor: {entity_id} -> {new_state} (was on)")
+                        self.sensor_states[entity_id] = new_state
+                        continue
+
+                    if old_state != new_state:
                         friendly_name = state_obj.get("attributes", {}).get("friendly_name", entity_id)
                         attributes = state_obj.get("attributes", {})
 
@@ -119,12 +132,20 @@ class HAMonitor(threading.Thread):
     def get_current_states(self) -> dict[str, str]:
         return self.sensor_states.copy()
 
+    def _state_fresh(self) -> bool:
+        """True while HA keeps answering; stale states must not count as active."""
+        return time.monotonic() - self._last_ok_at <= self.max_state_age_seconds
+
     def is_any_sensor_active(self) -> bool:
         """Check if any monitored binary sensor is currently active."""
+        if not self._state_fresh():
+            return False
         return any(state == "on" for state in self.sensor_states.values())
 
     def get_active_sensors(self) -> list[str]:
         """Get entity IDs of sensors that are currently active."""
+        if not self._state_fresh():
+            return []
         return [
             entity_id
             for entity_id, state in self.sensor_states.items()

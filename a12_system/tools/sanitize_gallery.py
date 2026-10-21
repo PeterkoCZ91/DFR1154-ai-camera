@@ -31,10 +31,16 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from a12_system.face_backend import (  # noqa: E402
-    DEFAULT_COSINE_THRESHOLD,
-    SFACE_BACKEND,
-)
+try:
+    from A12_System_v2.face_backend import (  # noqa: E402
+        DEFAULT_COSINE_THRESHOLD,
+        SFACE_BACKEND,
+    )
+except ModuleNotFoundError:  # the repo calls the package a12_system
+    from a12_system.face_backend import (  # noqa: E402
+        DEFAULT_COSINE_THRESHOLD,
+        SFACE_BACKEND,
+    )
 
 
 def normalize_embeddings(encodings: list | np.ndarray) -> np.ndarray:

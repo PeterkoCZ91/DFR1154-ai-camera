@@ -95,6 +95,10 @@ def ha_unlock(
         initial = before.json()
     except Exception as e:
         return False, f"state_before_open_failed:{e}"
+    # A lock HA cannot see may queue the command and obey it later, and its
+    # return to "unlocked" would then read as a confirmed opening.
+    if initial.get("state") in _LOST_STATES or initial.get("state") in _JAMMED_STATES:
+        return False, f"lock_{initial.get('state')}"
     try:
         resp = post(
             f"{base}/api/services/lock/open",

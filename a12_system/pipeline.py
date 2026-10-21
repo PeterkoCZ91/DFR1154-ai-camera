@@ -487,12 +487,17 @@ class DetectionPipeline:
             # change and reports a false "not confirmed".
             logging.info(f"{self.log_prefix} Nuki opening for '{name}' skipped: door action in progress")
             return False
-        media_path = None if manual else self._snapshot_face_crop()
-        threading.Thread(
-            target=self._nuki_unlock_worker,
-            args=(name, faces, media_path, manual),
-            daemon=True,
-        ).start()
+        try:
+            media_path = None if manual else self._snapshot_face_crop()
+            threading.Thread(
+                target=self._nuki_unlock_worker,
+                args=(name, faces, media_path, manual),
+                daemon=True,
+            ).start()
+        except BaseException:
+            # The worker owns the release; if it never started nobody would.
+            self._door_busy.release()
+            raise
         return True
 
     def _fresh_face_crop_path(self, now=None):
@@ -578,11 +583,15 @@ class DetectionPipeline:
         if not self._door_busy.acquire(blocking=False):
             logging.info(f"{self.log_prefix} Nuki locking for '{name}' skipped: door action in progress")
             return False
-        threading.Thread(
-            target=self._nuki_lock_worker,
-            args=(name,),
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=self._nuki_lock_worker,
+                args=(name,),
+                daemon=True,
+            ).start()
+        except BaseException:
+            self._door_busy.release()
+            raise
         return True
 
     def _nuki_lock_worker(self, name: str):
@@ -1763,6 +1772,10 @@ class DetectionPipeline:
             return False, "disabled"
         if cfg.get("face_unlock.dry_run", True):
             return False, "dry_run"
+        # One vision-LLM verdict skips the window, liveness and quality gates,
+        # so it may open the door only when explicitly trusted.
+        if not cfg.get("face_unlock.groq_may_unlock", False):
+            return False, "groq_not_trusted"
         names = cfg.get("face_unlock.names", [])
         if isinstance(names, str):
             names = names.split(",")

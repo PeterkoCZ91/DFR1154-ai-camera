@@ -590,3 +590,61 @@ def test_the_face_budget_refills_while_somebody_keeps_standing_there():
     p._pir_window_active = lambda now: False
     episode.checks_done = 60
     assert p._face_budget_used(170.0, episode) == (30, 0), "no refill once they left"
+
+
+def test_a_lock_home_assistant_cannot_see_is_not_asked_to_open():
+    """A queued command that fires later, plus the lock's return to "unlocked",
+    would read as a confirmed opening that never happened."""
+    posts = []
+
+    def attempt(state):
+        return ha_unlock(
+            "http://ha:8123/", "tok", "lock.x",
+            post=lambda url, **kw: posts.append(url) or _Resp(200),
+            get=lambda url, **kw: _Resp(200, {"state": state}),
+            sleep=lambda s: None, settle_seconds=2,
+        )
+
+    for state in ("unavailable", "unknown", "jammed"):
+        ok, detail = attempt(state)
+        assert ok is False and state in detail
+    assert posts == []
+
+
+def test_a_door_action_that_cannot_start_a_thread_frees_the_door(monkeypatch):
+    from types import SimpleNamespace
+    from a12_system import pipeline
+
+    def no_thread(**kw):
+        return SimpleNamespace(start=lambda: (_ for _ in ()).throw(RuntimeError("can't start new thread")))
+
+    monkeypatch.setattr(pipeline.threading, "Thread", no_thread)
+    fake = SimpleNamespace(
+        _nuki_unlock_worker=object(), _nuki_lock_worker=object(),
+        _door_busy=threading.Lock(), log_prefix="[t]",
+    )
+    for call in (
+        lambda: pipeline.DetectionPipeline._trigger_nuki_unlock(fake, "x", manual=True),
+        lambda: pipeline.DetectionPipeline._trigger_nuki_lock(fake, "x"),
+    ):
+        try:
+            call()
+        except RuntimeError:
+            pass
+        assert fake._door_busy.acquire(blocking=False), "the door stayed 'busy' forever"
+        fake._door_busy.release()
+
+
+def test_a_snapshot_failure_frees_the_door():
+    from types import SimpleNamespace
+    from a12_system import pipeline
+
+    def boom():
+        raise ValueError("disk")
+
+    fake = SimpleNamespace(_snapshot_face_crop=boom, _door_busy=threading.Lock(), log_prefix="[t]")
+    try:
+        pipeline.DetectionPipeline._trigger_nuki_unlock(fake, "x")
+    except ValueError:
+        pass
+    assert fake._door_busy.acquire(blocking=False)

@@ -200,7 +200,7 @@ def test_help_output():
     assert "/status" in sent["text"]
     assert "/mute" in sent["text"]
     assert "/unmute" in sent["text"]
-    assert "/enroll" in sent["text"]
+    assert "/enroll" not in sent["text"]
 
 
 # 3. Test /photo sends image when frame is available
@@ -381,39 +381,6 @@ def test_status_overview():
     assert "Aktivní" in status_text
 
 
-# 8. Test /enroll face
-def test_enroll_face_workflow(tmp_path):
-    pipeline = MagicMock()
-    pipeline.script_dir = str(tmp_path)
-    detector = MagicMock()
-    detector.models_dir = str(tmp_path)
-    detector.known_face_encodings = []
-    detector.known_face_names = []
-    detector._gallery_paths.return_value = [str(tmp_path / "known_faces_sface.pkl")]
-
-    face_backend = MagicMock()
-    dummy_face = np.array([0, 0, 100, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.95])
-    dummy_embed = np.ones(128, dtype=np.float32)
-    face_backend.detect_and_embed.return_value = [(dummy_face, dummy_embed)]
-    detector.face_backend = face_backend
-    pipeline.detector = detector
-
-    service, bot, _ = _make_service(pipeline=pipeline)
-
-    photo_item = MagicMock()
-    photo_item.file_id = "test_photo_id"
-    msg = FakeMessage(text="/enroll Eva", photo=[photo_item])
-
-    service.handle_enroll(msg)
-
-    assert len(detector.known_face_names) == 1
-    assert detector.known_face_names[0] == "eva"
-    assert len(detector.known_face_encodings) == 1
-    assert os.path.exists(tmp_path / "known_faces_sface.pkl")
-    assert len(bot.sent_messages) == 1
-    assert "eva" in bot.sent_messages[0]["text"]
-
-
 # 9. Test make_visitor_keyboard and send_telegram reply_markup
 def test_make_visitor_keyboard_and_reply_markup():
     kb = make_visitor_keyboard()
@@ -580,62 +547,3 @@ def test_unlock_button_on_fresh_notification_opens_on_one_tap():
     service.handle_callback_query(call)
 
     pipeline._trigger_nuki_unlock.assert_called_once_with("Telegram: Alice", manual=True)
-
-
-def test_enroll_command_parsing():
-    from a12_system.telegram_bot import normalize_enroll_name, parse_enroll_command
-
-    assert parse_enroll_command("/enroll eva") == "eva"
-    assert parse_enroll_command("/enroll@A12Bot eva") == "eva"
-    assert parse_enroll_command("/enrollx eva") is None
-    assert normalize_enroll_name("Eva") == "eva"
-    assert normalize_enroll_name("e*va") is None
-    assert normalize_enroll_name("a" * 33) is None
-
-
-def _enroll_setup(tmp_path):
-    pipeline = MagicMock()
-    detector = MagicMock()
-    detector.models_dir = str(tmp_path)
-    detector.known_face_encodings = []
-    detector.known_face_names = []
-    detector._gallery_paths.return_value = [str(tmp_path / "known_faces_sface.pkl")]
-    backend = MagicMock()
-    backend.detect_and_embed.return_value = [
-        (np.zeros(15), np.ones(128, dtype=np.float32))
-    ]
-    detector.face_backend = backend
-    pipeline.detector = detector
-    return pipeline, detector
-
-
-def test_enroll_invalid_name_saves_nothing(tmp_path):
-    pipeline, detector = _enroll_setup(tmp_path)
-    service, bot, _ = _make_service(pipeline=pipeline)
-
-    service.handle_enroll(FakeMessage(text="/enroll e*va", photo=[MagicMock()]))
-
-    assert detector.known_face_names == []
-    assert not (tmp_path / "known_faces_sface.pkl").exists()
-    assert "Neplatné jméno" in bot.sent_messages[0]["text"]
-
-
-def test_enroll_appends_only_to_target_file_without_numpy(tmp_path):
-    import pickle
-
-    pipeline, detector = _enroll_setup(tmp_path)
-    gallery = tmp_path / "known_faces_sface.pkl"
-    with open(gallery, "wb") as f:
-        pickle.dump({"backend": "sface", "encodings": [[0.5] * 128], "names": ["alice"]}, f)
-    # Samples loaded from another gallery file must not be copied into this one.
-    detector.known_face_encodings = [np.ones(128), np.ones(128)]
-    detector.known_face_names = ["alice", "bob"]
-    service, bot, _ = _make_service(pipeline=pipeline)
-
-    service.handle_enroll(FakeMessage(text="/enroll eva", photo=[MagicMock()]))
-
-    raw = gallery.read_bytes()
-    assert b"numpy" not in raw
-    data = pickle.loads(raw)
-    assert data["names"] == ["alice", "eva"]
-    assert detector.known_face_names == ["alice", "bob", "eva"]

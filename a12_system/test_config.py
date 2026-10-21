@@ -330,3 +330,25 @@ if __name__ == "__main__":
     test_face_recognition_config()
     test_load_config_no_crash()
     print("\n=== All tests passed ===")
+
+
+def test_parse_bool_is_strict():
+    import pytest
+
+    try:
+        from A12_System_v2.config import _parse_bool
+    except ModuleNotFoundError:
+        from a12_system.config import _parse_bool
+
+    assert _parse_bool(" TRUE ") is True
+    assert _parse_bool("off") is False
+    for typo in ("ture", "y", "tru", "2"):
+        with pytest.raises(ValueError):
+            _parse_bool(typo)
+
+
+def test_dry_run_typo_keeps_dry_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("FACE_UNLOCK_DRY_RUN", "ture")
+    cfg = load_config(str(tmp_path))
+    assert cfg["face_unlock"]["dry_run"] is True
+    assert cfg["face_unlock"]["groq_may_unlock"] is False

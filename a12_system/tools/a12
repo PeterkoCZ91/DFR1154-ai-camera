@@ -411,7 +411,10 @@ case "${cmd}" in
     # dir the container mounts, and OpenCV is already there, so enrolling needs
     # nothing installed on the host.
     shift
-    compose exec a12 python3 -m a12_system.tools.enroll_sface \
+    # The container names the package A12_System_v2, not a12_system.
+    tty_flag=()
+    [ -t 0 ] || tty_flag=(-T)
+    compose exec "${tty_flag[@]}" a12 python3 -m A12_System_v2.tools.enroll_sface \
       --data-dir /data "$@"
     ;;
 

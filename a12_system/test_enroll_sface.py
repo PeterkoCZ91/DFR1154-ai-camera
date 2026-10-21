@@ -10,6 +10,8 @@ import json
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from a12_system.tools.enroll_sface import update_whitelist
@@ -65,3 +67,51 @@ def test_a_malformed_config_is_not_silently_overwritten(tmp_path):
     else:
         raise AssertionError("a corrupt config.json must not be overwritten")
     assert (tmp_path / "config.json").read_text() == "{not json"
+
+
+# --- the tool must run inside the container, where the package has another name
+
+
+def test_the_tool_imports_under_the_container_package_name(tmp_path):
+    import shutil
+    import subprocess
+
+    pkg = os.path.dirname(os.path.abspath(__file__))
+    shutil.copytree(pkg, tmp_path / "A12_System_v2",
+                    ignore=shutil.ignore_patterns("__pycache__", ".git", "*.pkl", "*.onnx"))
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import A12_System_v2.tools.enroll_sface as m; print(m.write_gallery.__module__)"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "A12_System_v2" in result.stdout
+
+
+def test_separation_report_says_when_two_people_are_too_close(capsys):
+    import numpy as np
+    from a12_system.tools.enroll_sface import report_separation
+
+    same = np.ones(128, dtype=np.float32)
+    other = np.concatenate([np.ones(64), -np.ones(64)]).astype(np.float32)
+    assert report_separation([same, same * 0.99], ["a", "b"]) is True
+    assert report_separation([same, other], ["a", "b"]) is False
+    assert report_separation([same], ["a"]) is False
+
+
+def test_existing_people_and_whitelist_preflight(tmp_path):
+    from a12_system.face_backend import SFACE_BACKEND
+    from a12_system.tools.enroll_sface import existing_people, read_whitelist
+    from a12_system.tools.sanitize_gallery import write_gallery
+
+    assert existing_people(str(tmp_path / "none.pkl")) == set()
+    gallery = tmp_path / "g.pkl"
+    write_gallery(gallery, {"backend": SFACE_BACKEND, "encodings": [[0.0] * 128], "names": ["alice"]})
+    assert existing_people(str(gallery)) == {"alice"}
+
+    assert read_whitelist(str(tmp_path)) == []
+    (tmp_path / "config.json").write_text('{"face_recognition": {"whitelisted_names": ["alice"]}}')
+    assert read_whitelist(str(tmp_path)) == ["alice"]
+    (tmp_path / "config.json").write_text("{not json")
+    with pytest.raises(ValueError):
+        read_whitelist(str(tmp_path))

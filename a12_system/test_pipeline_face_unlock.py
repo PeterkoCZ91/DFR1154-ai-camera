@@ -375,3 +375,81 @@ def test_rolling_and_short_log_topics_are_subscribed():
     c = MQTTClient.__new__(MQTTClient)
     c.config = {"mqtt": {"nuki_log_topic": "nukihub/lock/log"}}
     assert c._nuki_log_topics() == ("nukihub/lock/log", "nukihub/lock/shortLog", "nukihub/lock/rollingLog")
+
+
+# --- the settings that decide, pinned at their real defaults and edges -------
+
+
+def test_a_score_exactly_at_the_threshold_opens_and_one_below_does_not(monkeypatch):
+    at = unlock_pipeline(monkeypatch, [check(live_row(i), score=0.45) for i in range(3)])
+    run_checks(at, 3)
+    assert at.opened == [("alice", 1)]
+
+    below = unlock_pipeline(monkeypatch, [check(live_row(i), score=0.449) for i in range(3)])
+    run_checks(below, 3)
+    assert below.opened == []
+
+
+def test_the_shipped_threshold_is_060(monkeypatch):
+    """Tests run at 0.45 for convenience; the default must not drift."""
+    def run_at(score):
+        p = unlock_pipeline(monkeypatch, [check(live_row(i), score=score) for i in range(4)])
+        del p.runtime_config["face_unlock.min_score"]
+        run_checks(p, 4)
+        return p.opened
+
+    assert run_at(0.55) == []
+    assert run_at(0.65) == [("alice", 1)]
+
+
+def test_without_a_dry_run_setting_the_door_stays_shut(monkeypatch):
+    p = unlock_pipeline(monkeypatch, [check(live_row(i)) for i in range(4)])
+    del p.runtime_config["face_unlock.dry_run"]
+    run_checks(p, 4)
+    assert p.opened == []
+    assert [e[0] for e in p.db.events if e[0] == "unlock_dry_run"] == ["unlock_dry_run"]
+
+
+# --- the Groq path has no window, so its own gates must each hold ------------
+
+
+def groq_pipeline(monkeypatch, **cfg):
+    p = unlock_pipeline(monkeypatch, [], dry_run=False, **{"face_unlock.groq_may_unlock": True, **cfg})
+    p._recent_external_opening = lambda now: None
+    return p
+
+
+def test_groq_may_open_when_every_gate_is_green(monkeypatch):
+    assert groq_pipeline(monkeypatch)._groq_unlock_allowed("alice") == (True, "ok")
+
+
+@pytest.mark.parametrize(
+    "cfg, reason",
+    [
+        ({"face_unlock.enabled": False}, "disabled"),
+        ({"face_unlock.dry_run": True}, "dry_run"),
+        ({"face_unlock.groq_may_unlock": False}, "groq_not_trusted"),
+        ({"face_unlock.names": ["bob"]}, "name_not_allowed"),
+        ({"face_unlock.names": []}, "name_not_allowed"),
+    ],
+)
+def test_each_groq_gate_refuses_on_its_own(monkeypatch, cfg, reason):
+    p = groq_pipeline(monkeypatch)
+    p.runtime_config.update(cfg)
+    assert p._groq_unlock_allowed("alice") == (False, reason)
+
+
+def test_groq_trust_defaults_to_off(monkeypatch):
+    p = groq_pipeline(monkeypatch)
+    del p.runtime_config["face_unlock.groq_may_unlock"]
+    assert p._groq_unlock_allowed("alice") == (False, "groq_not_trusted")
+
+
+def test_groq_respects_cooldown_and_a_phone_opening(monkeypatch):
+    p = groq_pipeline(monkeypatch)
+    p._last_face_unlock_at = p.clock["t"] - 10
+    assert p._groq_unlock_allowed("alice") == (False, "cooldown")
+
+    p = groq_pipeline(monkeypatch)
+    p._recent_external_opening = lambda now: ("phone", now)
+    assert p._groq_unlock_allowed("alice") == (False, "opened_by_phone")

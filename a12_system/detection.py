@@ -43,7 +43,7 @@ def crop_person_box_with_origin(frame: np.ndarray, box, margin: float = 0.25):
         return frame, (0, 0)
     try:
         x1, y1, x2, y2 = (int(v) for v in box)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return frame, (0, 0)
     width, height = x2 - x1, y2 - y1
     if width < _MIN_BOX_PIXELS or height < _MIN_BOX_PIXELS:
@@ -217,6 +217,11 @@ class Detector:
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
         motion_detected = False
+        if self.previous_frame_gray is not None and self.previous_frame_gray.shape != gray.shape:
+            # The camera changed resolution: absdiff would raise on every
+            # later frame because the stored one is only replaced after it.
+            self.previous_frame_gray = None
+            self.motion_streak = 0
         if self.previous_frame_gray is not None:
             frame_diff = cv2.absdiff(self.previous_frame_gray, gray)
             thresh = cv2.threshold(

@@ -148,8 +148,17 @@ class Notifier:
 
             # Claim the slot before the network call so a concurrent caller cannot
             # slip through the same cooldown window.
+            previous_send_time = self.last_telegram_time
             if not bypass_cooldown:
                 self.last_telegram_time = current_time
+
+        def release_claim():
+            # A send that never left must not use up the cooldown, or one
+            # transient error silences the next minute of alerts.
+            if not bypass_cooldown:
+                with self._send_lock:
+                    if self.last_telegram_time == current_time:
+                        self.last_telegram_time = previous_send_time
 
         # Rendered here rather than at the call sites, so the pipeline keeps
         # producing English and the tests that pin down what an alert says stay
@@ -163,6 +172,13 @@ class Notifier:
         kwargs = {}
         if reply_markup is not None:
             kwargs["reply_markup"] = reply_markup
+
+        # Telegram refuses over-long text (4096) and captions (1024) outright.
+        text_only = message[:4096]
+        if media_path and len(message) > 1024:
+            message = message[:1021] + "..."
+        elif not media_path:
+            message = text_only
 
         try:
             if media_path and os.path.exists(media_path):
@@ -193,19 +209,21 @@ class Notifier:
                 logging.warning(f"Telegram 429: suppressing sends for {retry_after}s")
                 with self._send_lock:
                     self._rate_limited_until = time.time() + retry_after
+                release_claim()
                 return False
             logging.error(f"Telegram API error {e.error_code}: {e}")
         except Exception as e:
             logging.error(f"Telegram error: {e}")
         # A door opened or a lock failed must not vanish because the photo
         # could not be uploaded: say it again without the attachment.
-        if critical and media_path:
+        if media_path:
             try:
-                self.bot.send_message(self.chat_id, message, **kwargs)
+                self.bot.send_message(self.chat_id, text_only, **kwargs)
                 logging.info(f"Telegram sent without media: {message[:50]}...")
                 return True
             except Exception as e:
                 logging.error(f"Telegram text-only retry failed: {e}")
+        release_claim()
         return False
 
     def create_gif(

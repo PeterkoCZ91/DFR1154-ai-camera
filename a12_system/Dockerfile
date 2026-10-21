@@ -36,5 +36,7 @@ RUN apt-get update \
 
 COPY docker/pkg_resources /usr/local/lib/python3.12/site-packages/pkg_resources
 COPY . /app/A12_System_v2
+# The tools and docs say a12_system; the container runs the package as A12_System_v2.
+RUN ln -s /app/A12_System_v2 /app/a12_system
 
 CMD ["python", "-m", "A12_System_v2"]

@@ -90,6 +90,7 @@ DEFAULT_CONFIG = {
     "face_unlock": {
         "enabled": False,
         "dry_run": True,
+        "groq_may_unlock": False,
         # Only these enrolled names may open the door. Empty means nobody, which
         # is deliberately stricter than face_recognition.whitelisted_names
         # (that one only mutes alerts).
@@ -339,7 +340,15 @@ DEFAULT_CONFIG = {
 # --- Environment Variable Override Mapping ---
 
 def _parse_bool(v: str) -> bool:
-    return v.lower() in ("true", "1", "yes", "on")
+    # Strict: a typo such as "ture" must not silently read as False, because
+    # for FACE_UNLOCK_DRY_RUN that means live unlocking. ValueError makes the
+    # loader keep the built-in default instead.
+    t = v.strip().lower()
+    if t in ("true", "1", "yes", "on"):
+        return True
+    if t in ("false", "0", "no", "off", ""):
+        return False
+    raise ValueError(f"not a boolean: {v!r}")
 
 def _parse_int(v: str) -> int:
     return int(v)
@@ -424,6 +433,7 @@ ENV_OVERRIDES = [
     ("FACE_DEBUG_CROP_LIMIT", "face_recognition.debug_crop_limit", _parse_int),
     ("FACE_UNLOCK_ENABLED", "face_unlock.enabled", _parse_bool),
     ("FACE_UNLOCK_DRY_RUN", "face_unlock.dry_run", _parse_bool),
+    ("FACE_UNLOCK_GROQ_MAY_UNLOCK", "face_unlock.groq_may_unlock", _parse_bool),
     ("FACE_UNLOCK_NAMES", "face_unlock.names", _parse_csv),
     ("FACE_UNLOCK_MIN_SCORE", "face_unlock.min_score", _parse_float),
     ("FACE_UNLOCK_COOLDOWN_SECONDS", "face_unlock.cooldown_seconds", _parse_float),

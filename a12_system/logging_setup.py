@@ -1,9 +1,26 @@
 """Logging configuration with colored console output and rotating file handlers."""
 
 import logging
+import re
 import sys
 import os
 from logging.handlers import RotatingFileHandler
+
+
+_BOT_TOKEN_RE = re.compile(r"bot\d+:[\w-]+")
+
+
+def _redact_bot_token(record: logging.LogRecord) -> bool:
+    """Handler filter: blank the Telegram bot token out of the message and out
+    of any traceback text, since both end up in files people paste."""
+    message = record.getMessage()
+    if "bot" in message:
+        record.msg, record.args = _BOT_TOKEN_RE.sub("bot<redacted>", message), ()
+    if record.exc_info and not record.exc_text:
+        record.exc_text = logging.Formatter().formatException(record.exc_info)
+    if record.exc_text:
+        record.exc_text = _BOT_TOKEN_RE.sub("bot<redacted>", record.exc_text)
+    return True
 
 
 class ColoredFormatter(logging.Formatter):
@@ -64,5 +81,10 @@ def setup_logging(config: dict, script_dir: str) -> None:
     events_handler.setFormatter(file_formatter)
     events_handler.setLevel(logging.WARNING)
     log_handlers.append(events_handler)
+
+    # telebot puts the whole request URL, token included, into its exceptions,
+    # and the code logs those. Redact at the handler so no log line carries it.
+    for handler in log_handlers:
+        handler.addFilter(_redact_bot_token)
 
     logging.basicConfig(level=log_level, handlers=log_handlers)

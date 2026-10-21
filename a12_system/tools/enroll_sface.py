@@ -23,6 +23,7 @@ import glob
 import json
 import os
 import pickle
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -32,15 +33,32 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from a12_system.face_backend import (  # noqa: E402
-    DEFAULT_COSINE_THRESHOLD,
-    SFACE_BACKEND,
-    SFaceBackend,
-    cosine_similarity,
-    enrolment_quality_problem,
-    is_distinct_enough,
-    flag_unusual_samples,
-)
+# The container ships the package as A12_System_v2, the repo calls it
+# a12_system; the tool must run in both.
+try:
+    from A12_System_v2.face_backend import (  # noqa: E402
+        DEFAULT_COSINE_THRESHOLD,
+        SFACE_BACKEND,
+        SFaceBackend,
+        cosine_similarity,
+        enrolment_quality_problem,
+        flag_unusual_samples,
+        is_distinct_enough,
+        read_gallery,
+    )
+    from A12_System_v2.tools.sanitize_gallery import write_gallery  # noqa: E402
+except ModuleNotFoundError:
+    from a12_system.face_backend import (  # noqa: E402
+        DEFAULT_COSINE_THRESHOLD,
+        SFACE_BACKEND,
+        SFaceBackend,
+        cosine_similarity,
+        enrolment_quality_problem,
+        flag_unusual_samples,
+        is_distinct_enough,
+        read_gallery,
+    )
+    from a12_system.tools.sanitize_gallery import write_gallery  # noqa: E402
 
 IMAGE_PATTERNS = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.PNG")
 
@@ -99,16 +117,18 @@ def enrol(backend: SFaceBackend, faces_dir: str) -> tuple[list, list, list, list
     return encodings, names, sources, skipped
 
 
-def report_separation(encodings: list, names: list) -> None:
+def report_separation(encodings: list, names: list) -> bool:
     """How far apart the enrolled people are, against the match threshold.
 
     A gallery whose own members sit closer to each other than the threshold
     cannot tell them apart, and no amount of tuning downstream will fix that.
+    Returns True when some pair is too close.
     """
+    too_close = False
     people = sorted(set(names))
     if len(people) < 2:
         print(f"\nseparation: only {len(people)} person enrolled, nothing to compare")
-        return
+        return False
     print("\nworst-case similarity between different people "
           f"(threshold {DEFAULT_COSINE_THRESHOLD}):")
     for i, a in enumerate(people):
@@ -118,8 +138,34 @@ def report_separation(encodings: list, names: list) -> None:
                 for ea, na in zip(encodings, names) if na == a
                 for eb, nb in zip(encodings, names) if nb == b
             )
-            flag = "  <-- TOO CLOSE" if worst >= DEFAULT_COSINE_THRESHOLD else ""
+            close = worst >= DEFAULT_COSINE_THRESHOLD
+            too_close = too_close or close
+            flag = "  <-- TOO CLOSE" if close else ""
             print(f"  {a} vs {b}: {worst:.3f}{flag}")
+    return too_close
+
+
+def existing_people(path: str) -> set:
+    """Who the gallery on disk already knows; empty when it is absent or unreadable."""
+    try:
+        with open(path, "rb") as handle:
+            _, names = read_gallery(pickle.load(handle), SFACE_BACKEND)
+        return set(names)
+    except Exception:
+        return set()
+
+
+def read_whitelist(data_dir: str) -> list:
+    """The current whitelist; raises on a config.json that will not parse, so
+    the caller can stop before it has replaced the gallery."""
+    config_path = os.path.join(data_dir, "config.json")
+    if not os.path.exists(config_path):
+        return []
+    with open(config_path) as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise ValueError(f"{config_path} is not a JSON object")
+    return list((config.get("face_recognition") or {}).get("whitelisted_names") or [])
 
 
 def camera_auth_from_config(data_dir: str):
@@ -268,6 +314,9 @@ def main() -> int:
     parser.add_argument("--out", default=None, help="default: <data-dir>/known_faces_sface.pkl")
     parser.add_argument("--detector-score", type=float, default=0.6)
     parser.add_argument("--dry-run", action="store_true", help="report, write nothing")
+    parser.add_argument("--force", action="store_true",
+                        help="write even if people are too close or someone "
+                             "already enrolled would disappear")
     parser.add_argument("--capture", metavar="NAME",
                         help="first collect samples of NAME from the live camera")
     parser.add_argument("--camera", default=None,
@@ -286,7 +335,9 @@ def main() -> int:
 
     backend = build_backend(args.data_dir, args.detector_score)
 
-    if args.capture:
+    if args.capture and args.dry_run:
+        print("dry run — skipping --capture, it would write photos")
+    elif args.capture:
         camera = args.camera or camera_url_from_config(args.data_dir)
         if not camera:
             raise SystemExit(
@@ -324,20 +375,35 @@ def main() -> int:
         for index, median in flagged:
             print(f"  {sources[index]}  (similarity {median:.3f} to the rest)")
 
-    report_separation(encodings, names)
+    too_close = report_separation(encodings, names)
 
     out = args.out or os.path.join(args.data_dir, "known_faces_sface.pkl")
     if args.dry_run:
         print(f"\ndry run — would write {len(encodings)} encodings to {out}")
         return 0
-    with open(out, "wb") as handle:
-        pickle.dump(
-            {"backend": SFACE_BACKEND, "encodings": encodings, "names": names}, handle
+
+    # Everything that can refuse runs before the live gallery is touched.
+    dropped = sorted(existing_people(out) - set(names))
+    if too_close and not args.force:
+        raise SystemExit("people too close to tell apart — nothing written (--force to override)")
+    if dropped and not args.force:
+        raise SystemExit(
+            f"{', '.join(dropped)} are in the current gallery but have no usable "
+            "photos now — nothing written (--force to drop them)"
         )
+    previous_whitelist = read_whitelist(args.data_dir)  # raises on a broken config.json
+
+    if os.path.exists(out):
+        shutil.copy2(out, out + ".bak")
+        print(f"previous gallery kept as {out}.bak")
+    write_gallery(out, {"backend": SFACE_BACKEND, "encodings": encodings, "names": names})
     print(f"\nwrote {len(encodings)} encodings for "
           f"{len(set(names))} people to {out}")
 
     whitelisted = update_whitelist(args.data_dir, names)
+    removed = sorted(set(previous_whitelist) - set(whitelisted))
+    if removed:
+        print(f"removed from the whitelist: {removed}")
     print(f"whitelist set to {whitelisted} — restart A12 to apply")
     return 0
 

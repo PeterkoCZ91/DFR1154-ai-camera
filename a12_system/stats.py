@@ -157,8 +157,12 @@ class Statistics:
             }
 
             try:
-                with open(self.save_path, "w") as f:
+                # Write beside the target and swap: a crash mid-write left a
+                # truncated file that _load read as "no history".
+                tmp_path = f"{self.save_path}.tmp"
+                with open(tmp_path, "w") as f:
                     json.dump(data, f, indent=2)
+                os.replace(tmp_path, self.save_path)
                 return True
             except Exception as e:
                 print(f"Failed to save stats: {e}")
@@ -168,7 +172,10 @@ class Statistics:
         while self.running:
             time.sleep(self.auto_save_interval)
             if self.running:
-                self.save()
+                try:
+                    self.save()
+                except Exception as e:
+                    print(f"Stats autosave failed: {e}")
 
     def stop(self) -> None:
         self.running = False

@@ -6,23 +6,15 @@ Provides bidirectional remote control and query interface for A12:
 - /lock & /zamknout & /za: Remote door lock via Nuki
 - /status & /stav: System health, FPS, residents, events, mute status
 - /mute [min] & /unmute: Temporary notification suppression
-- /enroll <name>: One-shot face enrollment from photos
 - Callback query handling for interactive inline buttons
 """
 
 import logging
-import os
-import pickle
-import re
-import tempfile
 import threading
 import time
 from typing import Optional
 
 import cv2
-import numpy as np
-
-from .face_backend import SFACE_BACKEND, read_gallery
 
 
 def _format_age(seconds: float) -> str:
@@ -32,6 +24,7 @@ def _format_age(seconds: float) -> str:
     if seconds < 7200:
         return f"{seconds // 60} min"
     return f"{seconds // 3600} h"
+
 
 class _FallbackBotCommand:
     def __init__(self, command: str, description: str):
@@ -68,85 +61,8 @@ VISITOR_UNLOCK_TTL_SECONDS = 30 * 60
 CB_UNLOCK_DOOR = "unlock_door"
 # A stream frame older than this is not "current".
 PHOTO_MAX_AGE_SECONDS = 15.0
+MAX_MUTE_MINUTES = 24 * 60
 BUSY_DOOR_TEXT = "⏳ Dveře se právě ovládají, výsledek přijde zprávou."
-
-
-# Enrolment names: like the existing gallery names (lowercase ASCII).
-ENROLL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
-_ENROLL_CMD_RE = re.compile(r"^/enroll(?:@\w+)?(?:\s+(?P<rest>.*))?$", re.DOTALL)
-
-
-def parse_enroll_command(text: Optional[str]) -> Optional[str]:
-    """Return the argument string of an /enroll command, or None if `text`
-    is not an /enroll command at all ("/enrollx" is not)."""
-    match = _ENROLL_CMD_RE.match((text or "").strip())
-    if not match:
-        return None
-    return (match.group("rest") or "").strip()
-
-
-def normalize_enroll_name(raw: str) -> Optional[str]:
-    """Lowercased name if valid, otherwise None."""
-    name = (raw or "").strip().lower()
-    return name if ENROLL_NAME_RE.match(name) else None
-
-
-def _embedding_to_list(embedding) -> list:
-    """Plain-float form: unpickles without numpy, independent of its version."""
-    return [float(x) for x in np.asarray(embedding, dtype=np.float64).ravel()]
-
-
-def save_gallery_atomic(path: str, encodings: list, names: list) -> None:
-    """Write an SFace gallery so a crash never leaves a half-written file and
-    the pickle contains no numpy objects (a numpy-2 pickle broke 1.26 once)."""
-    data = {
-        "backend": SFACE_BACKEND,
-        "encodings": [_embedding_to_list(e) for e in encodings],
-        "names": [str(n) for n in names],
-    }
-    directory = os.path.dirname(os.path.abspath(path))
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=".tmp_" + os.path.basename(path) + ".", dir=directory
-    )
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            pickle.dump(data, handle, protocol=4)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
-        except FileNotFoundError:
-            os.chmod(tmp_path, 0o644)
-        os.replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
-def append_to_gallery_file(path: str, name: str, embedding) -> int:
-    """Append one sample to the gallery at `path` only (never merges other
-    galleries in). Returns the sample count of that file. Raises if the
-    existing file cannot be read as an SFace gallery, so it is never clobbered.
-    """
-    encodings: list = []
-    names: list = []
-    if os.path.exists(path):
-        with open(path, "rb") as handle:
-            data = pickle.load(handle)
-        if not (isinstance(data, dict) and data.get("backend") == SFACE_BACKEND):
-            raise ValueError(f"{path} is not an SFace gallery; refusing to overwrite it")
-        encodings, names = read_gallery(data, SFACE_BACKEND)
-        if len(encodings) != len(data.get("names") or []) or (
-            data.get("encodings") and not encodings
-        ):
-            raise ValueError(f"{path} is inconsistent; refusing to overwrite it")
-    encodings = list(encodings) + [embedding]
-    names = list(names) + [name]
-    save_gallery_atomic(path, encodings, names)
-    return len(names)
 
 
 class TelegramBotService:
@@ -164,8 +80,6 @@ class TelegramBotService:
         self.pipeline = pipeline
         self.runtime_config = runtime_config
         self.bot = getattr(notifier, "bot", None)
-        # Serialises gallery read-modify-write and the in-memory list swap.
-        self._enroll_lock = threading.Lock()
 
         tg_cfg = self.config.get("telegram") or {}
         token = tg_cfg.get("token")
@@ -321,15 +235,6 @@ class TelegramBotService:
             self.handle_unmute,
             commands=["unmute"],
         )
-        self.bot.register_message_handler(
-            self.handle_enroll,
-            func=lambda m: bool(m)
-            and parse_enroll_command(
-                getattr(m, "text", None) or getattr(m, "caption", None)
-            )
-            is not None,
-            content_types=["text", "photo"],
-        )
         if hasattr(self.bot, "register_callback_query_handler"):
             self.bot.register_callback_query_handler(
                 self.handle_callback_query,
@@ -378,7 +283,6 @@ class TelegramBotService:
                 "📊 `/status`, `/stav` - Zobrazit celkový stav systému\n"
                 "🔕 `/mute [minuty]` - Ztišit notifikace na danou dobu (výchozí 15 min)\n"
                 "🔔 `/unmute` - Zrušit ztišení a obnovit notifikace\n"
-                "👤 `/enroll <jméno>` - Zaregistrovat obličej (přiložte fotku nebo odpovězte na fotku)\n"
                 "❓ `/help`, `/start` - Zobrazit tuto nápovědu"
             )
             chat_id, _ = self._get_chat_and_user_id(message)
@@ -563,7 +467,7 @@ class TelegramBotService:
             parts = text.split()
             if len(parts) > 1:
                 try:
-                    minutes = max(1, int(parts[1]))
+                    minutes = min(max(1, int(parts[1])), MAX_MUTE_MINUTES)
                 except ValueError:
                     minutes = 15
 
@@ -595,173 +499,6 @@ class TelegramBotService:
         except Exception as e:
             logging.error(f"Error handling /unmute: {e}")
             self._safe_reply(message, "⚠️ Ztišení se nepodařilo zrušit.")
-
-    def _unlock_names(self) -> set[str]:
-        """Names whose recognition opens the door (face_unlock.names)."""
-        source = self.runtime_config
-        if source is None and self.pipeline is not None:
-            source = getattr(self.pipeline, "runtime_config", None)
-        names = []
-        if source is not None and callable(getattr(source, "get", None)):
-            try:
-                names = source.get("face_unlock.names", []) or []
-            except Exception as e:
-                logging.warning(f"Could not read face_unlock.names: {e}")
-        else:
-            names = (self.config.get("face_unlock") or {}).get("names") or []
-        if isinstance(names, str):
-            names = names.split(",")
-        return {str(n).strip().lower() for n in names if str(n).strip()}
-
-    def _target_gallery(self, detector) -> str:
-        models_dir = getattr(
-            detector, "models_dir", getattr(self.pipeline, "script_dir", ".")
-        )
-        gallery_paths = []
-        if hasattr(detector, "_gallery_paths"):
-            face_cfg = (getattr(detector, "config", {}) or {}).get("face_recognition", {})
-            gallery_paths = detector._gallery_paths(face_cfg, models_dir)
-        if gallery_paths:
-            return gallery_paths[0]
-        return os.path.join(models_dir, "known_faces_sface.pkl")
-
-    def handle_enroll(self, message) -> None:
-        """Handle /enroll <name> with photo or replied photo."""
-        try:
-            if not self._authorized(message):
-                return
-
-            chat_id, _ = self._get_chat_and_user_id(message)
-            text = getattr(message, "text", None) or getattr(message, "caption", None)
-            raw_name = parse_enroll_command(text)
-            if raw_name is None:
-                return
-
-            if not raw_name:
-                self.bot.send_message(
-                    chat_id,
-                    "⚠️ Uveďte prosím jméno osoby: /enroll <jméno> (přiložte fotku nebo odpovězte na fotku).",
-                )
-                return
-
-            name = normalize_enroll_name(raw_name)
-            if name is None:
-                self.bot.send_message(
-                    chat_id,
-                    "⚠️ Neplatné jméno. Povolená jsou malá písmena bez diakritiky, "
-                    "číslice, _ a - (nejvýše 32 znaků), např. /enroll alice",
-                )
-                return
-
-            # Extract photo object
-            photo_list = getattr(message, "photo", None)
-            if not photo_list and getattr(message, "reply_to_message", None):
-                photo_list = getattr(message.reply_to_message, "photo", None)
-
-            if not photo_list:
-                self.bot.send_message(
-                    chat_id,
-                    "⚠️ Přiložte fotografii s obličejem nebo odpovězte příkazem na fotku.",
-                )
-                return
-
-            photo_obj = photo_list[-1]
-
-            # Download photo bytes
-            file_info = self.bot.get_file(photo_obj.file_id)
-            downloaded = self.bot.download_file(file_info.file_path)
-            img_np = np.frombuffer(downloaded, dtype=np.uint8)
-            img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
-
-            if img is None:
-                self.bot.send_message(chat_id, "⚠️ Nepodařilo se načíst/dekódovat fotografii.")
-                return
-
-            # Detect & embed face
-            detector = getattr(self.pipeline, "detector", None) if self.pipeline else None
-            backend = getattr(detector, "face_backend", None) if detector else None
-            if backend is None:
-                self.bot.send_message(
-                    chat_id,
-                    "⚠️ Backend pro rozpoznávání obličejů (YuNet/SFace) není aktivní.",
-                )
-                return
-
-            found = backend.detect_and_embed(img)
-            if not found:
-                self.bot.send_message(
-                    chat_id, "⚠️ Na fotografii nebyl nalezen žádný obličej."
-                )
-                return
-            if len(found) > 1:
-                self.bot.send_message(
-                    chat_id,
-                    f"⚠️ Na fotografii bylo nalezeno {len(found)} obličejů. Pošlete fotografii pouze jedné osoby.",
-                )
-                return
-
-            _, embedding = found[0]
-
-            if name in self._unlock_names():
-                # This sample opens the door for whoever the photo shows.
-                logging.warning(f"Telegram enrolment adds an unlock-capable sample for '{name}'")
-            self._finish_enroll(chat_id, name, embedding)
-        except Exception as e:
-            logging.error(f"Error handling /enroll: {e}")
-            self._safe_reply(message, "⚠️ Registraci obličeje se nepodařilo dokončit.")
-
-    def _finish_enroll(self, chat_id, name: str, embedding) -> None:
-        """Persist one sample to its gallery file, then publish it in memory."""
-        detector = getattr(self.pipeline, "detector", None) if self.pipeline else None
-        if detector is None:
-            self.bot.send_message(chat_id, "⚠️ Detektor není dostupný.")
-            return
-
-        target_gallery = self._target_gallery(detector)
-        with self._enroll_lock:
-            try:
-                file_count = append_to_gallery_file(target_gallery, name, embedding)
-            except Exception as e:
-                logging.error(f"Failed to save face gallery {target_gallery}: {e}")
-                self.bot.send_message(
-                    chat_id,
-                    f"⚠️ Galerii {os.path.basename(target_gallery)} se nepodařilo uložit, "
-                    "osoba nebyla zaregistrována.",
-                )
-                return
-
-            # Build new lists and swap them in, never mutate in place. The
-            # detection thread reads both attributes and pairs them with zip(),
-            # so at worst it sees one list a sample longer for one frame, which
-            # zip simply truncates.
-            new_encodings = list(getattr(detector, "known_face_encodings", None) or [])
-            new_names = list(getattr(detector, "known_face_names", None) or [])
-            new_encodings.append(np.asarray(embedding, dtype=np.float32).ravel())
-            new_names.append(name)
-            detector.known_face_encodings = new_encodings
-            detector.known_face_names = new_names
-            total = len(new_names)
-
-        # Update whitelist in runtime_config if available
-        if self.runtime_config:
-            try:
-                wl = list(
-                    self.runtime_config.get("face_recognition.whitelisted_names", [])
-                )
-                if name not in wl:
-                    wl.append(name)
-                    self.runtime_config.set(
-                        "face_recognition.whitelisted_names", sorted(wl)
-                    )
-            except Exception as e:
-                logging.warning(f"Could not update runtime whitelist: {e}")
-
-        self.bot.send_message(
-            chat_id,
-            f"✅ Osoba {name} byla úspěšně zaregistrována a uložena do "
-            f"{os.path.basename(target_gallery)} ({file_count} vzorů v souboru).\n"
-            f"Celkem načteno v paměti: {total} vzorů.",
-        )
 
     def handle_callback_query(self, call) -> None:
         """Handle inline button callback queries."""

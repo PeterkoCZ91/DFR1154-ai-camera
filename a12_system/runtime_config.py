@@ -3,7 +3,33 @@
 import copy
 import json
 import logging
+import math
 import threading
+
+_NUMERIC_KEYS = {
+    "motion_sensitivity", "yolo_confidence", "notify_threshold", "local_record_threshold",
+    "periodic_yolo_interval", "pir_cooldown", "telegram_cooldown", "detection_cooldown",
+}
+_BOOL_KEYS = {
+    "person_detection", "animal_detection", "require_sensor", "telegram_enabled",
+    "audio_detection", "face_recognition", "ir_control",
+}
+# Only where a wrong value silently turns a feature off; cooldowns are floored
+# downstream and keep their existing, tested behaviour.
+_RANGES = {"motion_sensitivity": (0, 255), "yolo_confidence": (0.05, 1.0)}
+
+
+def _acceptable(key: str, value) -> bool:
+    """MQTT is untyped: json.loads even accepts NaN and Infinity, and a string
+    in a numeric slot raises inside the frame loop on every frame."""
+    if key in _BOOL_KEYS:
+        return isinstance(value, bool)
+    if key in _NUMERIC_KEYS:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return False
+        low, high = _RANGES.get(key, (-math.inf, math.inf))
+        return low <= value <= high
+    return True
 
 
 class RuntimeConfig:
@@ -129,6 +155,10 @@ class RuntimeConfig:
             internal_key = config_map.get(key)
             if not internal_key:
                 logging.warning(f"Unknown MQTT config key: {key}")
+                return False
+
+            if not _acceptable(key, value):
+                logging.error(f"Invalid value for {key}: {value!r}")
                 return False
 
             if key == "mode" and value not in ["MONITOR", "SECURITY", "TEST"]:
