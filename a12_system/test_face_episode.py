@@ -391,6 +391,7 @@ def test_recording_cooldown_does_not_delay_face_confirmation_or_unlock(monkeypat
         "face_unlock.enabled": True, "face_unlock.names": ["alice"],
         "face_unlock.dry_run": False, "require_sensor_for_recording": False,
         "face_unlock.min_score": .45, "detection_cooldown_seconds": 60,
+        "face_unlock.min_look_seconds": 0.0,
     }
     p.groq_vision = None
     p.last_save_time = {"person": 999.0}
@@ -682,6 +683,7 @@ def test_intermediate_face_checks_run_between_yolo_cycles_for_fast_unlock(monkey
         "face_unlock.names": ["Resident"],
         "face_unlock.dry_run": False,
         "face_unlock.min_score": 0.45,
+        "face_unlock.min_look_seconds": 0.0,
     }
     p.groq_vision = None
     p.last_heartbeat = 1000.0

@@ -112,6 +112,15 @@ DEFAULT_CONFIG = {
         # Stops a frozen frame or a still picture most of the time; does NOT
         # reliably stop a moved photo — see face_liveness.py.
         "liveness_min_parallax": 0.06,
+        # Seconds the resident must look at the lens (frontal checks, gaps of
+        # up to look_gap_seconds bridged) before the door opens. Walking out or
+        # past, the camera sees a profile and the look never starts.
+        "min_look_seconds": 1.0,
+        "look_gap_seconds": 1.5,
+        # Frontal = eye distance >= this share of the face width and the nose
+        # within this many eye distances of the eye midpoint.
+        "frontal_min_eye_ratio": 0.35,
+        "frontal_max_nose_offset": 0.30,
         # Optional second factor: an HA entity (e.g. person.alice) that must
         # read one of presence_states for the door to open. Empty disables it.
         # Unreadable or any other state means no.
@@ -447,6 +456,10 @@ ENV_OVERRIDES = [
     ("FACE_UNLOCK_MIN_SHARPNESS", "face_unlock.min_sharpness", _parse_float),
     ("FACE_UNLOCK_MIN_VISIBLE_FRACTION", "face_unlock.min_visible_fraction", _parse_float),
     ("FACE_UNLOCK_LIVENESS_MIN_PARALLAX", "face_unlock.liveness_min_parallax", _parse_float),
+    ("FACE_UNLOCK_MIN_LOOK_SECONDS", "face_unlock.min_look_seconds", _parse_float),
+    ("FACE_UNLOCK_LOOK_GAP_SECONDS", "face_unlock.look_gap_seconds", _parse_float),
+    ("FACE_UNLOCK_FRONTAL_MIN_EYE_RATIO", "face_unlock.frontal_min_eye_ratio", _parse_float),
+    ("FACE_UNLOCK_FRONTAL_MAX_NOSE_OFFSET", "face_unlock.frontal_max_nose_offset", _parse_float),
     ("FACE_UNLOCK_PRESENCE_ENTITY", "face_unlock.presence_entity", str),
     ("FACE_UNLOCK_PRESENCE_STATES", "face_unlock.presence_states", _parse_csv),
     ("FACE_UNLOCK_SKIP_AFTER_EXTERNAL_OPEN_SECONDS", "face_unlock.skip_after_external_open_seconds", _parse_float),

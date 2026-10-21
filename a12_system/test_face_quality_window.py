@@ -118,3 +118,24 @@ def test_one_confirmation_opens_once():
     assert w.record(match(score=.7), at=2, track_id="track", quality_ok=True)[0]
     assert w.confirmed_score == .7
     assert not w.record(match(), at=3, track_id="track", quality_ok=True)[0]
+
+
+def test_lost_frame_neither_ends_nor_lengthens_a_look_but_a_long_gap_ends_it():
+    w = FaceUnlockWindow(allowed_names=["alice"], min_look_seconds=1.0, look_gap_seconds=1.5)
+    none = FaceResult(FaceOutcome.NO_FACE, None, None, 0, None, None)
+    assert w.record(match(), at=1.0, track_id="t", quality_ok=True) == (False, "awaiting")
+    assert w.record(none, at=1.8, track_id="t", quality_ok=True) == (False, "no_face")
+    # One frontal sighting is no look at all, however long the camera then sees nothing.
+    assert w.look_seconds == 0.0
+    assert w.record(match(), at=2.2, track_id="t", quality_ok=True)[0]
+    assert w.look_seconds == pytest.approx(1.2)
+    # Fresh look after the opening; a 2 s gap restarts it.
+    assert w.record(match(), at=3.0, track_id="t", quality_ok=True) == (False, "awaiting")
+    # Two hits in the window, but the look restarted at 5.0.
+    assert w.record(match(), at=5.0, track_id="t", quality_ok=True) == (False, "looking")
+    assert w.look_seconds == 0.0
+
+
+def test_look_time_must_fit_the_window():
+    with pytest.raises(ValueError):
+        FaceUnlockWindow(allowed_names=["alice"], seconds=5, min_look_seconds=5)

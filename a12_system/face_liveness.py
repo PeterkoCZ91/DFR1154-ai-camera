@@ -96,6 +96,36 @@ def compute_face_geometry(landmarks) -> FaceGeometry:
         return FaceGeometry(0.0, 0.0, 0.0, 1.0)
 
 
+class FacePose(NamedTuple):
+    # Eye distance over face box width: ~0.45-0.55 looking at the lens,
+    # 0.10-0.20 in profile (door crops, 2026-10-21).
+    eye_ratio: float
+    # Nose tip off the eye midpoint along the eye line, in eye distances;
+    # 0 is straight on, |x| > ~0.3 a turned head.
+    nose_offset: float
+
+
+def face_pose(face_row) -> Optional[FacePose]:
+    """How squarely a YuNet face looks at the camera; None when unmeasurable."""
+    try:
+        lm = extract_landmarks(face_row)
+        width = float(np.asarray(face_row, dtype=np.float64).ravel()[2])
+    except (TypeError, ValueError, IndexError):
+        return None
+    geometry = compute_face_geometry(lm)
+    if geometry.d_eyes <= 0 or not math.isfinite(width) or width <= 0:
+        return None
+    return FacePose(geometry.d_eyes / width, geometry.xi)
+
+
+def is_frontal(pose: Optional[FacePose], min_eye_ratio: float, max_nose_offset: float) -> bool:
+    return (
+        pose is not None
+        and pose.eye_ratio >= min_eye_ratio
+        and abs(pose.nose_offset) <= max_nose_offset
+    )
+
+
 # Eyes and mouth corners: the four points taken as the face plane.
 _PLANE = [0, 1, 3, 4]
 _NOSE = 2

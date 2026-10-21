@@ -34,7 +34,9 @@ def unlock_pipeline(monkeypatch, answers, *, dry_run=False, box=(100, 50, 200, 2
         "face_recognition": {"enabled": True},
         "face_unlock.enabled": True, "face_unlock.dry_run": dry_run,
         "face_unlock.names": ["alice"], "face_unlock.min_score": 0.45,
-        "face_unlock.cooldown_seconds": 60.0, **cfg,
+        "face_unlock.cooldown_seconds": 60.0,
+        # Two checks 0.5 s apart; the look time has tests of its own.
+        "face_unlock.min_look_seconds": 0.0, **cfg,
     }
     p.person_track_ids = {"pir": "pir_1", "camera": None}
     p._last_face_unlock_at = 0.0
@@ -453,3 +455,40 @@ def test_groq_respects_cooldown_and_a_phone_opening(monkeypatch):
     p = groq_pipeline(monkeypatch)
     p._recent_external_opening = lambda now: ("phone", now)
     assert p._groq_unlock_allowed("alice") == (False, "opened_by_phone")
+
+
+def profile_row(step):
+    """A head turned ~70 degrees: what the camera sees of someone walking out."""
+    return make_yunet_row(project_face(yaw=65.0 + 5.0 * (step % 2), pitch=4.0 * (step % 2)))
+
+
+def test_profile_never_opens_and_logs_why(monkeypatch, caplog):
+    p = unlock_pipeline(monkeypatch, [check(profile_row(i)) for i in range(8)],
+                        **{"face_unlock.min_look_seconds": 1.0})
+    with caplog.at_level("INFO"):
+        run_checks(p, 8)
+    assert p.opened == []
+    lines = [r.getMessage() for r in caplog.records if "Face check:" in r.getMessage()]
+    assert lines and all("-> not_frontal" in line and "look=0.0/1.0s" in line for line in lines)
+
+
+def test_door_opens_only_after_looking_long_enough(monkeypatch, caplog):
+    p = unlock_pipeline(monkeypatch, [check(live_row(i)) for i in range(6)],
+                        **{"face_unlock.min_look_seconds": 1.0})
+    with caplog.at_level("INFO"):
+        run_checks(p, 2)
+        assert p.opened == []
+        run_checks(p, 1)
+    assert p.opened == [("alice", 1)]
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("look=0.5/1.0s -> looking" in m for m in messages)
+    assert any("Face unlock confirmed for 'alice'" in m and "looked 1.0s" in m for m in messages)
+
+
+def test_looking_away_restarts_the_look(monkeypatch):
+    rows = [check(live_row(0)), check(live_row(1)), check(profile_row(0)),
+            check(live_row(2)), check(live_row(3))]
+    p = unlock_pipeline(monkeypatch, rows, **{"face_unlock.min_look_seconds": 1.0})
+    run_checks(p, 5)
+    # 1.0 s of checks, but the profile in the middle broke the look.
+    assert p.opened == []

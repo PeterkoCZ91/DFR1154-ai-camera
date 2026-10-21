@@ -643,6 +643,10 @@ class DetectionPipeline:
             cfg.get("face_unlock.min_sharpness", 0.0),
             cfg.get("face_unlock.min_visible_fraction", 0.9),
             cfg.get("face_unlock.liveness_min_parallax", 0.06),
+            cfg.get("face_unlock.min_look_seconds", 1.0),
+            cfg.get("face_unlock.look_gap_seconds", 1.5),
+            cfg.get("face_unlock.frontal_min_eye_ratio", 0.35),
+            cfg.get("face_unlock.frontal_max_nose_offset", 0.30),
             cfg.get("face_unlock.presence_entity", "") or "",
             as_tuple(cfg.get("face_unlock.presence_states", ["home"])),
             getattr(self, "ha_url", ""),
@@ -652,7 +656,8 @@ class DetectionPipeline:
             return self.face_window
         self._face_unlock_settings = settings
         (names, min_score, confirmations, seconds, min_size, min_sharpness,
-         min_visible, min_parallax, presence_entity, presence_states, ha_url, ha_token) = settings
+         min_visible, min_parallax, min_look, look_gap, min_eye_ratio, max_nose_offset,
+         presence_entity, presence_states, ha_url, ha_token) = settings
         try:
             self.face_window = FaceUnlockWindow(
                 allowed_names=names,
@@ -660,6 +665,10 @@ class DetectionPipeline:
                 confirmations=int(confirmations),
                 seconds=float(seconds),
                 liveness_policy=LivenessPolicy(min_parallax=float(min_parallax)),
+                min_look_seconds=float(min_look),
+                look_gap_seconds=float(look_gap),
+                min_eye_ratio=float(min_eye_ratio),
+                max_nose_offset=float(max_nose_offset),
             )
             self.face_quality_policy = QualityPolicy(
                 min_size=float(min_size),
@@ -675,6 +684,13 @@ class DetectionPipeline:
             if str(presence_entity).strip() else None
         )
         return self.face_window
+
+    @staticmethod
+    def _pose_text(pose) -> str:
+        """eyes=eye distance/face width, nose=offset from the eye midpoint."""
+        if pose is None:
+            return "-"
+        return f"eyes{pose.eye_ratio:.2f}/nose{pose.nose_offset:+.2f}"
 
     def _record_shadow_unlock(self, window, check, now, track_id, quality_ok, allowed) -> None:
         """Run a looser threshold alongside the real one, log only.
@@ -695,6 +711,10 @@ class DetectionPipeline:
                 confirmations=window.confirmations,
                 seconds=window.seconds,
                 liveness_policy=window.liveness_policy,
+                min_look_seconds=window.min_look_seconds,
+                look_gap_seconds=window.look_gap_seconds,
+                min_eye_ratio=window.min_eye_ratio,
+                max_nose_offset=window.max_nose_offset,
             )
         opened, _reason = self._shadow_window.record(
             check, at=now, track_id=track_id, quality_ok=quality_ok, face_row=check.face_row,
@@ -795,12 +815,14 @@ class DetectionPipeline:
             f"min={window.min_score:.2f} faces={check.faces} track={track_id or '-'} "
             f"quality={quality} "
             f"landmarks={'yes' if check.face_row is not None else 'no'} "
+            f"pose={self._pose_text(window.pose)} "
+            f"look={window.look_seconds:.1f}/{window.min_look_seconds:.1f}s "
             f"-> {reason} ({len(window.hits)}/{window.confirmations})"
         )
         self._record_shadow_unlock(window, check, now, track_id, quality_ok, allowed)
         if not allowed:
             return
-        name, score = check.lead_name, window.confirmed_score
+        name, score, look = check.lead_name, window.confirmed_score, window.look_seconds
         if now - self._last_face_unlock_at < float(cfg.get("face_unlock.cooldown_seconds", 60.0)):
             logging.debug(f"{self.log_prefix} Face unlock for '{name}' within cooldown")
             return
@@ -825,7 +847,7 @@ class DetectionPipeline:
         if cfg.get("face_unlock.dry_run", True):
             logging.info(
                 f"{self.log_prefix} Face unlock DRY RUN: would open for "
-                f"'{name}' (score {score:.3f}, faces in view: {faces})"
+                f"'{name}' (score {score:.3f}, looked {look:.1f}s, faces in view: {faces})"
             )
             self.db.log_event("unlock_dry_run", name, float(score))
             self.notifier.send_telegram(
@@ -837,7 +859,9 @@ class DetectionPipeline:
                 critical=True,
             )
             return
-        logging.info(f"{self.log_prefix} Face unlock confirmed for '{name}' (score {score:.3f})")
+        logging.info(
+            f"{self.log_prefix} Face unlock confirmed for '{name}' (score {score:.3f}, looked {look:.1f}s)"
+        )
         self._trigger_nuki_unlock(name, faces)
 
     def _caption(self, template: str, value) -> str:
