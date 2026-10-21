@@ -6,7 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [Unreleased] - 2026-10-20
+## [Unreleased] - 2026-10-21
+
+### Changed (A12 — the door opens only after a look at the lens)
+- **A profile no longer opens the door.** Walking out of or past the door the camera sees the face from the side, and such checks could still confirm the resident. A face check now counts only when the face is frontal: eye distance at least `FACE_UNLOCK_FRONTAL_MIN_EYE_RATIO` (0.35) of the face width and the nose within `FACE_UNLOCK_FRONTAL_MAX_NOSE_OFFSET` (0.30) eye distances of the eye midpoint. Any other face check resets the confirmations.
+- **The resident must keep looking for `FACE_UNLOCK_MIN_LOOK_SECONDS` (1.0 s)** before the door opens; frontal checks up to `FACE_UNLOCK_LOOK_GAP_SECONDS` (1.5 s) apart count as one look, and a blink or a frame without a face neither ends nor lengthens it.
+- Every `Face check:` log line shows the pose (`eyes`/`nose`) and the look time so far (`look=<so far>/<needed>s`); unlock and dry-run messages say how long the resident looked.
 
 ### Changed (A12 — safer unlock configuration)
 - **Telegram `/enroll` is removed.** A face taken from a chat photo does not match what the door camera sees, and one such sample could open the door. Enrol with `a12 enroll` from camera frames.
