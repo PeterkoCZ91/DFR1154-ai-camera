@@ -41,7 +41,7 @@ The optional `a12_system/` Python companion is part of **A12**, a multi-camera s
 | Person detection | FOMO on-device (~300–500 ms) | FOMO gates YOLOv11n via A12 (server-side) |
 | UNCERTAIN detections | Direct Telegram (low-confidence caption) | MQTT → A12 YOLO verify → Telegram only if confirmed |
 | Face recognition | No | Yes — on-device YuNet + SFace (OpenCV, no cloud) |
-| Auto door unlock | No | Nuki via Home Assistant — wiring exists, not enabled (see caveats below) |
+| Auto door unlock | No | Nuki via Home Assistant, opt-in with a dry run first; skips a door a phone already opened (see [A12 companion](docs/A12_COMPANION.md)) |
 | Telegram alerts | Yes — sent by ESP32 | Yes — sent by A12 (with face ID + AV clip) |
 | AV clips | No | Yes — MP4 with audio |
 | Home Assistant | MQTT (direct) | MQTT (direct + A12 enrichment) |

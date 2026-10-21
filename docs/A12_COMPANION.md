@@ -39,41 +39,117 @@ For Docker layout, multiple camera instances and runtime data ownership, see
 
 **Local Face Recognition + Nuki Unlock**
 
-A12 runs 100% on-device, local face detection and recognition using OpenCV's `cv2.dnn` (YuNet for 5-point landmark detection and SFace for 128-d cosine embeddings). No cloud APIs, no subscription, and zero external biometric data leakage.
+A12 runs face detection and recognition locally with OpenCV's `cv2.dnn`: YuNet finds the face and its five landmarks, SFace turns it into a 128-d embedding compared by cosine similarity. No cloud API and no biometric data leaves the host.
 
 ```bash
 # 1. Models live in the A12 data directory alongside YOLO:
 #    face_detection_yunet_2023mar.onnx   (~230 KB)
 #    face_recognition_sface_2021dec.onnx (~38 MB)
 #
-# 2. Add to config.env:
+# 2. Add to config.env (start with the dry run: it logs and messages what it
+#    would do and never opens the door):
 FACE_RECOGNITION_ENABLED=true
 FACE_UNLOCK_ENABLED=true
+FACE_UNLOCK_DRY_RUN=true
 FACE_UNLOCK_NAMES=alice,bob
-FACE_UNLOCK_MIN_SCORE=0.45
+FACE_UNLOCK_MIN_SCORE=0.60
 FACE_UNLOCK_CONFIRMATIONS=2
-FACE_MIN_FACE_SIZE=40                 # Minimum face size in pixels (filters distant faces)
-FACE_MAX_CHECKS_PER_EPISODE=20        # Usable face checks per approach runway
-NUKI_LOCK_ENTITY_ID=lock.sweet_home   # HA lock entity
+FACE_MIN_FACE_SIZE=40                 # Faces smaller than this (px) are not checked
+FACE_MAX_CHECKS_PER_EPISODE=20        # Usable face checks per approach
+NUKI_LOCK_ENTITY_ID=lock.front_door   # HA lock entity
 
-# 3. Enrol faces into known_faces_sface.pkl using the enrolment CLI:
-python3 a12_system/tools/enroll_sface.py --name alice --images /path/to/photos/
+# 3. Put reference photos in <data-dir>/known_faces/<name>/*.jpg and build the
+#    gallery (inside the container; --dry-run reports without writing):
+python3 -m a12_system.tools.enroll_sface --data-dir /data
 
-# 4. Optional: Sanitize and deduplicate gallery embeddings:
-python3 a12_system/tools/sanitize_gallery.py --input /data/known_faces_sface.pkl --report
+# 4. Optional: drop outliers and near-duplicates into a new file, then review
+#    the report before swapping it in:
+python3 -m a12_system.tools.sanitize_gallery \
+    --input /data/known_faces_sface.pkl --output /data/known_faces_sface.clean.pkl --report
 ```
 
+Photos taken by the door camera itself match best: a gallery built from
+phone selfies scores noticeably lower through a wide-angle lens. The
+`face_debug` crops (`FACE_DEBUG_CROP_DIR`) are exactly what recognition runs
+on, so they make good enrolment material once sorted by hand.
+
+**How an unlock happens**
+
+1. The PIR, Home Assistant motion sensor or YOLO starts an episode; faces are
+   checked inside the person box about twice a second, on a person track the
+   lock keeps for itself.
+2. Each check needs one face of at least `FACE_UNLOCK_MIN_FACE_SIZE` px, the
+   quality policy, a listed name and `FACE_UNLOCK_MIN_SCORE`. Every check logs
+   one `Face check:` line with its outcome and the reason.
+3. `FACE_UNLOCK_CONFIRMATIONS` agreeing checks within `FACE_UNLOCK_WINDOW_SECONDS`
+   confirm, but only if the landmarks show some head movement between them
+   (`awaiting:spoof_planar` in the log means "still too flat or too still").
+   Walking up normally is enough; standing frozen delays it.
+4. Before opening, A12 checks that nobody opened the door another way a moment
+   ago (see the next section), then calls HA `lock.open` and waits for the
+   lock to report it.
+
+Measured at one door: first recognised face to confirmation 2–3 s, then up to
+~2.5 s for the lock's log and a few seconds of motor time, so roughly 7–9 s
+from looking at the camera to an unlatched door.
+
+**Limits.** YuNet's landmarks jitter by 13–17 % of the eye distance at door
+distances, about as much as a real head turn. The movement check stops most
+still photos; a photo that is moved or tilted in front of the camera still
+passes most of the time, and a video on a phone passes any geometric check.
+Treat it as a hurdle, not anti-spoofing. If a photo must not open the door,
+add a second factor with `FACE_UNLOCK_PRESENCE_ENTITY` (an HA entity such as a
+phone tracker that must read `home`).
+
+**Door already opened by a phone (Nuki Hub)**
+
+A phone with the Nuki app (or Auto Unlock) opens the lock directly over
+Bluetooth. Neither HA nor A12 is involved, and unlatching an unlocked lock ends
+in the same `unlocked` state, so the HA lock entity often never shows it.
+Without more information the camera would then recognise the resident walking
+in and open the door a second time.
+
+With [Nuki Hub](https://github.com/technyon/nuki_hub) as the bridge, A12 reads
+the lock's own activity log instead:
+
+1. In the Nuki Hub web UI, *Credentials* → enter the lock's security PIN (from
+   the Nuki app). The status page must read **PIN valid**; without it the log
+   cannot be read.
+2. *Access Level Configuration* → enable **Publish authorization log** (and
+   *Publish authorization entries information* so entries carry names).
+3. Restart Nuki Hub.
+
+A12 subscribes to `nukihub/lock/log`, `shortLog` and `rollingLog`. Nuki Hub
+fetches the log whenever it reads the lock, so A12 asks it to
+(`query/lockstate`) on face checks, at most every 20 s, and once more right
+before a face would open, waiting up to 5 s for the answer (about 2.5 s on the
+test lock). Any opening in the log by a name other than A12's own path blocks
+face opening for the window below. An opening through A12's Telegram `/od`
+blocks it the same way.
+
+```bash
+FACE_UNLOCK_SKIP_AFTER_EXTERNAL_OPEN_SECONDS=300  # 0 turns it off
+FACE_UNLOCK_EXTERNAL_OPEN_HOLD_SECONDS=5          # wait for the fresh log before opening
+FACE_UNLOCK_OWN_LOCK_NAMES=NukiHub                # log names that are A12/HA itself
+NUKI_LOG_TOPIC=nukihub/lock/log                   # empty disables the subscription
+```
+
+In the log, `Nuki log: Unlatch by '<name>' at HH:MM:SS` shows each outside
+opening as it arrives, and `Face unlock skipped for '<name>': door opened by
+'<who>' Ns ago` shows a second opening that did not happen. Without Nuki Hub
+the topics simply stay silent and face unlock behaves as before.
+
 **Key Pipeline Features:**
-- **Fast Cadence (0.5s):** Decoupled from the heavy 2.0s YOLO cycle. Intermediate frames check faces directly inside the known person bounding box, unlocking within 0.5–1.0s.
-- **Distance Face Filtering & Check Budget:** Faces smaller than 40×40 px (`min_face_size = 40`) are skipped without consuming the usable check budget (`FACE_MAX_CHECKS_PER_EPISODE = 20`, `FACE_MAX_ATTEMPTS_PER_EPISODE = 30`), eliminating premature lockout during a resident's approach.
-- **3D Parallax & Planar Anti-Spoofing:** Analyzes 2D affine residuals and barycentric nose-to-eye depth ratios across consecutive frames. Rejects printed photos and smartphone screens (`spoof_planar` / `spoof_static`) in <0.2 ms CPU time without extra dependencies.
-- **Sliding Confirmation Window:** Eliminates score poisoning from distant approaches. Two consecutive positive sightings at normal distance trigger the unlock.
-- **CLAHE Contrast Fallback:** Recovers 21% of underexposed or shadowed faces in backlit doorways.
-- **Home Assistant Latch Unlatch & Lock:** Calls HA service `lock.open` to unlatch the door mechanism for hands-free entry, and `lock.lock` to secure the door on demand.
+- **Fast cadence:** face checks run on intermediate frames inside the known person box, decoupled from the slower YOLO cycle.
+- **Distance filtering and check budget:** faces smaller than `FACE_MIN_FACE_SIZE` are skipped without spending the check budget (`FACE_MAX_CHECKS_PER_EPISODE`, `FACE_MAX_ATTEMPTS_PER_EPISODE`); the budget refills every `FACE_BUDGET_REFILL_SECONDS` while the sensor still reports motion.
+- **Sliding confirmation window:** distant, low-scoring sightings from the approach cannot poison the decision; only agreeing checks inside the window count.
+- **CLAHE contrast fallback:** recovers part of the underexposed or backlit faces in a doorway.
+- **Shadow threshold:** `FACE_UNLOCK_SHADOW_MIN_SCORE` logs when a lower threshold would have opened and the real one did not, to tune the threshold from real visits. It never opens the door.
+- **Home Assistant unlatch and lock:** HA `lock.open` unlatches for hands-free entry, `lock.lock` locks on demand; both wait for the lock to confirm before reporting success.
 
 **Interactive Telegram Bot:**
 - Running on the server via `TelegramBotService` (no ESP32 TLS polling or memory fragmentation).
-- Commands & Aliases: `/photo` / `/foto` (live frame capture), `/unlock` / `/odemknout` / `/od` (instant Nuki unlatch via HA `lock.open`), `/lock` / `/zamknout` / `/za` (Nuki door lock via HA `lock.lock`), `/status` / `/stav` (system & stream overview), `/mute [min]` / `/unmute`, and `/enroll <name>` (add person directly from photo in chat).
+- Commands & Aliases: `/photo` / `/foto` (live frame capture), `/unlock` / `/odemknout` / `/od` (instant Nuki unlatch via HA `lock.open`), `/lock` / `/zamknout` / `/za` (Nuki door lock via HA `lock.lock`), `/status` / `/stav` (system & stream overview), `/mute [min]` / `/unmute`. Face enrolment is not offered in chat: a photo sent through Telegram does not match what the door camera sees, so enrol with `a12 enroll` from camera frames.
 - Command Menu Picker: Automatically registers the command list in the Telegram client UI via the `set_my_commands` API upon bot startup.
 - Inline Action Buttons: Visitor and stranger notifications include `[ 🔓 Unlock ]` and `[ 🔕 Mute 15m ]` with one-tap confirmation.
 

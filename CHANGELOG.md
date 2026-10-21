@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-10-20
 
+### Changed (A12 — safer unlock configuration)
+- **Telegram `/enroll` is removed.** A face taken from a chat photo does not match what the door camera sees, and one such sample could open the door. Enrol with `a12 enroll` from camera frames.
+- **Boolean settings are parsed strictly.** A typo such as `FACE_UNLOCK_DRY_RUN=ture` used to read as false and switch live unlocking on; it now keeps the built-in default and prints a warning.
+- **The Groq vision path may no longer open the door** unless `FACE_UNLOCK_GROQ_MAY_UNLOCK` (`face_unlock.groq_may_unlock`) is true (default false). It skipped the confirmation window, liveness and quality gates.
+- **A sensor that goes `unavailable` no longer stays "on".** The Home Assistant monitor kept the last "on" for ever, which held the PIR window open and let face checks run with nobody there; stale states now stop counting after 30 s without an answer from HA.
+- **`ha_unlock` does not send `lock.open` to a lock Home Assistant cannot see** (`unavailable`, `unknown`, `jammed`): its later return to "unlocked" would have read as a confirmed opening.
+- **A failed thread start or photo snapshot no longer leaves the door "busy" until restart.**
+- **The Telegram bot token is redacted from log lines and tracebacks** (`telebot` puts the request URL into its exceptions).
+- **Python motion detection survives a resolution change** instead of raising on every later frame.
+- **MQTT config values are type-checked** (NaN, Infinity, strings in numeric slots and non-booleans are rejected); `/mute` is capped at 24 h; a failed Telegram send no longer uses up the cooldown, over-long captions are cut to Telegram's limits and rejected media falls back to text; `stats.json` is written atomically; the Home Assistant IR switch templates no longer invert on/off.
+- **`a12 enroll` works in the container again** (the package is `A12_System_v2` there). It writes the gallery atomically, keeps the previous one as `.bak`, refuses to write when people are too close or an enrolled person would vanish (`--force` overrides), checks `config.json` before touching the gallery, and `--capture` writes nothing under `--dry-run`.
+
 ### Fixed (A12 — face unlock rarely got two confirmations at the door)
 - **The YOLO window closed 25 s after the PIR edge** while the person was still at the door. It is now held open while the Home Assistant sensor reports motion, up to `EXTERNAL_TRIGGER_YOLO_HOLD_SECONDS` (120 s) after the last edge.
 - **One weak YOLO frame restarted the confirmation count.** The lock now keeps its own person track (`FACE_UNLOCK_TRACK_MIN_CONFIDENCE` 0.40, gaps up to `FACE_UNLOCK_TRACK_GAP_SECONDS` 4 s), and faces are checked on that track even when the alert path rejects the frame.
@@ -29,6 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Fixed (A12 — locking)
 - `/za` reported "locking NOT confirmed" for a lock that did lock: the motor plus Nuki Hub's report took 12 s and the wait was 10 s. It is now 30 s.
+
+### Docs
+- `docs/A12_COMPANION.md`: how a face unlock happens (with measured timings), honest limits of the movement check, Nuki Hub setup for skipping a door a phone already opened, and corrected enrolment / sanitise commands (the old `--name` / `--images` flags never existed). The README no longer says door unlock is not enabled.
 
 ## [Unreleased] - 2026-10-18
 
