@@ -31,6 +31,10 @@ class NukiActivity:
         self.own_names = frozenset(str(n).strip().lower() for n in own_names if str(n).strip())
         self._lock = threading.Lock()
         self._last: Optional[Tuple[float, str, str]] = None  # (epoch, who, action)
+        # The newest opening A12 itself asked for and the lock's verdict on it
+        # ("success", "busy", "motorBlocked"...): the lock answers a command
+        # HA accepted with a plain `success` even when the motor then blocks.
+        self._own: Optional[Tuple[float, str]] = None  # (epoch, completionStatus)
         # When the last log of any content arrived (our clock): lets a caller
         # that asked Nuki Hub for a fresh one see that it came.
         self.received_at = 0.0
@@ -48,7 +52,6 @@ class NukiActivity:
 
     def observe(self, payload: str, received_at: Optional[float] = None) -> None:
         """Take one published log (a JSON list, or a single entry)."""
-        self.received_at = time.time() if received_at is None else received_at
         try:
             entries = json.loads(payload)
         except (TypeError, ValueError):
@@ -57,17 +60,25 @@ class NukiActivity:
             entries = [entries]
         if not isinstance(entries, list):
             return
+        # Only a payload that really is a log counts as the answer to a query.
+        self.received_at = time.time() if received_at is None else received_at
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("type") != "LockAction":
                 continue
             action = str(entry.get("action", "")).replace(" ", "").lower()
             who = str(entry.get("authorizationName", "")).strip()
-            if action not in OPENING_ACTIONS or who.lower() in self.own_names:
-                continue
-            if str(entry.get("completionStatus", "success")).lower() != "success":
+            if action not in OPENING_ACTIONS:
                 continue
             at = self._entry_time(entry)
             if at is None:
+                continue
+            status = str(entry.get("completionStatus", "success"))
+            if who.lower() in self.own_names:
+                with self._lock:
+                    if self._own is None or at >= self._own[0]:
+                        self._own = (at, status)
+                continue
+            if status.lower() != "success":
                 continue
             with self._lock:
                 if self._last is None or at > self._last[0]:
@@ -76,6 +87,17 @@ class NukiActivity:
                         f"Nuki log: {self._last[2]} by '{self._last[1]}' at "
                         f"{datetime.fromtimestamp(at).strftime('%H:%M:%S')}"
                     )
+
+    def result_since(self, since: float, skew: float = 3.0) -> Tuple[Optional[str], Optional[str]]:
+        """What the lock logged for an opening asked at `since`: (A12's own
+        completion status or None, who else opened successfully or None).
+        Entries have one-second resolution, so `skew` seconds before `since`
+        still count; the lock's clock may also run slightly off ours."""
+        with self._lock:
+            own, last = self._own, self._last
+        own_status = own[1] if own is not None and own[0] >= since - skew else None
+        other = last[1] if last is not None and last[0] >= since - skew else None
+        return own_status, other
 
     def recent_opening(self, now: float, within: float) -> Optional[Tuple[float, str]]:
         """(time, who) of the latest outside opening no older than `within`

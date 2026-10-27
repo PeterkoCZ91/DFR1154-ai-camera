@@ -371,6 +371,30 @@ def test_face_opening_waits_for_the_fresh_log_and_skips_a_phone_opening(monkeypa
     assert p._opened_by_someone_else_meanwhile("alice") is False
 
 
+def test_a_log_that_just_arrived_is_not_asked_for_and_waited_on_again(monkeypatch):
+    import time as real_time
+    from types import SimpleNamespace
+    from a12_system import pipeline
+    from a12_system.nuki_log import NukiActivity
+
+    asked = []
+    activity = NukiActivity()
+    mqtt = SimpleNamespace(query_nuki_lock=lambda: asked.append(1) or True)
+    p = SimpleNamespace(runtime_config={}, nuki_activity=activity, mqtt_client=mqtt, log_prefix="[t]",
+                        _last_lock_query_at=0.0, _last_manual_open_at=0.0)
+    for m in ("_recent_external_opening", "_query_lock_log", "_opened_by_someone_else_meanwhile"):
+        setattr(p, m, getattr(pipeline.DetectionPipeline, m).__get__(p))
+    activity.observe("[]")  # the query made at the first face check was answered
+    start = real_time.time()
+    assert p._opened_by_someone_else_meanwhile("alice") is False
+    assert not asked and real_time.time() - start < 1.0
+    # A stale log is asked for again.
+    activity.received_at = real_time.time() - pipeline.LOCK_LOG_FRESH_SECONDS - 1
+    p.runtime_config = {"face_unlock.external_open_hold_seconds": 0.5}
+    p._opened_by_someone_else_meanwhile("alice")
+    assert asked
+
+
 def test_rolling_and_short_log_topics_are_subscribed():
     from a12_system.mqtt_client import MQTTClient
 

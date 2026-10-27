@@ -8,6 +8,7 @@ Everything here fails closed: a missing score, an unlisted name, a cooldown in
 progress or a switch that is off all answer "no".
 """
 
+import logging
 import time
 from typing import Callable, Iterable, Optional, Tuple
 
@@ -23,7 +24,7 @@ _OPENED_STATES = frozenset({"unlocked", "unlocking", "unlatched", "unlatching", 
 # missing on purpose: it is also the resting state before an unlatch.
 _UNLATCH_STATES = frozenset({"unlatched", "unlatching", "open", "opening"})
 # States that end the wait at once: the lock reported a fault, or HA lost it.
-_JAMMED_STATES = frozenset({"jammed"})
+_JAMMED_STATES = frozenset({"jammed", "motorblocked", "motor_blocked"})
 _LOST_STATES = frozenset({"unavailable", "unknown"})
 
 
@@ -70,6 +71,8 @@ def ha_unlock(
     sleep: Callable[[float], None] = time.sleep,
     settle_seconds: float = 10.0,
     timeout: float = 5.0,
+    lock_log: Optional[Callable[[float], Tuple[Optional[str], Optional[str]]]] = None,
+    clock: Callable[[], float] = time.time,
 ) -> Tuple[bool, str]:
     """Call lock.open (unlatch) and observe the lock react.
 
@@ -83,10 +86,20 @@ def ha_unlock(
     Evidence that counts: the state changed into an open one, a transient
     unlatch state was seen, or HA's `last_changed`/`last_updated` moved past
     what it reported before the call while the state is an open one. An
-    unchanged, stale state never counts.
+    unchanged, stale state never counts. `unlocking` only says the motor
+    started, so it is waited out. `last_updated` is the only trace an unlatch
+    of an already-unlocked door leaves in HA, but it moves on any update, so
+    it is a fallback that the lock's own log can overrule.
+
+    `lock_log(called_at)` answers (the lock's own completion status for this
+    command, who else opened it) from the lock's activity log. A status other
+    than `success` (`busy`, `motorBlocked`) fails at once, however the HA
+    state looks, and an opening by someone else never confirms ours: a phone
+    that opens the door while the command is refused must not read as success.
     """
     if not ha_url or not token:
         return False, "no_ha_config"
+    started_at = clock()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base = ha_url.rstrip("/")
     try:
@@ -99,6 +112,12 @@ def ha_unlock(
     # return to "unlocked" would then read as a confirmed opening.
     if initial.get("state") in _LOST_STATES or initial.get("state") in _JAMMED_STATES:
         return False, f"lock_{initial.get('state')}"
+    # Already unlatched: someone else just opened it, and whatever HA shows
+    # next would be theirs, not this command's.
+    if initial.get("state") in _UNLATCH_STATES:
+        return False, f"lock_already_open:{initial.get('state')}"
+    called_at = clock()
+    logging.info(f"lock.open: state before the call took {called_at - started_at:.1f}s")
     try:
         resp = post(
             f"{base}/api/services/lock/open",
@@ -107,6 +126,7 @@ def ha_unlock(
             timeout=timeout,
         )
         resp.raise_for_status()
+        logging.info(f"lock.open: HA answered after {clock() - called_at:.1f}s")
     except Exception as e:
         return False, f"service_call_failed:{e}"
 
@@ -118,11 +138,19 @@ def ha_unlock(
             r.raise_for_status()
             current = r.json()
             state = current.get("state")
-            if state in _JAMMED_STATES:
+            if str(state).lower() in _JAMMED_STATES:
                 return False, f"open_failed:{state}"
-            if state in _UNLATCH_STATES:
+            own_status, other = lock_log(called_at) if lock_log is not None else (None, None)
+            if own_status is not None:
+                if own_status.lower() == "success":
+                    return True, f"{state}/log_success"
+                return False, f"open_refused:{own_status}"
+            if other is not None:
+                # Not ours: keep waiting for our own entry, but never confirm.
+                state = f"opened_by:{other}"
+            elif state in _UNLATCH_STATES:
                 return True, str(state)
-            if state in _OPENED_STATES and (
+            elif state in _OPENED_STATES and state != "unlocking" and (
                 state != initial.get("state")
                 or _advanced(initial, current, "last_changed")
                 or _advanced(initial, current, "last_updated")

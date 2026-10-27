@@ -91,7 +91,9 @@ def run(post_status=200, states=("locked", "unlocked")):
 
 def test_confirmed_unlock():
     assert run(states=("locked", "unlocked")) == (True, "unlocked")
-    assert run(states=("locked", "unlocking")) == (True, "unlocking")
+    # `unlocking` only says the motor started: it is waited out, not believed.
+    assert run(states=("locked", "unlocking", "unlocked")) == (True, "unlocked")
+    assert run(states=("locked", "unlocking")) == (False, "open_not_confirmed:unlocking")
     assert run(states=("unlocked", "opening")) == (True, "opening")
 
 
@@ -350,8 +352,9 @@ def test_confirmed_opening_notifies_with_name_and_captured_photo(monkeypatch):
         ha_url="http://ha", ha_token="test", nuki_entity_id="lock.x", log_prefix="[t]",
         db=SimpleNamespace(log_event=lambda *args: events.append(args)),
         notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append((text, kw)) or True),
+        _allow_face_unlock_retry=lambda: None,
     )
-    monkeypatch.setattr(pipeline, "ha_unlock", lambda *args: (True, "opening"))
+    monkeypatch.setattr(pipeline, "ha_unlock", lambda *args, **kw: (True, "opening"))
     pipeline.DetectionPipeline._nuki_unlock_report(fake, "alice", 1, "/data/face_debug/match.jpg")
     assert events == [("unlock", "alice", 1.0)]
     text, options = sent[0]
@@ -361,7 +364,7 @@ def test_confirmed_opening_notifies_with_name_and_captured_photo(monkeypatch):
         "Face recognised: {}. Latch opening confirmed."
     ].format("alice")
 
-    monkeypatch.setattr(pipeline, "ha_unlock", lambda *args: (False, "open_not_confirmed:unlocked"))
+    monkeypatch.setattr(pipeline, "ha_unlock", lambda *args, **kw: (False, "open_not_confirmed:unlocked"))
     pipeline.DetectionPipeline._nuki_unlock_report(fake, "alice", 1)
     assert events[-1][0] == "unlock_failed"
     assert "NOT confirmed" in sent[-1][0]
@@ -411,7 +414,7 @@ def test_manual_opening_sends_no_stale_face_photo(monkeypatch):
         db=SimpleNamespace(log_event=lambda *args: None),
         notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append((text, kw)) or True),
     )
-    monkeypatch.setattr(pipeline, "ha_unlock", lambda *args: (True, "opened"))
+    monkeypatch.setattr(pipeline, "ha_unlock", lambda *args, **kw: (True, "opened"))
     pipeline.DetectionPipeline._nuki_unlock_report(worker, "Telegram Admin", None, None, True)
     text, kw = sent[0]
     assert kw["media_path"] is None
@@ -489,7 +492,7 @@ def test_the_door_is_free_again_after_the_worker_even_if_it_fails(monkeypatch):
     def boom(*args):
         raise RuntimeError("ha down")
 
-    fake = SimpleNamespace(_door_busy=threading.Lock(), _nuki_unlock_report=boom)
+    fake = SimpleNamespace(_door_busy=threading.Lock(), _nuki_unlock_report=boom, log_prefix="[t]")
     fake._door_busy.acquire()
     try:
         pipeline.DetectionPipeline._nuki_unlock_worker(fake, "x")
@@ -648,3 +651,99 @@ def test_a_snapshot_failure_frees_the_door():
     except ValueError:
         pass
     assert fake._door_busy.acquire(blocking=False)
+
+
+# --- the lock's own verdict -------------------------------------------------
+
+def _unlock_logged(bodies, log, settle_seconds=3):
+    """ha_unlock with a lock log; `log` is a list of (own_status, other) answers."""
+    seq, answers = iter(bodies), iter(log)
+    last, last_log = {"v": bodies[-1]}, {"v": log[-1]}
+
+    def get(*a, **k):
+        last["v"] = next(seq, last["v"])
+        return _Resp(body=last["v"])
+
+    def lock_log(called_at):
+        last_log["v"] = next(answers, last_log["v"])
+        return last_log["v"]
+
+    return ha_unlock(
+        "http://ha:8123", "tok", "lock.x",
+        post=lambda *a, **k: _Resp(), get=get, sleep=lambda s: None,
+        settle_seconds=settle_seconds, lock_log=lock_log,
+    )
+
+
+def test_a_lock_that_answers_busy_fails_the_opening_even_if_someone_else_opened_it():
+    # 2026-10-23: NukiHub Unlatch `busy`, then a phone unlatched; HA showed
+    # `open` and A12 reported a success that was never its own.
+    result = _unlock_logged(
+        [{"state": "unlocked"}, {"state": "open"}],
+        [("busy", None)],
+    )
+    assert result == (False, "open_refused:busy")
+
+
+def test_a_motor_that_blocks_is_a_failure_whatever_the_command_result_said():
+    assert _unlock_logged(
+        [{"state": "unlocked"}, {"state": "unlocked"}],
+        [("motorBlocked", None)],
+    ) == (False, "open_refused:motorBlocked")
+    assert run(states=("unlocked", "motorBlocked")) == (False, "open_failed:motorBlocked")
+
+
+def test_an_opening_by_a_phone_never_confirms_ours():
+    result = _unlock_logged(
+        [{"state": "unlocked", "last_updated": "a"}, {"state": "open", "last_updated": "b"}],
+        [(None, "Phone")],
+    )
+    assert result == (False, "open_not_confirmed:opened_by:Phone")
+
+
+def test_our_own_successful_log_entry_confirms():
+    assert _unlock_logged(
+        [{"state": "unlocked"}, {"state": "unlocked"}],
+        [(None, None), ("success", None)],
+    ) == (True, "unlocked/log_success")
+
+
+def test_an_already_open_lock_is_not_sent_a_command_and_not_claimed():
+    posted = []
+    ok, detail = ha_unlock(
+        "http://ha:8123", "tok", "lock.x",
+        post=lambda *a, **k: posted.append(1) or _Resp(),
+        get=lambda *a, **k: _Resp(body={"state": "open"}), sleep=lambda s: None,
+    )
+    assert (ok, detail) == (False, "lock_already_open:open") and not posted
+
+
+def test_a_failed_face_opening_retries_after_a_short_pause_not_the_whole_cooldown():
+    from types import SimpleNamespace
+    from a12_system import pipeline
+
+    fake = SimpleNamespace(runtime_config=SimpleNamespace(get=lambda k, d=None: 60.0), _last_face_unlock_at=0.0)
+    pipeline.DetectionPipeline._allow_face_unlock_retry(fake)
+    import time
+    now = time.time()
+    cooldown_hit = now - fake._last_face_unlock_at < 60.0
+    assert cooldown_hit  # still paused right after the failure
+    assert now + pipeline.FACE_UNLOCK_RETRY_SECONDS + 1 - fake._last_face_unlock_at >= 60.0
+
+
+def test_busy_is_retried_once_before_anybody_is_told(monkeypatch):
+    from types import SimpleNamespace
+    from a12_system import pipeline
+
+    answers = iter([(False, "open_refused:busy"), (True, "unlocked/log_success")])
+    sent = []
+    fake = SimpleNamespace(
+        ha_url="http://ha", ha_token="t", nuki_entity_id="lock.x", log_prefix="[t]",
+        db=SimpleNamespace(log_event=lambda *a: None),
+        notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append(text) or True),
+        _allow_face_unlock_retry=lambda: None,
+    )
+    monkeypatch.setattr(pipeline, "ha_unlock", lambda *a, **k: next(answers))
+    monkeypatch.setattr(pipeline.time, "sleep", lambda s: None)
+    pipeline.DetectionPipeline._nuki_unlock_report(fake, "alice", 1)
+    assert len(sent) == 1 and "confirmed" in sent[0] and "NOT" not in sent[0]

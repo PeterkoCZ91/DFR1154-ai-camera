@@ -61,6 +61,13 @@ OUTCOMES_WITH_OWN_MEDIA = frozenset({"recorded_and_notified", "recorded_local_on
 LABEL_NAMES = {"person": "Person", "dog": "Dog", "cat": "Cat", "motion": "Motion"}
 # A crop older than this is not the face that just matched the unlock window.
 FACE_CROP_MAX_AGE_SECONDS = 30.0
+# After a face opening that failed: pause before the next confirmation may try
+# again, and how long to wait out a lock that answered "busy".
+FACE_UNLOCK_RETRY_SECONDS = 15.0
+FACE_UNLOCK_BUSY_RETRY_SECONDS = 3.0
+# A lock log that arrived this recently, typically the query made at the first
+# face check, is fresh enough: the opening need not ask and wait for it again.
+LOCK_LOG_FRESH_SECONDS = 8.0
 
 
 def classify_frame_health(
@@ -486,6 +493,8 @@ class DetectionPipeline:
             # A second open while the first is still settling sees no state
             # change and reports a false "not confirmed".
             logging.info(f"{self.log_prefix} Nuki opening for '{name}' skipped: door action in progress")
+            if not manual:
+                self._allow_face_unlock_retry()
             return False
         try:
             media_path = None if manual else self._snapshot_face_crop()
@@ -499,6 +508,14 @@ class DetectionPipeline:
             self._door_busy.release()
             raise
         return True
+
+    def _allow_face_unlock_retry(self):
+        """A face opening that did not happen must not cost the resident the
+        whole cooldown at a closed door. The next confirmation may try again
+        after a short pause, which also keeps a blocked motor from being
+        driven every second."""
+        cooldown = float(self.runtime_config.get("face_unlock.cooldown_seconds", 60.0))
+        self._last_face_unlock_at = time.time() - max(cooldown - FACE_UNLOCK_RETRY_SECONDS, 0.0)
 
     def _fresh_face_crop_path(self, now=None):
         """The last checked face crop, or None when it is too old to be the
@@ -527,10 +544,13 @@ class DetectionPipeline:
 
     def _nuki_unlock_worker(self, name: str, faces=None, media_path=None, manual: bool = False):
         try:
+            started = time.time()
             meanwhile = getattr(self, "_opened_by_someone_else_meanwhile", None)
             if not manual and meanwhile is not None and meanwhile(name):
                 return
+            logging.info(f"{self.log_prefix} Nuki opening timing: log check took {time.time() - started:.1f}s")
             self._nuki_unlock_report(name, faces, media_path, manual)
+            logging.info(f"{self.log_prefix} Nuki opening timing: whole opening took {time.time() - started:.1f}s")
         finally:
             self._door_busy.release()
             if media_path and os.path.basename(media_path).startswith("unlock_"):
@@ -540,7 +560,15 @@ class DetectionPipeline:
                     pass
 
     def _nuki_unlock_report(self, name: str, faces=None, media_path=None, manual: bool = False):
-        opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id)
+        activity = getattr(self, "nuki_activity", None)
+        lock_log = activity.result_since if activity is not None else None
+        opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log)
+        if not opened and detail.startswith("open_refused:busy"):
+            # The lock was talking to a phone and turned the command away; it
+            # is free a moment later and nobody is told about a miss yet.
+            logging.info(f"{self.log_prefix} Nuki busy, retrying the opening for '{name}'")
+            time.sleep(FACE_UNLOCK_BUSY_RETRY_SECONDS)
+            opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log)
         if opened:
             logging.info(f"{self.log_prefix} Nuki opening confirmed for '{name}' ({detail})")
             self.db.log_event("unlock", name, 1.0)
@@ -567,6 +595,8 @@ class DetectionPipeline:
             # or a dead Nuki bridge looks like success to a fire-and-forget POST.
             logging.error(f"{self.log_prefix} Nuki opening for '{name}' NOT CONFIRMED: {detail}")
             self.db.log_event("unlock_failed", name, 0.0)
+            if not manual:
+                self._allow_face_unlock_retry()
             if manual:
                 text = "Latch opening NOT confirmed, requested by {} ({})".format(name, detail)
             else:
@@ -761,7 +791,8 @@ class DetectionPipeline:
             hold = float(self.runtime_config.get("face_unlock.external_open_hold_seconds", 5.0))
             activity = getattr(self, "nuki_activity", None)
             asked = time.time()
-            if hold > 0 and activity is not None and self._query_lock_log(asked, force=True):
+            fresh = activity is not None and asked - activity.received_at <= LOCK_LOG_FRESH_SECONDS
+            if hold > 0 and activity is not None and not fresh and self._query_lock_log(asked, force=True):
                 while time.time() - asked < hold and activity.received_at < asked:
                     time.sleep(0.25)
         opened = self._recent_external_opening(time.time())
