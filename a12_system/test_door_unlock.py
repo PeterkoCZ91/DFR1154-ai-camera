@@ -4,6 +4,7 @@ and must never be reported open unless Home Assistant says the lock moved."""
 import os
 import threading
 import sys
+from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,6 +27,20 @@ def decide(face=RESIDENT, **over):
     )
     args.update(over)
     return unlock_decision(face, **args)
+
+
+
+def _own_commands(commands=()):
+    """The command log and lock a pipeline keeps, as attributes for a fake."""
+    import threading
+    import time
+
+    log = deque(commands)
+    return {
+        "_own_unlock_commands": log,
+        "_own_unlock_commands_lock": threading.Lock(),
+        "_note_own_unlock_command": lambda: log.append(time.time()),
+    }
 
 
 def test_strong_listed_resident_is_allowed():
@@ -353,6 +368,7 @@ def test_confirmed_opening_notifies_with_name_and_captured_photo(monkeypatch):
         db=SimpleNamespace(log_event=lambda *args: events.append(args)),
         notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append((text, kw)) or True),
         _allow_face_unlock_retry=lambda: None,
+        **_own_commands(),
     )
     monkeypatch.setattr(pipeline, "ha_unlock", lambda *args, **kw: (True, "opening"))
     pipeline.DetectionPipeline._nuki_unlock_report(fake, "alice", 1, "/data/face_debug/match.jpg")
@@ -413,6 +429,7 @@ def test_manual_opening_sends_no_stale_face_photo(monkeypatch):
         ha_url="http://ha", ha_token="test", nuki_entity_id="lock.x", log_prefix="[t]",
         db=SimpleNamespace(log_event=lambda *args: None),
         notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append((text, kw)) or True),
+        **_own_commands(),
     )
     monkeypatch.setattr(pipeline, "ha_unlock", lambda *args, **kw: (True, "opened"))
     pipeline.DetectionPipeline._nuki_unlock_report(worker, "Telegram Admin", None, None, True)
@@ -742,8 +759,103 @@ def test_busy_is_retried_once_before_anybody_is_told(monkeypatch):
         db=SimpleNamespace(log_event=lambda *a: None),
         notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append(text) or True),
         _allow_face_unlock_retry=lambda: None,
+        **_own_commands(),
     )
     monkeypatch.setattr(pipeline, "ha_unlock", lambda *a, **k: next(answers))
     monkeypatch.setattr(pipeline.time, "sleep", lambda s: None)
     pipeline.DetectionPipeline._nuki_unlock_report(fake, "alice", 1)
     assert len(sent) == 1 and "confirmed" in sent[0] and "NOT" not in sent[0]
+
+
+def _log_entry(index, now, who="NukiHub", action="Unlatch", status="success", age=2.0):
+    import time
+    stamp = time.gmtime(now - age)
+    return {"index": index, "authorizationName": who, "type": "LockAction", "action": action,
+            "completionStatus": status, "timeYear": stamp.tm_year, "timeMonth": stamp.tm_mon,
+            "timeDay": stamp.tm_mday, "timeHour": stamp.tm_hour, "timeMinute": stamp.tm_min,
+            "timeSecond": stamp.tm_sec}
+
+
+def test_every_new_opening_in_the_log_is_announced_exactly_once():
+    import json
+    import time
+    from a12_system.nuki_log import NukiActivity
+
+    now = time.time()
+    seen = []
+    activity = NukiActivity(on_opening=lambda *a: seen.append(a), clock=lambda: now)
+    entry = _log_entry(7, now)
+    # The rolling log, then the full log with the same entry plus an older one.
+    activity.observe(json.dumps(entry))
+    activity.observe(json.dumps([_log_entry(6, now, who="Phone", age=30.0), entry]))
+    assert sorted((who, own) for who, _, _, own in seen) == [("NukiHub", True), ("Phone", False)]
+
+
+def test_history_failures_and_unnumbered_entries_are_not_announced():
+    import json
+    import time
+    from a12_system.nuki_log import NukiActivity
+
+    now = time.time()
+    seen = []
+    activity = NukiActivity(on_opening=lambda *a: seen.append(a), clock=lambda: now)
+    activity.observe(json.dumps([
+        _log_entry(1, now, age=3600.0),                      # a log read after a restart
+        _log_entry(2, now, status="busy"),                   # the lock turned it away
+        {k: v for k, v in _log_entry(3, now).items() if k != "index"},
+        _log_entry(4, now, action="Lock"),                   # not an opening
+    ]))
+    assert seen == []
+
+
+def _announcing_pipeline(commands=()):
+    from types import SimpleNamespace
+    events, sent = [], []
+    fake = SimpleNamespace(
+        log_prefix="[t]",
+        db=SimpleNamespace(log_event=lambda *args: events.append(args)),
+        notifier=SimpleNamespace(send_telegram=lambda text, **kw: sent.append((text, kw)) or True),
+        **_own_commands(commands),
+    )
+    return fake, events, sent
+
+
+def test_an_opening_through_nuki_hub_that_a12_did_not_command_is_announced():
+    from a12_system import pipeline
+    from a12_system.messages import CZECH, translate_outgoing
+
+    fake, events, sent = _announcing_pipeline(commands=[100.0])
+    pipeline.DetectionPipeline._announce_lock_opening(fake, "NukiHub", "Unlatch", 500.0, True)
+    text, options = sent[0]
+    assert text.startswith("Door opened from Home Assistant (")
+    assert options == {"bypass_cooldown": True, "critical": True}
+    assert events == [("unlock_external", "NukiHub", 1.0)]
+    when = text[text.index("(") + 1:-2]
+    assert translate_outgoing(text, "cz") == CZECH["Door opened from Home Assistant ({})."].format(when)
+
+
+def test_an_opening_a12_commanded_itself_is_not_announced():
+    from a12_system import pipeline
+
+    fake, events, sent = _announcing_pipeline(commands=[500.0 - 4.0])
+    pipeline.DetectionPipeline._announce_lock_opening(fake, "NukiHub", "Unlatch", 500.0, True)
+    assert sent == [] and events == []
+
+
+def test_a_phone_opening_is_not_announced():
+    from a12_system import pipeline
+
+    fake, events, sent = _announcing_pipeline()
+    pipeline.DetectionPipeline._announce_lock_opening(fake, "Phone", "Unlatch", 500.0, False)
+    assert sent == [] and events == []
+
+
+def test_every_command_a12_sends_is_remembered_for_the_log_comparison(monkeypatch):
+    from a12_system import pipeline
+
+    fake, _, _ = _announcing_pipeline()
+    fake.ha_url, fake.ha_token, fake.nuki_entity_id = "http://ha", "t", "lock.x"
+    fake._allow_face_unlock_retry = lambda: None
+    monkeypatch.setattr(pipeline, "ha_unlock", lambda *a, **kw: (True, "opening"))
+    pipeline.DetectionPipeline._nuki_unlock_report(fake, "alice")
+    assert len(fake._own_unlock_commands) == 1

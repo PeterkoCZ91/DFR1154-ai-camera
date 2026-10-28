@@ -18,14 +18,23 @@ import json
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
-from typing import Iterable, Optional, Tuple
+from typing import Callable, Iterable, Optional, Tuple
 
 OPENING_ACTIONS = frozenset({"unlatch", "unlock", "locknagounlatch", "lockngounlatch"})
+# An entry older than this is history (a retained log read after a restart),
+# not an opening worth telling anyone about.
+ANNOUNCE_MAX_AGE_SECONDS = 120.0
 
 
 class NukiActivity:
-    def __init__(self, own_names: Iterable[str] = ("NukiHub",)):
+    def __init__(
+        self,
+        own_names: Iterable[str] = ("NukiHub",),
+        on_opening: Optional[Callable[[str, str, float, bool], None]] = None,
+        clock=time.time,
+    ):
         # Openings A12 asked for go through Nuki Hub and carry its name; those
         # are A12's own and must not count as "someone else opened".
         self.own_names = frozenset(str(n).strip().lower() for n in own_names if str(n).strip())
@@ -38,6 +47,11 @@ class NukiActivity:
         # When the last log of any content arrived (our clock): lets a caller
         # that asked Nuki Hub for a fresh one see that it came.
         self.received_at = 0.0
+        # Called once per new successful opening as (who, action, epoch,
+        # is_own); the log repeats entries, so `index` says which are new.
+        self.on_opening = on_opening
+        self._clock = clock
+        self._announced = deque(maxlen=64)
 
     @staticmethod
     def _entry_time(entry: dict) -> Optional[float]:
@@ -62,6 +76,7 @@ class NukiActivity:
             return
         # Only a payload that really is a log counts as the answer to a query.
         self.received_at = time.time() if received_at is None else received_at
+        announce = []
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("type") != "LockAction":
                 continue
@@ -73,7 +88,19 @@ class NukiActivity:
             if at is None:
                 continue
             status = str(entry.get("completionStatus", "success"))
-            if who.lower() in self.own_names:
+            own = who.lower() in self.own_names
+            index = entry.get("index")
+            if (
+                status.lower() == "success"
+                and isinstance(index, int)
+                and not isinstance(index, bool)
+                and abs(self._clock() - at) <= ANNOUNCE_MAX_AGE_SECONDS
+            ):
+                with self._lock:
+                    if index not in self._announced:
+                        self._announced.append(index)
+                        announce.append((who or "?", entry.get("action", ""), at, own))
+            if own:
                 with self._lock:
                     if self._own is None or at >= self._own[0]:
                         self._own = (at, status)
@@ -87,6 +114,13 @@ class NukiActivity:
                         f"Nuki log: {self._last[2]} by '{self._last[1]}' at "
                         f"{datetime.fromtimestamp(at).strftime('%H:%M:%S')}"
                     )
+
+        if self.on_opening is not None:
+            for item in announce:
+                try:
+                    self.on_opening(*item)
+                except Exception as e:
+                    logging.error(f"Nuki opening callback failed: {e}")
 
     def result_since(self, since: float, skew: float = 3.0) -> Tuple[Optional[str], Optional[str]]:
         """What the lock logged for an opening asked at `since`: (A12's own

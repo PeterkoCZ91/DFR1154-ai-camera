@@ -39,6 +39,7 @@ CZECH: dict[str, str] = {
     'DRY RUN: would unlock for {} (score {}, faces in view: {})': 'TEST: odemklo by se pro {} (skóre {}, obličejů v záběru: {})',
     'Latch opening confirmed ({}).': '🔓 Otevření střelky potvrzeno ({}).',
     'Latch opening NOT confirmed, requested by {} ({})': '⚠️ Otevření střelky se nepodařilo potvrdit, požadavek: {} ({}).',
+    'Door opened from Home Assistant ({}).': '🔓 Dveře otevřeny z Home Assistantu ({}).',
     '🔒 Door locked ({}).': '🔒 Dveře uzamčeny ({}).',
     '⚠️ Door locking NOT confirmed for {} ({})': '⚠️ Uzamčení dveří NEPOTVRZENO pro {} ({})',
 

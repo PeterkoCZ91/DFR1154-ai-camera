@@ -68,6 +68,10 @@ FACE_UNLOCK_BUSY_RETRY_SECONDS = 3.0
 # A lock log that arrived this recently, typically the query made at the first
 # face check, is fresh enough: the opening need not ask and wait for it again.
 LOCK_LOG_FRESH_SECONDS = 8.0
+# An opening in the lock's log is A12's own when it follows a command A12 sent
+# within this many seconds (the lock's clock and ours may differ a little).
+OWN_COMMAND_LOG_LEAD_SECONDS = 5.0
+OWN_COMMAND_LOG_LAG_SECONDS = 40.0
 
 
 def classify_frame_health(
@@ -423,7 +427,10 @@ class DetectionPipeline:
         own_lock_names = runtime_config.get("face_unlock.own_lock_names", ["NukiHub"])
         if isinstance(own_lock_names, str):
             own_lock_names = own_lock_names.split(",")
-        self.nuki_activity = NukiActivity(own_lock_names or [])
+        # Written by the unlock worker, read by the MQTT thread.
+        self._own_unlock_commands: deque = deque(maxlen=16)
+        self._own_unlock_commands_lock = threading.Lock()
+        self.nuki_activity = NukiActivity(own_lock_names or [], on_opening=self._announce_lock_opening)
         self._last_lock_query_at = 0.0
         self._last_manual_open_at = 0.0
         # Built from face_unlock.* by _face_unlock_window(), after the HA
@@ -562,12 +569,14 @@ class DetectionPipeline:
     def _nuki_unlock_report(self, name: str, faces=None, media_path=None, manual: bool = False):
         activity = getattr(self, "nuki_activity", None)
         lock_log = activity.result_since if activity is not None else None
+        self._note_own_unlock_command()
         opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log)
         if not opened and detail.startswith("open_refused:busy"):
             # The lock was talking to a phone and turned the command away; it
             # is free a moment later and nobody is told about a miss yet.
             logging.info(f"{self.log_prefix} Nuki busy, retrying the opening for '{name}'")
             time.sleep(FACE_UNLOCK_BUSY_RETRY_SECONDS)
+            self._note_own_unlock_command()
             opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log)
         if opened:
             logging.info(f"{self.log_prefix} Nuki opening confirmed for '{name}' ({detail})")
@@ -607,6 +616,28 @@ class DetectionPipeline:
                 bypass_cooldown=True,
                 critical=True,
             )
+
+    def _note_own_unlock_command(self):
+        with self._own_unlock_commands_lock:
+            self._own_unlock_commands.append(time.time())
+
+    def _announce_lock_opening(self, who, action, at, own):
+        """Tell Telegram about a door opening nobody here asked for. Home
+        Assistant buttons and automations unlock through Nuki Hub, so their
+        entries carry the same name as A12's own; those A12 did not command
+        itself are the news. Phones and the like are not announced."""
+        if not own:
+            return
+        with self._own_unlock_commands_lock:
+            commands = list(self._own_unlock_commands)
+        if any(-OWN_COMMAND_LOG_LEAD_SECONDS <= at - sent <= OWN_COMMAND_LOG_LAG_SECONDS for sent in commands):
+            return
+        when = datetime.fromtimestamp(at).strftime("%H:%M:%S")
+        logging.info(f"{self.log_prefix} Door opened from Home Assistant at {when} ({action})")
+        self.db.log_event("unlock_external", who, 1.0)
+        self.notifier.send_telegram(
+            f"Door opened from Home Assistant ({when}).", bypass_cooldown=True, critical=True,
+        )
 
     def _trigger_nuki_lock(self, name: str = "Telegram Admin"):
         """Lock the door without holding up caller or frame processing."""
