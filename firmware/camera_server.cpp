@@ -1236,7 +1236,7 @@ static esp_err_t generic_video_stream_handler(httpd_req_t *req, int *active_clie
             
             // Check if new frame available in Ring Buffer (CAS-safe reader)
             int idx = getLatestFrameIndex();
-            if (idx >= 0 && frameBuffers[idx].timestamp > my_last_timestamp) {
+            if (idx >= 0 && frameBuffers[idx].timestamp != my_last_timestamp) {
                 if (acquireFrameReader(idx)) {
                     frame_idx = idx;
                     my_last_timestamp = frameBuffers[idx].timestamp;
@@ -2305,10 +2305,8 @@ void recordingTask(void *parameter) {
         size_t copiedLen = 0;
         if (current_frame_index >= 0) {
             int idx = current_frame_index;
-            if (frameBuffers[idx].timestamp > my_last_timestamp) {
-                int rc = __atomic_load_n(&frameBuffers[idx].ref_count, __ATOMIC_SEQ_CST);
-                if (rc >= 0) {
-                    __atomic_fetch_add(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
+            if (frameBuffers[idx].timestamp != my_last_timestamp) {
+                if (acquireFrameReader(idx)) {
 
                     copiedLen = frameBuffers[idx].len;
                     if (copiedLen <= FRAME_BUFFER_SLOT_SIZE) {
@@ -2318,7 +2316,7 @@ void recordingTask(void *parameter) {
                     }
                     my_last_timestamp = frameBuffers[idx].timestamp;
 
-                    __atomic_fetch_sub(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
+                    releaseFrameReader(idx);
                 }
             }
         }
@@ -2397,7 +2395,7 @@ static esp_err_t record_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     
-    const char* action = doc["action"];
+    const char* action = doc["action"] | "";
     String msg = "";
 
     if (strcmp(action, "start") == 0) {

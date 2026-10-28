@@ -114,11 +114,14 @@ void getActiveZones(const bool* motion_grid, int gw, int gh,
         bool hit = false;
         for (int r = 0; r < z.rect_count && !hit; r++) {
             ZoneRect& zr = z.rects[r];
-            for (int y = zr.y; y < zr.y + zr.h && !hit; y++) {
-                for (int x = zr.x; x < zr.x + zr.w && !hit; x++) {
-                    if (x >= 0 && x < gw && y >= 0 && y < gh) {
-                        if (motion_grid[y * gw + x]) hit = true;
-                    }
+            // Clip to the grid first: a huge stored rect must not spin the motion task.
+            int y0 = zr.y < 0 ? 0 : zr.y, x0 = zr.x < 0 ? 0 : zr.x;
+            long y1 = (long)zr.y + zr.h, x1 = (long)zr.x + zr.w;
+            if (y1 > gh) y1 = gh;
+            if (x1 > gw) x1 = gw;
+            for (int y = y0; y < y1 && !hit; y++) {
+                for (int x = x0; x < x1 && !hit; x++) {
+                    if (motion_grid[y * gw + x]) hit = true;
                 }
             }
         }

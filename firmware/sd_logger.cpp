@@ -257,6 +257,11 @@ void sdLogWrite(const char* line) {
         // Buffer full — flush inline (this is rare, buffer is 4KB)
         flushBufToSD();
         sdl_last_flush_ms = millis();
+        // A failed flush keeps the buffer; drop the line rather than overrun it.
+        if (sdl_buf_len + linelen + 1 >= SDL_BUF_SIZE) {
+            xSemaphoreGive(sdl_mutex);
+            return;
+        }
     }
 
     memcpy(sdl_buf + sdl_buf_len, line, linelen);

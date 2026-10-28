@@ -913,7 +913,8 @@ bool loadConfig() {
 }
 
 bool saveConfig() {
-  File file = LittleFS.open("/config.json", "w");
+  // Write aside and rename: a power cut mid-write must not leave a truncated config.json.
+  File file = LittleFS.open("/config.json.tmp", "w");
   if (!file) {
     Serial.println("Failed to create config file");
     return false;
@@ -954,10 +955,19 @@ bool saveConfig() {
   if (serializeJson(doc, file) == 0) {
     Serial.println("Failed to write config file");
     file.close();
+    LittleFS.remove("/config.json.tmp");
     return false;
   }
 
   file.close();
+  if (!LittleFS.rename("/config.json.tmp", "/config.json")) {
+    // lfs_rename replaces an existing target; if this build's does not, fall back.
+    LittleFS.remove("/config.json");
+    if (!LittleFS.rename("/config.json.tmp", "/config.json")) {
+      Serial.println("Failed to replace config file");
+      return false;
+    }
+  }
   Serial.println("Config saved successfully");
   return true;
 }
@@ -1270,11 +1280,24 @@ void startAccessPoint() {
 // All sends are serialized through telegramTask, so there is no concurrent access.
 static WiFiClientSecure s_telegram_client;
 
+// The boot message, the MQTT snapshot and telegramTask can all reach the shared
+// client; two tasks in stop()/connect() at once corrupt its TLS context.
+static StaticSemaphore_t s_tg_mutex_buf;
+static SemaphoreHandle_t s_tg_mutex = xSemaphoreCreateMutexStatic(&s_tg_mutex_buf);
+struct TelegramClientLock {
+  bool held;
+  TelegramClientLock() : held(xSemaphoreTake(s_tg_mutex, pdMS_TO_TICKS(25000)) == pdTRUE) {}
+  ~TelegramClientLock() { if (held) xSemaphoreGive(s_tg_mutex); }
+};
+
 // Synchronous Telegram send (blocking, ~5s max) -- use only during boot/shutdown
 bool sendTelegramNotificationSync(const String& message) {
   if (config.telegram_bot_token.length() == 0 || config.telegram_chat_id.length() == 0) {
     return false;
   }
+
+  TelegramClientLock tgLock;
+  if (!tgLock.held) return false;
 
   HTTPClient http;
   s_telegram_client.stop();
@@ -1337,6 +1360,9 @@ static bool telegramMultipartUpload(
 {
   size_t payloadLen = data ? dataLen : (sdFile ? sdFile->size() : 0);
   if (payloadLen == 0) return false;
+
+  TelegramClientLock tgLock;
+  if (!tgLock.held) return false;
 
   struct TelegramUploadGuard {
     TelegramUploadGuard() { telegram_upload_in_progress = true; }
@@ -1543,14 +1569,13 @@ void handleTelegramCommand(const String& text) {
             sendTelegramNotificationSync("Camera not ready.");
             return;
         }
-        int rc = __atomic_load_n(&frameBuffers[idx].ref_count, __ATOMIC_SEQ_CST);
-        if (rc < 0) {
+        if (!acquireFrameReader(idx)) {
             sendTelegramNotificationSync("Snapshot unavailable (write in progress).");
             return;
         }
-        __atomic_fetch_add(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
-        sendTelegramPhotoSync(frameBuffers[idx].data, frameBuffers[idx].len, "Snapshot from /photo");
-        __atomic_fetch_sub(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
+        // Queued copy: the ring slot is freed at once, not after the TLS upload.
+        sendTelegramPhoto(frameBuffers[idx].data, frameBuffers[idx].len, "Snapshot from /photo");
+        releaseFrameReader(idx);
 
     } else if (text == "/status") {
         unsigned long uptime = millis() / 1000;
@@ -2592,11 +2617,9 @@ void loop() {
       mqtt_snapshot_flag = false;
       int idx = current_frame_index;
       if (idx >= 0) {
-          int rc = __atomic_load_n(&frameBuffers[idx].ref_count, __ATOMIC_SEQ_CST);
-          if (rc >= 0) {
-              __atomic_fetch_add(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
-              sendTelegramPhotoSync(frameBuffers[idx].data, frameBuffers[idx].len, "📷 Snapshot (MQTT)");
-              __atomic_fetch_sub(&frameBuffers[idx].ref_count, 1, __ATOMIC_SEQ_CST);
+          if (acquireFrameReader(idx)) {
+              sendTelegramPhoto(frameBuffers[idx].data, frameBuffers[idx].len, "📷 Snapshot (MQTT)");
+              releaseFrameReader(idx);
           }
       }
   }

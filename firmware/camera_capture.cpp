@@ -163,6 +163,7 @@ void captureTask(void* p) {
     static unsigned long frame_count = 0;
 
     // Precise timing variables
+    int consecutive_fb_failures = 0;
     TickType_t xLastWakeTime;
     const TickType_t xFrequency = pdMS_TO_TICKS(33); // 33ms = ~30 FPS
     xLastWakeTime = xTaskGetTickCount();
@@ -173,6 +174,7 @@ void captureTask(void* p) {
         if (fb) {
             // Update heartbeat immediately on success
             camera_heartbeat = millis();
+            consecutive_fb_failures = 0;
 
             // 1. Feed RTSP Server (Immediate)
             sensor_t * s = esp_camera_sensor_get();
@@ -285,8 +287,10 @@ void captureTask(void* p) {
                 }
             }
         } else {
-            // FIXED: Update heartbeat even on error to prevent false-positive camera frozen detection
-            camera_heartbeat = millis();
+            // A few failed grabs are normal (reconfiguration, profile switch) and must not
+            // read as a frozen task; a sensor that gives nothing for ~30 s must, or the
+            // watchdog never restarts a camera whose flex cable or sensor has died.
+            if (++consecutive_fb_failures < 300) camera_heartbeat = millis();
             Serial.println("⚠️ Camera capture failed");
             vTaskDelay(pdMS_TO_TICKS(100)); // Wait a bit on error
         }
@@ -348,7 +352,8 @@ void motionTask(void* p) {
         if (idx < 0) continue;
 
         // Only process if we have a new frame
-        if (frameBuffers[idx].timestamp <= my_last_timestamp) continue;
+        // != not <=: millis() wraps after 49.7 days and a "newer" stamp then compares smaller
+        if (frameBuffers[idx].timestamp == my_last_timestamp) continue;
 
         // Acquire reader reference (skip if writer active)
         if (!acquireFrameReader(idx)) continue;

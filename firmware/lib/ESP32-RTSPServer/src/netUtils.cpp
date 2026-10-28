@@ -40,8 +40,10 @@ void RTSPServer::sendTcpPacket(const uint8_t* packet, size_t packetSize, int soc
           fd_set write_fds;
           FD_ZERO(&write_fds);
           FD_SET(sock, &write_fds);
-          //struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 }; // 100ms
-          int ret = select(sock + 1, NULL, &write_fds, NULL, NULL);
+          // Bounded: a client that stops reading must not hold sendTcpMutex and
+          // stall the capture task (and so every other stream) forever.
+          struct timeval tv = { 0, 200000 }; // 200ms
+          int ret = select(sock + 1, NULL, &write_fds, NULL, &tv);
           if (ret <= 0) {
             RTSP_LOGE(LOG_TAG, "Failed to send TCP packet, select timeout or error");
             break;
