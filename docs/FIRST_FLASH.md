@@ -246,8 +246,7 @@ pio run -e ota -t upload
 2. Open `http://<device-ip>/` → Tools → OTA Update
 3. Upload `.pio/build/esp32-s3-devkitc-1/firmware.bin`
 
-The device reboots automatically after a successful update.
-If the new firmware fails to boot within 10 seconds, it rolls back to the previous version.
+The device reboots automatically after a successful update. There is no automatic rollback: if the new image does not boot, reflash over USB.
 
 ---
 
@@ -266,7 +265,7 @@ esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 write_flash \
 ```
 
 > Windows: replace `/dev/ttyACM0` with `COM3`
-> macOS: replace with `/dev/cu.usbserial-*` or `/dev/cu.SLAB_USBtoUART`
+> macOS: replace with `/dev/cu.usbmodem*` (the board uses native USB CDC)
 
 ---
 

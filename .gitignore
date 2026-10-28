@@ -77,3 +77,74 @@ door_stage/
 *.bak-*
 config.env.bak*
 known_faces*.pkl*
+
+# --- Added 2026-10-28 -------------------------------------------------------
+# More secret shapes: env variants (the example stays), keys, tokens, HA/Telegram
+*.env
+.env.*
+!.env.example
+!*.example
+config.env.*
+!config.env.example
+!config.env.*.example
+*.p12
+*.pfx
+*.crt
+id_rsa*
+id_ed25519*
+*.token
+*credentials*
+*.secret
+
+# PlatformIO / build metadata and firmware images (CI builds them; releases attach them)
+.piopm
+*.elf
+*.map
+firmware/.pio/
+firmware/data/*.gz.bak
+
+# Python environments and caches
+.venv/
+.mypy_cache/
+*.py[cod]
+*.egg-info/
+
+# SQLite sidecars (the *.db rule alone misses them)
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# A12 runtime state that normally lives in /data but lands in the tree when run locally
+stats.json
+*_state.json
+flat_episode_state.json
+stream_freeze_state.json
+events.db*
+
+# Captured camera frames, unlock photos and clips (faces of real people)
+*.jpg
+*.jpeg
+*.avi
+*.mp4
+unlock_*
+!docs/screenshots/**
+
+# Exports, dumps and scratch output
+*.csv
+!firmware/partitions.csv
+*.jsonl
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+/core
+/core.*
+*.tmp
+*.orig
+*.rej
+*.swp
+*~
+
+# Editors
+.idea/

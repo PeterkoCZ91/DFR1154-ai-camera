@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Unreleased] - 2026-10-28
+
+### Added (A12 — door opened from outside A12)
+- **Telegram tells you when the door was opened by something other than A12.** Home Assistant buttons and automations unlock through Nuki Hub, so their lock-log entries carry the same name as A12's own openings. A12 now remembers the moment of every `lock.open` it sends and announces a successful opening that follows none of them ("Door opened from Home Assistant"), recorded as an `unlock_external` event. Entries older than 2 minutes (a retained log read after a restart) and openings by phones are not announced; each log index is announced once.
+
+### Fixed (firmware)
+- **`millis()` wrap after 49.7 days stopped motion detection for good.** The motion, recording and stream readers compared frame timestamps with `<=`/`>`, so after the wrap every new frame looked older than the last one processed; motion events, auto-recording and the motion-triggered AI check then never ran again. They now test for a different timestamp.
+- **Telegram sends from two tasks could corrupt the shared TLS client.** The boot message, the MQTT snapshot and the Telegram task all used one client; it is now behind a mutex. The MQTT snapshot and `/photo` queue a copy of the frame instead of holding a ring-buffer slot through the upload.
+- **Ring-buffer readers raced the writer.** The recording task (not started in the default `LITE_MODE_NO_RUNTIME_TASKS` build) used a load-then-add that could leave a slot's reference count at -1 and, after a few such races, starve every slot; it now uses `acquireFrameReader()`.
+- **A sensor that returned no frames was never restarted.** The capture heartbeat kept refreshing on failed grabs; after about 30 s of consecutive failures it now goes stale and the watchdog restarts the camera.
+- **A failed SD flush overran the 4 KB log buffer** (`sd_logger.cpp`); the line is dropped instead.
+- **`POST /record` with a body lacking `action` rebooted the camera** (`strcmp(NULL, ...)`).
+- **A stored zone with a huge rectangle froze the motion task**; the rectangle is clipped to the grid before the loop.
+- **`config.json` is written to a temporary file and renamed**, so a power cut during saving cannot leave a truncated file that boots as defaults (person detection off).
+- RTSP TCP sends (also compiled out of the default lite build) wait at most 200 ms for a stalled client instead of blocking the capture task indefinitely.
+
+### Docs
+- README rewritten and checked against the code: the API table and file tree match the registered endpoints and files, the MQTT topics are split into firmware and A12 tables, defaults and ranges come from the source, and the security section says plainly that NVS credentials are not encrypted, default HTTP credentials are `admin`/`admin`, there is no OTA rollback, and the default build is a lite build (no RTSP, SD recording or time-lapse). `FIRST_FLASH.md` no longer promises an OTA rollback.
+
+### Repository
+- `.gitignore` now also covers env-file variants (the `*.example` files stay tracked), keys and tokens, PlatformIO metadata, SQLite sidecars, A12 runtime state files, captured frames/clips, and exports. `firmware/lib/ESP32-RTSPServer/.piopm` is no longer tracked.
+
+---
+
 ## [Unreleased] - 2026-10-21
 
 ### Changed (A12 — the door opens only after a look at the lens)
@@ -86,7 +110,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **CLAHE lightness channel fallback:** In `detect_and_embed`, if raw YuNet detects no face, a single-pass CLAHE contrast enhancement runs on the L channel, recovering 21% of previously lost shadowed/backlit crops.
 - **Fisheye lens quality calibration:** Disabled harmful Laplacian blur filtering (`min_sharpness = 0.0`) which dropped 86% of faces behind the 160° fisheye acrylic dome, relying on physical face pixel size (>= 60 px) and YuNet detection confidence (>= 0.70).
 
-## [3.12.53] - 2026-09-15
+## [Unreleased] - 2026-10-01
 
 ### Added (firmware — report which camera module is on the flex)
 

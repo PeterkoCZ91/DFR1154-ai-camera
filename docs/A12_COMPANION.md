@@ -139,6 +139,15 @@ opening as it arrives, and `Face unlock skipped for '<name>': door opened by
 '<who>' Ns ago` shows a second opening that did not happen. Without Nuki Hub
 the topics simply stay silent and face unlock behaves as before.
 
+**Openings nobody here asked for.** Home Assistant buttons and automations
+unlock through Nuki Hub too, so their log entries carry the same name as A12's
+own (`FACE_UNLOCK_OWN_LOCK_NAMES`). A12 remembers when it sends `lock.open`
+(face, `/od` or the button); a successful opening in the log that follows none
+of those within about 40 s is sent to Telegram as "Door opened from Home
+Assistant" and stored as an `unlock_external` event. Each log entry is
+announced once, entries older than 2 minutes (a retained log read after a
+restart) are ignored, and openings by phones are not announced.
+
 **Key Pipeline Features:**
 - **Fast cadence:** face checks run on intermediate frames inside the known person box, decoupled from the slower YOLO cycle.
 - **Distance filtering and check budget:** faces smaller than `FACE_MIN_FACE_SIZE` are skipped without spending the check budget (`FACE_MAX_CHECKS_PER_EPISODE`, `FACE_MAX_ATTEMPTS_PER_EPISODE`); the budget refills every `FACE_BUDGET_REFILL_SECONDS` while the sensor still reports motion.

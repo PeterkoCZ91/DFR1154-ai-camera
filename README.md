@@ -1,35 +1,23 @@
-# :movie_camera: DFR1154 AI Camera Firmware :shield:
+# DFR1154 AI Camera Firmware
 
-[![Hardware](https://img.shields.io/badge/HW-DFRobot_DFR1154-red)](https://www.dfrobot.com/product-2730.html)
+[![CI](https://github.com/PeterkoCZ91/DFR1154-ai-camera/actions/workflows/ci.yml/badge.svg)](https://github.com/PeterkoCZ91/DFR1154-ai-camera/actions/workflows/ci.yml)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32--S3-orange?logo=platformio)](https://platformio.org/)
-[![Platform](https://img.shields.io/badge/MCU-ESP32--S3-blue?logo=espressif)](https://www.espressif.com/)
-[![Python](https://img.shields.io/badge/A12_companion-Python_3.10+-blue?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Build](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Version](https://img.shields.io/badge/Version-3.12.54-blue)]()
+![Version](https://img.shields.io/badge/version-3.12.54-blue)
 
-Firmware for the **DFRobot DFR1154 AI Camera Module** (FireBeetle 2 ESP32-S3 + OV3660 3 MP + LTR-308 lux + PDM mic). A lock-free PSRAM ring buffer feeds MJPEG streaming, RTSP, AVI recording, on-device person detection (Edge Impulse FOMO + ByteTrack) concurrently from a single camera. MQTT auto-discovery for Home Assistant, Telegram bot, time-lapse, web dashboard with live log. No cloud required.
+Firmware for the [DFRobot DFR1154](https://www.dfrobot.com/product-2730.html) AI camera module (ESP32-S3, OV3660, LTR-308 light sensor, PDM microphone). One capture task fills a PSRAM ring buffer that MJPEG and RTSP streaming, AVI recording, motion detection and on-device person detection (Edge Impulse FOMO with ByteTrack) all read from. It talks to Home Assistant over MQTT, sends Telegram alerts, records time-lapse and has a web dashboard with a live log. Nothing needs a cloud by default.
 
-The optional `a12_system/` Python companion is part of **A12**, a multi-camera surveillance system that pairs with this firmware (and future ESP-camera modules) for YOLOv11n inference, face recognition, and sensor fusion with Home Assistant / Zigbee.
+`a12_system/` is an optional Python companion, **A12**, that runs on a server or Raspberry Pi next to Home Assistant. It adds YOLOv11n verification, face recognition and door unlocking on top of the camera.
 
-> [!TIP]
-> **New in v3.12.54** — **The planned heap restart can no longer loop.** `low50Since` was a per-boot static, so the restart it caused erased the ladder's own memory: a board sitting between 30 and 50 KB of free heap restarted every 60-90 s forever. A 10-minute boot grace and a budget of two per hour now bound it, and past the budget the board stays up and reports instead. See [CHANGELOG](CHANGELOG.md).
->
-> **New in v3.12.53** — **The reboot log says why.** All nine restart paths now record a cause (`camera_health_fail`, `heap_critical`, `ota_applied`, `reboot_cmd`, …) to `/events` before restarting. The reset-reason code a board reports afterwards only separates `SW` from `PANIC`; it can never say which of the firmware's own paths ran, which is why a production restart could not be explained on 2026-09-15. See [CHANGELOG](CHANGELOG.md).
->
-> **New in v3.12.52** — **`/status` reports the MQTT link**: `mqtt_connected`, `mqtt_state`, `mqtt_connects`, `mqtt_failures` and `mqtt_link_uptime_s`. A camera with no serial console could show that it was restarting but never why; a link that re-establishes every few minutes now reads as `mqtt_connects` climbing while `mqtt_link_uptime_s` keeps returning to zero. See [CHANGELOG](CHANGELOG.md).
->
-> **New in v3.12.51** — **Every successful MQTT connect crashed the camera.** `mqttLoop()` holds `mqtt_mutex` while calling `mqttReconnect()`, which on success called `mqttPublishStates()` — which takes the same non-recursive mutex from the same task. The task blocked against itself, the 200 ms timeout expired, and FreeRTOS asserted that the mutex holder is not the running task. That is the `PANIC(4)` that had been counted without a cause since `mqtt_handler.cpp` was added in 3.12.43, 115 days earlier; it came in bursts rather than steadily because only a dropped link re-enters the path. Nine forced reconnects across both boards after the fix, none fatal, against two out of two before. A12 side: a dark scene and a sensor that stopped reading out are no longer the same verdict — frame-to-frame identity separates them, since a live sensor never returns the same frame twice. See [CHANGELOG](CHANGELOG.md).
->
-> *v3.12.50* — `setSocketTimeout(2)`: a blocking MQTT connect no longer takes ICMP, HTTP and the detection stream offline every 10 s (25.4 % packet loss → 0.0 % on the same board, retracting a "failing antenna" diagnosis). `device_name` gains an eFuse-MAC suffix. A12: face recognition rebuilt on OpenCV YuNet + SFace.
->
-> *v3.12.49* — Flat-gray sensor-hang auto-recovery: auth-guarded `POST /reboot` plus an escalating A12 ladder (stream reconnects → LAN camera reboot → give up + alert) with a persistent reboot budget and rate-limited notifications.
->
-> *v3.12.48* — Restart-rate detection (boot-timestamp ring buffer; `/health` exposes `restarts_1h`/`restarts_24h` + self-clearing, POWERON-aware `power_health`), mDNS hostname resolver, stream reader split into drain + decode threads, and a new [data-privacy guide](docs/DATA_PRIVACY.md).
->
-> *v3.12.44* — A12 Groq vision face recognition (LLaMA 4 Scout) and automatic Nuki Smart Lock unlock for recognized residents. *v3.12.43* — Settings GUI exposes `person_telegram_photo` toggle and idle scan interval. *v3.12.42* — `PD_MIN_DETECTIONS` 2→1, `IDLE_SCAN_MS` 30s→5s, A12 MQTT `clean_session=True` fix. *v3.12.41* — TFLite Micro + ESP-NN SIMD: ~300–500 ms inference (11× speedup). *v3.12.39* — UNCERTAIN detections routed via MQTT to A12 for YOLO verification.
->
-> *v3.12.34* — Telegram TLS reuse. *v3.12.32* — Telegram boot hang fix. *v3.12.17* — A12: exponential backoff, recovery snapshot.
+I run this on a door camera, so most recent work is about keeping it up for weeks at a time. All releases are in the [CHANGELOG](CHANGELOG.md); the latest:
+
+- **3.12.54:** the planned low-heap restart could loop. The counter lived in a per-boot static, so the restart wiped it. It now has a 10-minute grace period and at most two restarts an hour.
+- **3.12.53:** every restart path writes its cause to `/events` first. The reset reason the chip reports can't tell the firmware's own reboots apart.
+- **3.12.52:** `/status` shows the MQTT link (`mqtt_connects`, `mqtt_link_uptime_s`, ...), so a link that keeps dropping is visible without a serial cable.
+- **3.12.51:** every successful MQTT connect crashed the camera. `mqttLoop()` held `mqtt_mutex` and called a function that took the same mutex again.
+- **3.12.50:** `setSocketTimeout(2)` on the MQTT client. A blocking connect had been taking HTTP and the stream offline every 10 s.
+
+Older notes (3.12.49 and earlier) are in the CHANGELOG.
 
 ---
 
@@ -40,24 +28,23 @@ The optional `a12_system/` Python companion is part of **A12**, a multi-camera s
 | Hardware | ESP32 only | ESP32 + server / Raspberry Pi |
 | Person detection | FOMO on-device (~300–500 ms) | FOMO gates YOLOv11n via A12 (server-side) |
 | UNCERTAIN detections | Direct Telegram (low-confidence caption) | MQTT → A12 YOLO verify → Telegram only if confirmed |
-| Face recognition | No | Yes — on-device YuNet + SFace (OpenCV, no cloud) |
+| Face recognition | No | Yes — YuNet + SFace (OpenCV) on the A12 host, no cloud |
 | Auto door unlock | No | Nuki via Home Assistant, opt-in with a dry run first; skips a door a phone already opened (see [A12 companion](docs/A12_COMPANION.md)) |
 | Telegram alerts | Yes — sent by ESP32 | Yes — sent by A12 (with face ID + AV clip) |
 | AV clips | No | Yes — MP4 with audio |
 | Home Assistant | MQTT (direct) | MQTT (direct + A12 enrichment) |
-| `INCLUDE_TELEGRAM` | **On** | **Off** (saves 45 KB heap for SSL) |
+| `INCLUDE_TELEGRAM` | **On** | On in the default build; switch it off to free about 45 KB of heap if A12 sends every alert |
 | `INCLUDE_AUDIO` | Optional | **On** (A12 uses audio:82 for clips) |
 | Setup time | ~15 min (flash + configure) | ~30 min (flash + Docker + enroll faces) |
 
-Use **Standalone** when the camera operates independently (remote location, no local server).
-Use **Enhanced** for a fixed installation with a server/Pi running 24/7 — UNCERTAIN detections are verified by YOLOv11n before any alert fires.
+Standalone fits a camera that works on its own, say at a remote spot with no server. Enhanced needs a server or Pi that runs all the time; in return, uncertain detections are checked by YOLOv11n before an alert goes out.
 
 ---
 
 ## Table of Contents
 
-- [In 3 Points](#in-3-points)
-- [Who Is This For](#who-is-this-for)
+- [Overview](#overview)
+- [Who It's For](#who-its-for)
 - [What You Need](#what-you-need)
 - [Quick Start](#quick-start) (~15 min)
 - [A12 Companion](docs/A12_COMPANION.md)
@@ -84,21 +71,22 @@ Use **Enhanced** for a fixed installation with a server/Pi running 24/7 — UNCE
 
 ---
 
-## In 3 Points
+## Overview
 
-1. **Three concurrent video pipelines from one ESP32-S3.** A lock-free CAS-based ring buffer (3 × 256 KB PSRAM slots) feeds MJPEG streaming, RTSP server, AVI recording, motion detection, FOMO inference, time-lapse, and dashboard snapshots — all simultaneously, **without frame copies**, from a single `captureTask`. The ring buffer protocol uses atomic CAS reference counting (`-1` writer / `0` free / `>0` readers).
-2. **Three-state on-device detection cascade.** Block-based motion detection on an 80×60 grayscale image gates Edge Impulse FOMO inference (~300–500 ms at 64×64 int8, TFLite Micro + ESP-NN) — temporal-filtered for **~90% false-positive reduction** and tracked by a lightweight ByteTrack-style Kalman tracker. Output is **NONE / UNCERTAIN / CONFIDENT**: confident hits send Telegram directly; uncertain hits (60–75%) route via MQTT to A12 for YOLOv11n verification — no false alarms, no silent drops.
-3. **Battle-tested production firmware.** 6+ months of continuous operation, 50+ versions, full Home Assistant MQTT discovery, Telegram bot with 10 commands, OTA updates with auto-rollback, captive portal AP fallback, NVS-encrypted credentials, sabotage detection watchdog, day/night/dusk auto-profiles via LTR-308 lux sensor.
+**One capture task, several readers.** The OV3660 is read by a single `captureTask` into a ring buffer of three 256 KB PSRAM slots. MJPEG streaming, RTSP and dashboard snapshots read a slot in place; motion detection and AVI recording copy the frame out and release the slot straight away. Slot ownership is an atomic reference count (`-1` writer, `0` free, `>0` readers), so no reader waits on a mutex.
+
+**Detection in three steps.** Block-based motion detection on an 80x60 grayscale image decides when to run Edge Impulse FOMO (about 300-500 ms at 64x64 int8, TFLite Micro with ESP-NN). Two consecutive positive frames are required, which removes most single-frame false positives, and a small ByteTrack-style Kalman tracker follows what it finds. The result is NONE, UNCERTAIN or CONFIDENT. Confident hits go to Telegram directly. Uncertain ones (60-75 %) are sent over MQTT to A12, which checks them with YOLOv11n and only then raises an alert.
+
+**Built for long runs.** It has been in continuous use on a door camera for months. It includes Home Assistant MQTT discovery, a Telegram bot with fifteen commands, OTA updates, a captive-portal access point as WiFi fallback, credentials kept in NVS rather than `config.json`, a tamper watchdog, and day/dusk/night profiles driven by the lux sensor. Restarts are logged with a cause, so a camera that reboots can say why.
 
 ---
 
-## Who Is This For
+## Who It's For
 
-- **DIY home security users** who want a **self-hosted** AI camera without cloud subscriptions or recurring fees
-- **Home Assistant users** looking for a camera that integrates natively via MQTT auto-discovery — motion, person, IR LED, lux, audio — all auto-created
-- **Edge AI tinkerers** experimenting with FOMO, lightweight CNN inference, and on-device computer vision on microcontrollers
-- **Embedded developers** studying lock-free ring buffers, FreeRTOS task design, ESP32-S3 PSRAM patterns, multi-server HTTP architectures, and SCCB I2C contention workarounds
-- **Telegram users** who want photo + AVI video alerts directly to a chat with cooldown, active hours, and command-line control
+- Home Assistant users who want a self-hosted camera that shows up through MQTT discovery (motion, person, IR LED, lux, audio).
+- Anyone who wants person alerts with a photo or AVI clip in Telegram, without a subscription.
+- People experimenting with small neural networks on a microcontroller.
+- Embedded developers interested in the ring buffer, the FreeRTOS task layout, PSRAM use or the OV3660 register quirks.
 
 ---
 
@@ -106,108 +94,99 @@ Use **Enhanced** for a fixed installation with a server/Pi running 24/7 — UNCE
 
 ### Hardware
 
-| Part | Description | ~Cost |
-|------|-------------|-------|
-| **DFRobot FireBeetle 2 ESP32-S3** (DFR1154) | ESP32-S3 + OV3660 3 MP sensor + LTR-308 lux + PDM mic | $35 |
-| MicroSD card | Class 10 or U1+, ≥ 8 GB (FAT32) — for AVI recording + time-lapse | $5 |
-| 5 V power supply | **1 A or higher** — IR LED + WiFi + sensor can spike to 600 mA | $5 |
-| **Total** | | **~$45** |
+| Part | Notes |
+|------|-------|
+| DFRobot FireBeetle 2 ESP32-S3 camera (DFR1154) | ESP32-S3 with OV3660 3 MP sensor, LTR-308 light sensor, PDM microphone and IR LED |
+| MicroSD card | Class 10 / U1 or better, 8 GB or more, FAT32. Used for AVI recordings and time-lapse. |
+| 5 V power supply | At least 1 A. WiFi, the sensor and the IR LED together draw more than a weak USB port gives. |
 
-**Optional:**
-- External IR illuminator for night vision range > 5 m
-- Weatherproof enclosure (IP65) for outdoor deployment
-- USB-C cable with data lines for OTA upload via USB
+Optional:
+- an external IR illuminator if you need night vision further than the built-in LED reaches
+- a weatherproof enclosure for outdoor use
+- a USB-C cable with data lines (charge-only cables won't flash)
 
 ### Software (All Free)
 
-- [PlatformIO](https://platformio.org/) — VS Code extension or CLI for build/flash/OTA
-- [Home Assistant](https://www.home-assistant.io/) — optional, for MQTT auto-discovery
-- [Mosquitto MQTT](https://mosquitto.org/) — optional broker (or any other MQTT broker)
-- [Telegram](https://telegram.org/) — optional, for mobile alerts via bot
-- Python 3.10+ — only if running the optional A12 server-side YOLOv11 cascade
+- [PlatformIO](https://platformio.org/), as the VS Code extension or the CLI, to build and flash
+- [Home Assistant](https://www.home-assistant.io/), optional, picks the camera up through MQTT discovery
+- [Mosquitto](https://mosquitto.org/) or any other MQTT broker, optional
+- [Telegram](https://telegram.org/), optional, for alerts from a bot
+- Python 3.12 (what the Docker image and CI use), only if you run the optional A12 companion
 
 ### Required Skills
 
-- Basic familiarity with Arduino / PlatformIO (medium difficulty)
-- WiFi network setup and routing knowledge (easy)
-- USB flashing or OTA upload (easy)
-- **No machine learning knowledge required** — model is pre-trained
-- Optional: HA MQTT integration setup if you want to use HA
+You should be comfortable building and flashing an Arduino/PlatformIO project and finding a device's IP on your network. No machine learning knowledge is needed; the person model ships pre-trained. Home Assistant and MQTT setup only matter if you want them.
 
 ---
 
 ## Quick Start
 
 > [!TIP]
-> **New to ESP32 flashing?** Follow the step-by-step guide in [`docs/FIRST_FLASH.md`](docs/FIRST_FLASH.md) — it covers PlatformIO install, port detection, boot-mode tricks, OTA updates, and common error fixes.
-
-**~15 minutes from clone to a working camera.**
+> If you have never flashed an ESP32, follow [`docs/FIRST_FLASH.md`](docs/FIRST_FLASH.md). It covers installing PlatformIO, finding the serial port, boot-mode tricks, OTA updates and common errors.
 
 ```bash
 # 1. Clone
 git clone https://github.com/PeterkoCZ91/DFR1154-ai-camera.git
 cd DFR1154-ai-camera
 
-# 2. Build firmware (uses default safe credentials — set your own later via web GUI)
+# 2. Build and flash (no credentials are compiled in; you set them on the device)
 cd firmware
 ~/.platformio/penv/bin/pio run --target upload
 
-# 3. Monitor serial — find your IP address
+# 3. Watch the serial output for the IP address
 ~/.platformio/penv/bin/pio device monitor
 
 # 4. Open the dashboard in a browser
-# http://<device-ip>/         (main UI)
-# http://<device-ip>/log-viewer  (live log with auto-refresh)
+# http://<device-ip>/            (main UI)
+# http://<device-ip>/log-viewer  (live log)
 ```
 
 ### Option B — Flash Pre-built Binary (no compiler needed)
 
-Download the latest binaries from [GitHub Releases](../../releases/latest) and flash with esptool:
+Download `bootloader.bin`, `partitions.bin` and `firmware.bin` from [GitHub Releases](../../releases/latest) and flash them with esptool:
 
 ```bash
 pip install esptool
 
-esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 460800 write_flash \
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 write_flash \
   0x0000  bootloader.bin \
   0x8000  partitions.bin \
   0x10000 firmware.bin
 ```
 
-> **Windows:** replace `/dev/ttyUSB0` with `COM3` (check Device Manager → Ports).
-> **macOS:** use `/dev/cu.usbserial-*` or `/dev/cu.SLAB_USBtoUART`.
+On Windows use the COM port from Device Manager (for example `COM3`). On macOS it is usually `/dev/cu.usbmodem*`.
 
-On first boot the camera starts a WiFi AP **DFR1154-Camera** (password: `12345678`). Connect to it and open `http://192.168.4.1` to configure your WiFi credentials.
+With no WiFi configured, the camera opens its own access point. See [First Boot](#first-boot).
 
 ### First Boot
 
-After flashing, the device tries:
+On boot the firmware loads WiFi credentials from NVS. A freshly flashed board has none, so it starts an access point instead:
 
-1. **WiFi credentials from NVS** (if previously configured)
-2. **Hardcoded defaults** — empty WiFi credentials, device immediately falls through to AP mode
-3. **AP mode fallback** if both fail:
-   - **AP name:** `ESP32-Camera-Setup`
-   - **AP password:** `12345678`
-   - Connect from your phone — captive portal opens automatically
-   - Enter your WiFi credentials, click Save, device reboots
+- **AP name:** `<device-name>_AP`. The default device name is `ESP32-Camera-` followed by a hex suffix from the board's MAC, so each board gets a different name.
+- **AP password:** `12345678`
+- Join it from a phone. The captive portal should open on its own; if it doesn't, go to `http://192.168.4.1/setup`.
+- Enter your WiFi details and save. The camera reboots and joins your network.
 
-Once connected, open the **web dashboard** at `http://<device-ip>/`. HTTP Basic Auth is **on by default** (`LAB_MODE false` in `config.h`) — the first boot uses the default `admin / admin` credentials with AP password `12345678`. **Change these immediately via `/credentials` before exposing the device to an untrusted network.** To rebuild with auth bypassed for bench testing, pass `-DLAB_MODE=1` to PlatformIO.
+Once it is on your network, open `http://<device-ip>/`. HTTP Basic Auth is on by default (`LAB_MODE false` in `config.h`) with `admin` / `admin`. Change that, and the AP password, under `/credentials` before the camera sits on a network you don't fully trust. For bench testing you can build with `-DLAB_MODE=1` to turn auth off.
+
+Credentials are kept in NVS. NVS is not encrypted, so anyone with physical access to the board can read them.
 
 > [!NOTE]
-> **Don't know your IP?** Watch the serial monitor for `Local IP: http://192.168.x.x`. The device also advertises mDNS as `ESP32-Camera.local` if your network supports it.
+> The serial monitor prints `Local IP: http://192.168.x.x` once WiFi is up. The camera also announces itself over mDNS as `<device-name>.local` (the name is printed as `Device Name:` in the same block).
 
 ### First Configuration (Web Dashboard)
 
-1. Open `http://<device-ip>/` — the main dashboard
-2. Click **Settings** — adjust brightness, JPEG quality, motion sensitivity
-3. Enable **Photo: ON** to send Telegram photos on motion (requires Telegram token in `/credentials`)
-4. Enable **Person AI: ON** to enable the FOMO person detection cascade
-5. Open **Live Log** to watch real-time events as you trigger motion in front of the camera
+1. Open `http://<device-ip>/`.
+2. Under **Settings**, adjust brightness, JPEG quality and motion sensitivity.
+3. Turn **Photo: ON** to get a Telegram photo on motion. This needs a bot token and chat ID in `/credentials`.
+4. Turn **Person AI: ON** to run the on-device FOMO person detector.
+5. Open **Live Log** and walk in front of the camera to see events as they happen.
+
+The UI starts in Czech; switch the language in the settings if you need English.
 
 ### Optional: A12 Companion (Enhanced mode)
 
-`a12_system/` adds server-side YOLO verification, on-device face recognition, AV clip
-recording, daily summaries, and shared-scorer support for multi-camera setups. It is optional: the firmware works standalone, and Enhanced mode can be enabled
-later without changing the firmware architecture.
+`a12_system/` is a Python service that runs on a separate machine. It adds YOLO verification of people, face recognition (YuNet + SFace), audio/video clips, daily summaries, and an optional shared scorer when you run several cameras. The firmware works without it, and you can add it later without reflashing anything except the Telegram change below.
 
 ```bash
 a12_system/tools/setup.sh
@@ -217,19 +196,12 @@ a12_system/tools/a12 up
 a12_system/tools/a12 logs 80
 ```
 
-For the full A12 runtime guide, shared scorer contract, face-recognition flow and CLI
-commands, see [`docs/A12_COMPANION.md`](docs/A12_COMPANION.md). For Docker deployment and
-multiple camera instances, see [`a12_system/DOCKER.md`](a12_system/DOCKER.md).
+The full runtime guide, the shared scorer contract, the face recognition flow and the CLI commands are in [`docs/A12_COMPANION.md`](docs/A12_COMPANION.md). Docker deployment and running several camera instances are in [`a12_system/DOCKER.md`](a12_system/DOCKER.md).
 
-A12 keeps aggregate-only shared-scorer telemetry in its statistics and daily summary:
-requests, successes, malformed responses, unreachable-scorer errors, non-2xx answers and
-local fallbacks, plus request latency. It never stores image payloads, scorer URLs or
-exception text in these counters — only exception class names and HTTP status codes.
+For the shared scorer, A12 keeps only counters in its statistics and daily summary: requests, successes, malformed responses, unreachable scorer, non-2xx answers, local fallbacks and request latency. Errors are recorded by exception class name and HTTP status code. Images, scorer URLs and exception messages are not stored there.
 
 > [!NOTE]
-> When using A12, disable ESP32 Telegram to avoid duplicate alerts and free heap: comment
-> out `#define INCLUDE_TELEGRAM` in `firmware/config.h` before flashing. See
-> [Two Deployment Modes](#two-deployment-modes).
+> If A12 sends your alerts, turn off Telegram on the ESP32 so you don't get every alert twice. This also frees heap. Remove `-DINCLUDE_TELEGRAM` from `build_flags` in `firmware/platformio.ini` and reflash. See [Two Deployment Modes](#two-deployment-modes).
 
 > [!IMPORTANT]
 > **Public repository hygiene:** keep runtime config and private deployment data out of
@@ -243,16 +215,18 @@ exception text in these counters — only exception class names and HTTP status 
 
 ## How It Works
 
-The OV3660 sensor captures JPEG frames into a single FreeRTOS `captureTask` running on Core 1. Frames land in a **lock-free 3-slot ring buffer in PSRAM** using atomic CAS reference counting — no copies, no mutex contention. Multiple consumer tasks read frames concurrently:
+One FreeRTOS task, `captureTask` (task name `CamCapture`, core 1, priority 10), reads JPEG frames from the OV3660 at UXGA (1600x1200) by default. It copies each frame into a 3-slot ring buffer in PSRAM, 256 KB per slot. Slot ownership is tracked with an atomic reference count, so readers and the writer never wait on a mutex. A frame larger than a slot is dropped.
+
+Several tasks read from that buffer. The MJPEG and RTSP streams send frames to clients. Motion detection, person detection, recording and time-lapse each take a reference, copy the frame into their own buffer, and release the slot quickly.
 
 ```
-   OV3660 Sensor (~30 FPS UXGA)
+   OV3660 sensor (UXGA by default)
         |
         v
   +------------+      +-------------------+
   | captureTask|----->|  Ring Buffer      |
   | (Core 1,   |      |  3 x 256 KB PSRAM |
-  |  prio 10)  |      |  CAS atomic refs  |
+  |  prio 10)  |      |  atomic refcount  |
   +------------+      +---------+---------+
                                 |
        +------------------------+----------------------+
@@ -266,7 +240,7 @@ The OV3660 sensor captures JPEG frames into a single FreeRTOS `captureTask` runn
        |        |  FOMO    |        |              |
        v        | person   |        v              v
    Web client   | detector |    AVI on SD     JPEG on SD
-                |   |      |    /YYYYMMDD/    /YYYYMMDD/
+                |   |      |  /rec_<time>.avi  /YYYYMMDD/
                 |   v      |
                 | tracker  |
                 +----+-----+
@@ -276,7 +250,7 @@ The OV3660 sensor captures JPEG frames into a single FreeRTOS `captureTask` runn
           NONE  UNCERTAIN  CONFIDENT
          (drop)    |           |
                    v           v
-            [MQTT broker?]  Telegram
+            [MQTT connected?]  Telegram
             Yes |   No |    MQTT/HA
                 v       v
            A12 YOLO   Telegram
@@ -286,15 +260,18 @@ The OV3660 sensor captures JPEG frames into a single FreeRTOS `captureTask` runn
             Yes |
                 v
        Face recognition
-       (YuNet + SFace)
-       /       |        \
-    >=90%   65-89%      <65%
-      |        |          |
-      v        v          v
-   Nuki    Telegram    Telegram
-  unlock   (+ name     (unknown
- skip TG    hint)       alert)
+       (YuNet + SFace, in A12)
+          /              \
+   allowed resident,      anyone else
+   face_unlock enabled         |
+          |                    v
+          v              Telegram (name
+   door opens via         if known, else
+   Home Assistant         unknown person)
+   + Telegram report
 ```
+
+Opening the door is off by default (`face_unlock.enabled: false`), and when you turn it on it starts as a dry run. When it is live, A12 opens the lock only for names listed in `face_unlock.names`. The face has to reach `face_unlock.min_score` (cosine similarity, default 0.60) on two separate checks of the same person track, and the person has to look at the lens for about a second. [`docs/A12_COMPANION.md`](docs/A12_COMPANION.md) describes every condition.
 
 ### Ring Buffer Protocol (CAS-Based)
 
@@ -305,43 +282,44 @@ The OV3660 sensor captures JPEG frames into a single FreeRTOS `captureTask` runn
    >0 = number of active readers
 
   Writer (captureTask):
-    1. CAS slot[i].ref_count from 0 to -1 (try to claim)
-    2. memcpy frame data
-    3. Memory barrier (__sync_synchronize)
-    4. Update current_frame_index = i
-    5. CAS slot[i].ref_count from -1 to 0 (release)
+    1. Starting after the newest slot, CAS ref_count 0 -> -1 on the first free one
+       (if every slot is busy, skip this frame)
+    2. memcpy the camera frame into the slot
+    3. Store ref_count = 0 (release, SEQ_CST)
+    4. Store current_frame_index = i (SEQ_CST), then wake the motion task
 
   Reader (any consumer task):
-    1. idx = current_frame_index (with barrier)
-    2. CAS slot[idx].ref_count from N to N+1 (increment)
-    3. Read frame data
-    4. Atomic decrement slot[idx].ref_count
+    1. idx = current_frame_index (atomic load)
+    2. CAS ref_count N -> N+1; give up if it is -1 or after 16 collisions
+    3. Read or copy the frame data
+    4. Atomic decrement of ref_count
 ```
 
-The protocol guarantees:
-- No reader blocks the writer
-- No writer blocks readers
-- Multiple readers can access the same frame simultaneously
-- Old frames are not freed until all readers release them
+What this gives you:
+- Readers never block the writer. If all three slots are held, the writer drops that frame instead of waiting.
+- The writer never blocks readers. A reader that finds a slot being written tries again on the next frame.
+- Several readers can hold the same frame at once.
+- A slot is not overwritten while any reader still holds it.
 
 ---
 
 ## Detection Pipeline
 
-Two-stage cascade with temporal filtering and persistent tracking:
+Motion detection wakes the on-device person detector, a small tracker keeps IDs across frames, and the result is sorted into one of three states:
 
 ```
-  Frame ----> [Motion: 400x300 grayscale, EMA bg model, 4x4 blocks]
+  Frame ----> [Motion: 80x60 grayscale, EMA background, 20x15 block grid]
                 |
-                |  motion confirmed (2+ frames, clustered)
+                |  motion confirmed (3 consecutive frames, clustered)
+                |  (the person detector also runs an idle scan every 5 s)
                 v
-              [FOMO: 64x64 int8, ~300-500ms (TFLite Micro + ESP-NN)]
+              [FOMO: 64x64 int8, ~314 ms (TFLite Micro + ESP-NN)]
                 |
                 |  raw detections (centroids)
                 v
-              [Tracker: ByteTrack-style Kalman, persistent IDs]
+              [Tracker: constant-velocity prediction, persistent IDs]
                 |
-                |  confirmed track + confidence score
+                |  2 consecutive positive frames + confirmed track
                 v
          [PersonDecision: three-state]
                 |
@@ -349,14 +327,17 @@ Two-stage cascade with temporal filtering and persistent tracking:
          |              |          |
          v              v          v
        NONE         UNCERTAIN   CONFIDENT
-     (discard)      (60-75%)    (>=75%)
-                       |          |
-                       v          v
-              [MQTT broker?]   Telegram
-              Yes |   No |     + MQTT/HA
-                  v       v
-             A12 YOLO  Telegram
-            (verify)  (direct)
+     (discard)    (threshold    (>=75%)
+                   to 75%)        |
+                       |          v
+                       |       Telegram
+                       |       + MQTT/HA
+                       v
+              [MQTT connected?]
+              Yes |      No |
+                  v         v
+             A12 YOLO   Telegram
+             (verify)   (direct)
                   |
                   v
               Telegram
@@ -365,7 +346,7 @@ Two-stage cascade with temporal filtering and persistent tracking:
 
 ### What Alert Will I Receive?
 
-The three-state output determines what happens for each detection — depends on confidence and whether A12 is connected:
+It depends on the confidence and on whether the camera has an MQTT connection:
 
 | Result | Confidence | Standalone mode | A12 mode (MQTT connected) |
 |--------|-----------|-----------------|--------------------------|
@@ -373,86 +354,99 @@ The three-state output determines what happens for each detection — depends on
 | **UNCERTAIN** | 60–75% | Telegram photo (low-confidence caption) | MQTT → A12 YOLO verify → Telegram only if YOLO confirms |
 | **CONFIDENT** | ≥ 75% | Telegram photo + HA/MQTT event | Telegram photo + HA/MQTT event |
 
-**In practice:**
-- A single glance of a person at the edge of frame → typically UNCERTAIN → in standalone you still get a Telegram photo; with A12 the YOLO check filters it out if there's really no person
-- A person standing in front of the camera → CONFIDENT → immediate Telegram
-- A shadow, animal, or lamp swing → NONE → nothing sent
+Some examples:
+- A person glimpsed at the edge of the frame usually comes out UNCERTAIN. Standalone, you still get a photo. With A12, YOLO drops it if there is no person.
+- A person standing in front of the camera is CONFIDENT and you get a photo right away.
+- A shadow, an animal or a swinging lamp is normally NONE and nothing is sent by the person path.
 
-The `person_confidence_threshold` (default 0.6) sets the NONE floor. The `person_confident_threshold` (compile-time, 0.75) sets the CONFIDENT floor. Everything between is UNCERTAIN.
+The routing checks only for a live MQTT connection, not for A12 itself. If a broker is connected but A12 isn't running, UNCERTAIN detections go to MQTT and nobody acts on them.
+
+Both states fire once per new track and honour `person_detection_cooldown` (default 60 s). Telegram photos also respect the active hours; the MQTT hand-off to A12 does not. If the separate motion photo (`motion_telegram_photo`, off by default) is on and the person detector confirms nothing within 5 s of motion, the camera sends a "Motion detected (no person confirmed)" photo instead.
+
+`person_confidence_threshold` (default 0.6) sets the NONE floor. `PERSON_CONFIDENT_THRESHOLD` (compile time, 0.75) sets the CONFIDENT floor. Everything between the two is UNCERTAIN.
 
 ### Motion Detection (motion_detection.cpp)
 
-Block-based frame differencing against an EMA background model. The current working image is 80×60, grouped into a 20×15 block grid; current processing latency has not been re-measured.
+Block-based frame differencing against an EMA background model. Each JPEG is decoded at 1/8 scale, box-filtered to 80×60 grayscale and averaged into a 20×15 grid of 4×4 blocks. Analysis runs every 100 ms. I haven't re-measured the processing time since the switch to 80×60.
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| **Working resolution** | 80×60, grid 20×15 | Fixed grid shared with the M5Stack zone coordinates |
-| Block size | 4 × 4 pixels | Natural low-pass filter — single noisy pixel = 1/16 of block |
-| Pixel diff threshold | 28 + AGC gain | Adaptive to sensor noise (gain 0 → 28, gain 30 → 58) |
-| Trigger percentage | 5% | Min blocks changed to trigger |
+| **Working resolution** | 80×60, grid 20×15 | Same grid as the M5Stack project, so zone coordinates carry over |
+| Block size | 4 × 4 pixels | Averaging smooths out single noisy pixels |
+| Block diff threshold | 28 + AGC gain, and > 12% of the background value | Absolute part follows sensor gain (gain 0 → 28, gain 30 → 58); the relative part stops bright areas like windows from triggering. Lowered to 0.7× while motion is active |
+| Trigger percentage | 5% | Minimum share of blocks that must change |
 | Trigger pct (night) | × 2.5 | Stricter at night |
-| Upper bound | 50% | Above = global light change, rejected |
+| Upper bound | 50% | Above this it is treated as a global light change and rejected |
 | Confirm frames | 3 | Consecutive frames required |
 | EMA alpha (day) | 0.95 | Background adaptation rate |
 | EMA alpha (night) | 0.98 | Slower at night to suppress sensor noise |
-| Cluster requirement | 1+ neighbor (day), 2+ (night) | 4-connected adjacency |
+| Cluster requirement | 1+ neighbour (day), 2+ (night) | 8-connected adjacency |
 | Brightness reset | Δ > 40/255 between frames | Background reset on sudden light change |
 | ROI mask | Per-block on/off | Configurable via `/roi-mask` API |
 
-**Night mode** (avg brightness < 10): instead of blanket suppress, the detector requires stricter clustering and a 2.5× trigger percentage — actual night motion is detected while sensor noise is filtered.
+The background trains for the first 20 frames after start, and nothing triggers during that time.
 
-**Sudden light change**: when average brightness jumps by more than 40/255 between consecutive frames (e.g. lights turned on, sunset, headlights), the EMA background is instantly reset to the current frame to prevent false motion during the transition.
+**Night mode** (average brightness < 10): the detector stays on but needs tighter clusters and 2.5× the trigger percentage. Real movement still gets through and most sensor noise does not.
+
+**Sudden light change**: when the average brightness jumps by more than 40/255 between consecutive frames (lights switched on, headlights), the background is reset to the current frame so the transition doesn't read as motion.
 
 ### Person Detection (person_detection.cpp)
 
-Edge Impulse FOMO model running on the ring buffer's latest JPEG frame:
+An Edge Impulse FOMO model runs on a copy of the newest JPEG from the ring buffer:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Model | Edge Impulse FOMO | int8 quantized CNN |
 | Input resolution | 64 × 64 grayscale | Fixed by FOMO architecture |
-| Decode scale | JPG_SCALE_4X | UXGA → 400 × 300 → bilinear → 64 × 64 |
+| Decode scale | JPG_SCALE_8X | UXGA → 200 × 150 → bilinear → 64 × 64 |
 | Tensor arena | 140 KB PSRAM | |
-| Min detections | 2 centroids | Spatial filter (single = noise) |
-| **Temporal filter** | **2 consecutive frames** | Eliminates ~90% false positives |
-| Histogram normalization | 1%-99% percentile stretch | Skipped if range < 20 (true night) |
-| Inference time | ~300–500 ms | TFLite Micro + ESP-NN SIMD (resolved in v3.12.41) |
+| Min detections | 1 centroid | Noise is rejected by the temporal filter and tracker instead |
+| Temporal filter | 2 consecutive frames | A confirmed tracker track is also required |
+| Histogram normalization | 1%-99% percentile stretch | Skipped if the range is < 20 (true night) or > 200 (already full range) |
+| Inference time | ~314 ms | Measured after the TFLite Micro + ESP-NN switch in v3.12.41 |
+
+Besides motion wake-ups, the detector runs an idle scan every 5 s to catch people who arrive slowly or stand still. While someone is present it re-checks every `person_recheck_interval` seconds (minimum 5 s) and clears presence after 3 misses in a row.
 
 ### Object Tracker (tracker.cpp)
 
-Lightweight ByteTrack-style tracker with constant-velocity prediction and greedy matching:
+A small tracker loosely modelled on ByteTrack, with constant-velocity prediction and greedy nearest-neighbour matching (no full Kalman filter):
 
 | Feature | Value | Notes |
 |---------|-------|-------|
-| Max tracks | 16 simultaneous | Static SRAM allocation (~1 KB) |
-| Track lifecycle | TENTATIVE → CONFIRMED → LOST → DELETED | |
-| Min hits to confirm | 2 | Tentative tracks promoted after 2 successful matches |
-| Max age | 30 frames | Lost tracks deleted after 30 frames without re-match |
-| Max distance | 80 pixels | Greedy nearest-neighbor matching radius |
+| Max tracks | 16 simultaneous | Static allocation |
+| Track lifecycle | TENTATIVE → CONFIRMED → LOST → deleted | |
+| Min hits to confirm | 2 | Tentative tracks are promoted after 2 matches |
+| Max age | 30 frames | A lost track is deleted after 30 frames without a match |
+| Max distance | 80 pixels | Matching radius. FOMO centroids are in 64×64 input coordinates, so in practice any detection matches the nearest track |
 | Velocity smoothing | α = 0.7 (old) + 0.3 (new) | Exponential moving average |
-| Per-frame cost | ~2-5 ms | |
-| **Persistent IDs** | Yes | Same person stays same track ID until they leave |
-| **Notification dedup** | Yes | `notified` flag prevents duplicate Telegram for same track |
+| Persistent IDs | Yes | A person keeps the same track ID until they leave |
+| Notification dedup | Yes | A `notified` flag stops repeat Telegram photos for the same track |
 
-The tracker is the answer to the v3.10.5 "person detection re-check photo spam" problem — same person now triggers a notification once, and only fires again when a new track is created.
+I added the tracker after the person re-check spam in v3.10.5. The same person now triggers one notification, and a new one only fires when a new track is created.
 
 ### Camera Profiles (ir_handler.cpp)
 
-Auto-switching between three camera tunings based on ambient light from the LTR-308 sensor:
+The firmware switches between three camera tunings based on ambient light from the LTR-308 sensor. The switching logic lives in `updateCameraProfile()` in `main.cpp`; the sensor code is in `ir_handler.cpp`.
 
 | Profile | Lux range | Brightness | AE level | Gain ceiling | LENC | Use case |
 |---------|-----------|------------|----------|--------------|------|----------|
-| **DAY** | > 250 | 0 | 0 | 16× | ON | Daylight, bright indoor |
-| **DUSK** | 5–250 | +3 | +5 | 128× | ON | Twilight, dim indoor |
-| **NIGHT** | < 5 | +3 | +5 | 128× | OFF | Pure dark, IR LED active |
+| **DAY** | > 100 (back to DUSK below 60) | 0 | 0 | 16×, AGC auto | ON | Daylight, bright indoor |
+| **DUSK** | 15–100 | +3 | +5 | 128×, AGC auto | ON | Twilight, dim indoor |
+| **NIGHT** | < 15 (back to DUSK above 20) | +3 | +5 | 128× ceiling, AGC off | OFF | Very dark scenes |
 
-**LTR-308 sensor:** 100 ms integration time / 100 ms sample rate (was 500 ms in v3.10), giving 5× faster reaction to sunset, headlights, room lights. Lux is read every 100 ms via the shared I2C bus from `captureTask` (after frame return) to avoid SCCB contention with the camera driver.
+The IR LED is controlled separately (see IR LED auto control below) and doesn't follow the profile.
 
-**OV3660 ISP tuning** (init-time, SCCB-safe):
-- LENC (lens correction) — corrects vignetting at corners
-- BPC + WPC auto-adaptation — masks defective pixels
-- SDE (Special Digital Effects) — contrast, saturation, brightness pipeline
-- 2D Noise Reduction — UV chroma denoise
+If the sensor sits behind opaque plastic and always reads near zero, enable the IR LED's time-based schedule (`time_based`, `night_start_hour`, `night_end_hour` via `/ir-control`). The profile then follows the clock and only switches between DUSK and NIGHT.
+
+**LTR-308 sensor:** 100 ms integration time and 100 ms measurement rate (500 ms in v3.10). The firmware reads it every 150 captured frames (about 5 s at 30 fps) from `captureTask`, right after the frame is returned, so the I2C read doesn't collide with the camera's SCCB traffic.
+
+**OV3660 ISP tuning** (written once at init):
+- LENC (lens correction) for corner vignetting
+- BPC + WPC with auto adaptation to mask defective pixels
+- SDE (Special Digital Effects) for contrast, saturation and brightness
+- AEC zone weights that favour the lower part of the frame over windows at the top
+
+2D noise reduction (register 0x5580) is deliberately left off because writing it inverted the image.
 
 ---
 
@@ -462,73 +456,71 @@ Auto-switching between three camera tunings based on ambient light from the LTR-
 
 | Feature | Description |
 |---------|-------------|
-| **MJPEG streaming** | Concurrent streams on port 81: `/stream` (raw), `/detection-stream` (with motion overlay) |
-| **RTSP server** | Standard RTSP on port 554 (`rtsp://device:554/mjpeg/1`) for VLC, Frigate, Synology Surveillance Station, BlueIris |
-| **Single-frame snapshot** | `/frame` returns latest JPEG from the ring buffer (no camera re-capture) — fast (~5 ms) |
-| **AVI recording** | MJPEG video + PCM audio interleaved (RIFF/AVI 1.0), auto-stop on 45 MB or 120 s |
+| **MJPEG streaming** | Port 81: `/stream` at full speed for the browser, `/detection-stream` capped at 10 FPS for A12. Up to 2 clients each |
+| **RTSP server** | Port 554 (`rtsp://device:554/mjpeg/1`) for VLC or an NVR |
+| **Single-frame snapshot** | `/frame` returns the latest JPEG from the ring buffer without a new capture |
+| **AVI recording** | MJPEG video + PCM audio interleaved (RIFF/AVI 1.0), stops automatically at 45 MB or 120 s |
 | **Time-lapse mode** | Periodic JPEG snapshots saved to SD in per-day folders (`/sdcard/YYYYMMDD/tl_HHMMSS.jpg`), interval 5–3600 s |
-| **Audio streaming** | I2S/PDM mic on port 82 (`/audio.wav`), 16 kHz mono PCM, continuous stream |
-| **Multiple frame sizes** | UXGA, SXGA, XGA, SVGA, VGA, CIF, QVGA — runtime switching via `/settings` (downscale only, OV3660 cannot upscale) |
+| **Audio streaming** | PDM mic on port 82 (`/audio.wav`), 16 kHz mono PCM, continuous stream |
+| **Multiple frame sizes** | UXGA, SXGA, XGA, SVGA, VGA, CIF, QVGA, set via `/settings`. The sensor starts at UXGA and smaller sizes are downscaled. A change reboots the camera |
 
 ### :eye: Detection & AI
 
 | Feature | Description |
 |---------|-------------|
-| **Motion detection** | Block-based EMA background subtraction at 80×60, spatial clustering (4-connected), AGC-aware threshold, ROI mask |
-| **Night motion** | Adaptive thresholds + stricter clustering instead of blanket suppression |
-| **Sudden-light reset** | Background reset on Δ > 40/255 between frames (sunset, lights on/off) |
-| **Person detection (on-device)** | Edge Impulse FOMO 64×64 int8 with histogram normalization, 2-frame temporal filter. Output: `NONE` / `UNCERTAIN` / `CONFIDENT` |
-| **Three-state decision + MQTT routing** | `CONFIDENT` (≥75%) → Telegram direct. `UNCERTAIN` (60–75%) → MQTT `person_uncertain` → A12 YOLO verification → Telegram only if confirmed. Falls back to direct Telegram when MQTT unavailable. |
-| **PERF metrics** | 30s serial log: `infer_ms`, `motion`, `pd_pos/neg`, `tg_sent`, `fallback` — track detection quality over time |
-| **Object tracker** | ByteTrack-style Kalman tracker, persistent IDs, eliminates duplicate notifications |
-| **Day/Night auto-profiles** | LTR-308 ambient light sensor (5× faster sample rate) → DAY/DUSK/NIGHT camera tuning with hysteresis |
-| **IR LED auto control** | Lux threshold + hysteresis, manual override via API |
-| **OV3660 ISP tuning** | LENC, BPC/WPC auto, SDE, 2D-NR (init-time SCCB writes) |
-| **Server-side YOLO** | Optional Python A12 system runs YOLOv11n on the MJPEG stream for full bounding-box accuracy |
-| **Face recognition** | OpenCV YuNet detector + SFace embeddings in A12. Runs inside a PIR window on the YOLO person box, independently of clip/notification cooldown. An occurrence allows five detected-face checks within fifteen total attempts, so missing faces do not exhaust the useful checks. Recognition still requires two agreeing sightings; the lock has its own score threshold and cooldown. No extra dependency — both APIs ship with opencv-python-headless; two model files live in the data directory beside the YOLO weights |
-| **Sensor fusion** | Confirmed alarm requires both camera detection AND external Zigbee sensor within configurable time window |
+| **Motion detection** | Block-based EMA background subtraction at 80×60, 8-connected clustering, AGC-aware threshold, ROI mask |
+| **Night motion** | Stricter thresholds and clustering instead of switching detection off |
+| **Sudden-light reset** | Background reset on Δ > 40/255 between frames (lights on/off) |
+| **Person detection (on-device)** | Edge Impulse FOMO 64×64 int8 with histogram normalization and a 2-frame temporal filter. Output: `NONE` / `UNCERTAIN` / `CONFIDENT` |
+| **Three-state decision + MQTT routing** | `CONFIDENT` (≥75%) → Telegram directly. `UNCERTAIN` (threshold to 75%) → MQTT `person_uncertain` → A12 YOLO verification → Telegram only if confirmed. Without MQTT, UNCERTAIN goes straight to Telegram |
+| **PERF metrics** | Serial log line every 30 s: `infer_ms`, `motion`, `pd_pos/neg`, `tg_sent`, `fallback` |
+| **Object tracker** | Persistent track IDs so one person produces one notification |
+| **Day/Night auto-profiles** | LTR-308 ambient light sensor → DAY/DUSK/NIGHT camera tuning with hysteresis, or a clock schedule |
+| **IR LED auto control** | Lux threshold (default 13 lux) with 20% hysteresis, or a time schedule; manual override via API |
+| **OV3660 ISP tuning** | LENC, BPC/WPC auto, SDE, AEC zone weights (init-time SCCB writes) |
+| **Server-side YOLO** | Optional: the A12 companion runs YOLO11n on the detection stream and gets full bounding boxes |
+| **Face recognition** | A12 only. OpenCV YuNet detector + SFace embeddings on the YOLO person box, run only while the PIR reports someone in the doorway. By default an occurrence gets 20 checks with a usable face out of at most 30 attempts (`FACE_MAX_CHECKS_PER_EPISODE`, `FACE_MAX_ATTEMPTS_PER_EPISODE`), so frames without a face don't use up the budget. A resident must be recognised twice before an alert is suppressed; the door lock has its own score threshold and cooldown. Both models run on `cv2.dnn` from opencv-python-headless; the two model files go in the data directory next to the YOLO weights |
+| **Sensor fusion** | A12 only. In `SECURITY` mode a person counts as `CONFIRMED_ALARM` when a Home Assistant sensor or the camera's own motion signal fired within the fusion window (default 10 s) |
 
 ### :house: Integrations
 
 | Feature | Description |
 |---------|-------------|
-| **Home Assistant MQTT discovery** | Auto-creates `binary_sensor.camera_motion`, `binary_sensor.person_detected`, `switch.ir_led`, `sensor.audio_level`, `sensor.lux` |
-| **Telegram bot** | Text + photo + AVI video document, command interface (10 commands) |
-| **Zigbee2MQTT bridge** | Listens for external PIR/door sensors via `zigbee2mqtt/+`, triggers camera detection cascade |
-| **Sensor fusion alarm** | `CONFIRMED_ALARM` requires camera detection + Zigbee/HA sensor active within window |
-| **Webhook** | MQTT publish triggers can fire HTTP POSTs via HA automations |
-| **OctoPrint / NodeRED** | Standard MQTT topics work with any MQTT-compatible system |
+| **Home Assistant MQTT discovery** | Firmware creates binary sensors for motion and person, sensors for motion score, motion %, brightness, RSSI, free heap and uptime, switches for recording and person detection, and a snapshot button |
+| **Telegram bot** | Text, photo and AVI document messages, plus 15 commands (see [Telegram Bot](#telegram-bot)) |
+| **Zigbee2MQTT bridge** | A12 only. Subscribes to `zigbee2mqtt/+`; an occupancy event or an opened door contact starts a YOLO check |
+| **Sensor fusion alarm** | A12 only. `CONFIRMED_ALARM` needs a person detection plus an HA sensor or camera motion within the window |
+| **Other MQTT consumers** | The topics are plain MQTT, so Node-RED or HA automations (webhooks included) can use them directly |
 
 ### :wrench: Operations
 
 | Feature | Description |
 |---------|-------------|
-| **OTA updates** | HTTP `/update` endpoint, no USB needed, auto-rollback on boot failure |
-| **Live log viewer** | `/log-viewer` HTML page with 2 s polling, ring buffer of last 100 lines, download as `.txt` |
-| **WiFi captive portal** | AP fallback mode (`ESP32-Camera-Setup`) with auto-redirect on Android/iOS |
-| **NVS credential storage** | WiFi, MQTT, Telegram credentials in encrypted flash, never in source code or JSON |
-| **Web GUI dashboard** | Single-page dark theme: 10 info cards (IP, Uptime, RAM, PSRAM, WiFi, FPS, Temp, Lux, Profile, FW), 5 toggles (Photo, Person AI, Recording, IR LED, SD Log), 13 tools |
-| **Health monitoring** | Heartbeat watchdog (5 s), sabotage detection (30 s stream loss = alarm), RAM/RSSI tracking, auto-recovery |
-| **Compile-time feature toggles** | Disable Telegram/MQTT/Audio/AI/SD/Time-lapse to save flash + RAM |
-| **mDNS** | `http://ESP32-Camera.local/` — works on macOS, iOS, Linux, Windows 10+ |
+| **OTA updates** | Upload firmware over HTTP to `/update`, no USB needed. There is no automatic rollback; a bad image needs a USB flash |
+| **Live log viewer** | `/log-viewer` HTML page polling `/log` every 2 s (last 100 lines), with a download button |
+| **WiFi captive portal** | Falls back to an access point named `<device_name>_AP` (default password `12345678`, change it with `ap_password`), with captive-portal redirects for Android and iOS |
+| **NVS credential storage** | WiFi, MQTT, Telegram, HTTP and OTA credentials live in NVS, not in source code or `config.json`. NVS is not encrypted, so anyone with physical access to the flash can read them |
+| **Web GUI dashboard** | Single page, dark theme: 10 info cards, 5 toggles and 14 tool links (see [Web Dashboard](#web-dashboard)) |
+| **Health monitoring** | The camera restarts if `captureTask` hasn't updated its heartbeat for 10 s. Heap, RSSI and restart reasons are tracked and reported on `/health` |
+| **Compile-time feature toggles** | Telegram, MQTT, audio, person detection, SD recording and time-lapse can be compiled out to save flash and RAM |
+| **mDNS** | `http://<device_name>.local/` (`http://ESP32-Camera.local/` with the default name) |
 
 ### :shield: Reliability
 
 | Feature | Description |
 |---------|-------------|
-| **Lock-free ring buffer** | CAS protocol — no mutex contention, no priority inversion |
-| **Sabotage detection** | Stream watchdog triggers MQTT alarm + Telegram if frames stop arriving for 30 s |
-| **Active hours** | Time-based mute window for Telegram notifications (e.g. 22:00–07:00 silent) |
-| **Cooldowns** | Per-detection cooldown (default 60 s) prevents notification spam |
-| **Auto-rearm** | Sabotage state auto-clears when stream returns |
-| **Watchdog** | Hardware WDT + per-task heartbeats |
-| **NVS persistence** | All config + uptime survives reboot, factory reset via `/credentials` POST |
+| **Lock-free ring buffer** | Readers take a reference with atomic compare-and-swap instead of a mutex. Consumers copy the frame out and release the slot straight away |
+| **Tamper detection** | Checked every ~5 s. If the image is black and motionless for ~30 s while the light sensor still sees light, or RSSI drops below −87 dBm, the camera sends a Telegram alert and logs an event (at most one alert per 10 min) |
+| **Active hours** | Telegram photos only go out between `motion_notify_start_hour` and `motion_notify_end_hour` (e.g. 22–7 wraps past midnight) |
+| **Cooldowns** | Motion photos default to 30 s apart, person photos to 60 s |
+| **Watchdog** | Task watchdog on the main loop (180 s timeout) plus the camera heartbeat above |
+| **Config persistence** | Settings are stored in `/config.json` on LittleFS (written to a temp file and renamed), credentials in NVS. Both survive a reboot |
 
 ---
 
 ## Web Dashboard
 
-Dark-mode responsive web UI accessible at `http://<device-ip>/`. The UI is gzipped and embedded in PROGMEM (~4.5 KB dashboard + ~7.4 KB settings, no external files, no SD card, no SPIFFS). Both pages carry a full Czech/English table and a language toggle; the source is `firmware/web/`, embedded by `tools/build_web_assets.py`.
+A dark, responsive web UI at `http://<device-ip>/`. Both pages are gzipped and compiled into the firmware (about 5 KB for the dashboard and 8 KB for settings), so they need no SD card or filesystem. Both have Czech and English text and a language toggle. The source is in `firmware/web/` and `tools/build_web_assets.py` embeds it.
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="Dashboard" width="360">
@@ -537,50 +529,51 @@ Dark-mode responsive web UI accessible at `http://<device-ip>/`. The UI is gzipp
 </p>
 
 <p align="center">
-  <em>Main dashboard (left) with info cards + detection toggles + tool links; collapsible settings form (right).</em>
+  <em>Main dashboard (left) with info cards, detection toggles and tool links; collapsible settings form (right).</em>
 </p>
 
 **Top section:**
-- **Header** — title, status badge with green pulse dot
-- **Hero** — Stream button + Detection stream button (both open in new tab on port 81)
+- **Header**: title and a status badge with a pulsing dot
+- **Hero**: Stream and Detection stream buttons, both open port 81 in a new tab
 
 **Info grid (10 cards):**
-- **IP** — current IP address
-- **Uptime** — formatted (e.g. `2d 14h 23m`)
-- **RAM** — free heap KB (color-coded: green / yellow / red at 100 / 50 KB)
-- **PSRAM** — free PSRAM MB + usage % sublabel
-- **WiFi** — RSSI in dBm (color-coded: green / yellow / red at −65 / −80 dBm)
-- **FPS** — current stream frame rate
-- **Temp** — chip temperature in °C
-- **Lux** — ambient light from LTR-308
-- **Profile** — current camera profile (DAY / DUSK / NIGHT)
-- **FW** — firmware version
+- **IP**: current IP address
+- **Uptime**: formatted, e.g. `2d 14h 23m`
+- **RAM**: free heap in KB, yellow below 100 KB and red below 50 KB
+- **PSRAM**: free PSRAM with usage % underneath
+- **WiFi**: RSSI in dBm, yellow below −65 and red below −80
+- **FPS**: current stream frame rate
+- **Temp**: chip temperature in °C
+- **Lux**: ambient light from the LTR-308
+- **Profile**: current camera profile (DAY / DUSK / NIGHT)
+- **Firmware**: firmware version
 
 **Detection toggles (5 buttons):**
-- **Foto: ON/OFF** — toggle motion → Telegram photo
-- **Osoba AI: ON/OFF** — toggle motion → FOMO → Telegram cascade
-- **Nahrávání: ON/OFF** — toggle SD AVI recording
-- **IR LED: ON/OFF** — manual IR LED control
-- **SD Log: ON/OFF** — start / stop session-based SD debug logger
+- **Foto: ON/OFF**: motion → Telegram photo
+- **Osoba AI: ON/OFF**: motion → FOMO → Telegram cascade
+- **Nahrávání: ON/OFF**: SD AVI recording
+- **IR LED: ON/OFF**: manual IR LED control
+- **SD Log: ON/OFF**: start or stop the session-based SD debug logger
 
-**Tools (13 buttons):**
-- **Snapshot** — `/frame` (latest JPEG from ring buffer)
-- **Save to SD** — save current frame to microSD
-- **Settings** — `/settings-page` (full collapsible settings form)
-- **Live Log** — `/log-viewer` (HTML log with 2 s auto-refresh)
-- **SD files** — `/sd-list` (file browser)
-- **Status JSON** — `/status` (raw JSON including temp, FPS, PSRAM %)
-- **Health** — `/health` (system health JSON)
-- **Motion debug** — `/motion-debug` (per-block motion grid visualization)
-- **Telemetry** — `/telemetry` (detailed heap / task metrics)
-- **Events** — `/events` (detection event log)
-- **Stream Stats** — `/stream-stats` (MJPEG stream diagnostics)
-- **PSRAM Stats** — `/psram-stats` (ring buffer occupancy)
-- **Audio Status** — `/audio-status` / **Audio Stream** — direct link to port 82
+**Tools (14 links):**
+- **Snapshot**: `/frame` (latest JPEG from the ring buffer)
+- **Save to SD**: save the current frame to microSD
+- **Settings**: `/settings-page` (the full settings form)
+- **Live Log**: `/log-viewer`
+- **SD files**: `/sd-list` (file browser)
+- **Status JSON**: `/status` (raw JSON including temperature, FPS and PSRAM %)
+- **Health**: `/health` (system health JSON)
+- **Motion debug**: `/motion-debug` (per-block motion grid)
+- **Telemetry**: `/telemetry` (heap and task metrics)
+- **Events**: `/events` (detection event log)
+- **Stream Stats**: `/stream-stats` (MJPEG stream diagnostics)
+- **PSRAM Stats**: `/psram-stats` (ring buffer occupancy)
+- **Audio Status**: `/audio-status`
+- **Audio Stream**: direct link to `/audio.wav` on port 82
 
-The dashboard auto-refreshes status every 3 seconds and shows **Offline** if the camera stops responding.
+The dashboard polls the status every 3 seconds and shows **Offline** when the camera stops answering.
 
-A **CZ/EN language toggle** (top-right corner) switches all labels and button text between Czech and English. The preference is stored in browser `localStorage` and persists across reloads. Default language is Czech; click **EN** to switch.
+The **CZ/EN** button in the top-right corner switches all labels. The choice is saved in the browser's `localStorage` and also sent to the camera (`ui_language` in `/config.json`), so it survives a reboot and A12 uses the same language for its Telegram messages. The default is Czech.
 
 ---
 
@@ -589,10 +582,10 @@ A **CZ/EN language toggle** (top-right corner) switches all labels and button te
 ### Creating a Bot (one-time)
 
 1. Open Telegram and search for **@BotFather**
-2. Send `/newbot` — choose a name and username (e.g. `MyCameraBot`)
+2. Send `/newbot` and choose a name and username (e.g. `MyCameraBot`)
 3. BotFather replies with your **bot token**: `123456789:ABC-DEF...`
 4. Send `/start` to your new bot, then open: `https://api.telegram.org/bot<TOKEN>/getUpdates`
-5. Find `"chat":{"id":...}` in the response — that is your **chat ID**
+5. Find `"chat":{"id":...}` in the response. That number is your **chat ID**
 
 ### Configuring the Token
 
@@ -604,35 +597,37 @@ TELEGRAM_BOT_TOKEN=<your-bot-token-from-@BotFather>
 TELEGRAM_CHAT_ID=<your-chat-id>
 ```
 
+The firmware polls Telegram every 30 s and only accepts commands from the configured chat ID, so a command can take up to half a minute to be picked up:
+
 | Command | Description |
 |---------|-------------|
 | `/photo` | Take a photo and send it now |
 | `/video N` | Record N seconds of AVI (3-60 s) and send as document |
-| `/record` | Start / stop AVI recording |
-| `/status` | Send system status (uptime, IP, RSSI, heap, profile, version) |
+| `/record` | Start AVI recording, or stop it and send the file |
+| `/status` | Send system status (IP, uptime, heap, PSRAM, RSSI, IR, SD, detection settings, version) |
 | `/detect` | Toggle motion → Telegram photo |
 | `/person` | Toggle person detection AI cascade |
 | `/ir on\|off\|auto` | IR LED control |
 | `/hours HH-HH` | Set active-hours window for notifications |
-| `/cooldown N` | Set cooldown between photos (5-3600 s) |
+| `/cooldown N` | Set cooldown between motion photos (5-3600 s) |
 | `/threshold N.N` | Set AI confidence threshold (0.1-1.0) |
-| `/watch` | Activate guard mode (motion + AI + video + SD all ON, 24/7) |
-| `/silent` | Mute all notifications and recordings |
+| `/watch` | Guard mode: motion photo, motion video, SD recording and person AI on, active hours 0–23 |
+| `/silent` | Turn off motion photo, motion video, SD recording and person AI |
 | `/ip` | Send network info (IP, SSID, web / stream / RTSP URLs) |
 | `/restart` | Restart ESP32 |
 | `/help` | Show command list |
 
-**Cooldown:** Telegram messages have a configurable cooldown (default 60 s) to prevent notification spam during continuous activity. Active hours (`motion_notify_start_hour` / `end_hour`) silence notifications during quiet periods.
+**Cooldown:** motion photos are at least `motion_telegram_cooldown` apart (default 30 s), person photos `person_detection_cooldown` (default 60 s). Active hours (`motion_notify_start_hour` / `motion_notify_end_hour`, both inclusive) keep detection photos quiet outside the window.
 
-**Photo upload:** Uses `WiFiClientSecure.setInsecure()` (skips cert validation, fits ESP32-S3 RAM constraints). Multipart upload streams in 2 KB chunks to avoid WiFi buffer overflow.
+**Photo upload:** uses `WiFiClientSecure.setInsecure()`, which skips certificate validation to fit the ESP32-S3's RAM. Someone on your network could intercept the upload. The multipart body is written in 512-byte chunks to keep TLS records small on weak WiFi.
 
-**Document upload:** AVI files are streamed directly from SD without loading into RAM — supports up to 50 MB files.
-
----
+**Document upload:** AVI files are streamed from SD without loading them into RAM. Files up to 50 MB are accepted.
 
 ## API Reference
 
-The camera exposes 3 HTTP servers and an RTSP server:
+The camera runs three HTTP servers (ports 80, 81, 82) and an RTSP server. The audio server exists only in builds with `INCLUDE_AUDIO`, and RTSP is left out of `LITE_MODE_NO_RUNTIME_TASKS` builds.
+
+Endpoints that change state ask for HTTP Basic Auth: `POST /settings`, `GET`/`POST /credentials`, `POST /roi-mask`, `POST /zones`, `POST /ir-control`, `POST /record`, `POST /save_frame`, `POST /sd-clear`, `POST /update` and `POST /reboot`. A `LAB_MODE` build skips the check. Read-only endpoints are open.
 
 ### Main HTTP Server (Port 80)
 
@@ -640,18 +635,19 @@ The camera exposes 3 HTTP servers and an RTSP server:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Main HTML dashboard (gzipped) |
-| `/frame` | GET | Latest JPEG snapshot from ring buffer (~5 ms) |
-| `/status` | GET | System JSON: IP, uptime, RSSI, heap, lux, profile, version, FPS, all toggles, fitted `sensor`/`sensor_pid`, `lens_fov_deg` |
-| `/health` | GET | Health check JSON: WiFi state, sensors, tasks, camera state, fitted `sensor`, `lens_fov_deg` |
-| `/telemetry` | GET | Detailed metrics: frames captured, motion events, AI inferences, errors, restarts |
-| `/psram-stats` | GET | PSRAM usage breakdown by allocation |
-| `/motion-status` | GET | Motion detector state, last trigger time, EMA stats |
-| `/motion-debug` | GET | HTML page with per-block motion grid visualization |
-| `/stream-stats` | GET | MJPEG stream connection statistics |
-| `/log` | GET | Plain text live log (last 100 lines) |
-| `/log-viewer` | GET | HTML log viewer with 2 s auto-refresh + download button |
-| `/reg-debug` | GET | OV3660 register dump (init values vs runtime) |
+| `/` | GET | Dashboard HTML (gzipped) |
+| `/frame` | GET | Latest JPEG from the ring buffer |
+| `/status` | GET | System JSON: IP, uptime, RSSI, heap, lux, profile, version, FPS, feature toggles, fitted `sensor`/`sensor_pid`, `lens_fov_deg` |
+| `/health` | GET | Health JSON: WiFi state, sensors, tasks, camera state, stream health, fitted `sensor`, `lens_fov_deg` |
+| `/telemetry` | GET | Counters: frames captured, motion events, inferences, errors, restarts |
+| `/events` | GET | Recent event log as a JSON array, newest first (up to 100 entries: boot, motion, person, recording, Telegram, tamper, ...) |
+| `/psram-stats` | GET | PSRAM usage |
+| `/motion-status` | GET | Motion detector state, last trigger, EMA stats |
+| `/motion-debug` | GET | HTML page showing the per-block motion grid |
+| `/stream-stats` | GET | MJPEG client statistics |
+| `/log` | GET | Last 60 log lines as plain text |
+| `/log-viewer` | GET | HTML log viewer, refreshes every 2 s, with a download button |
+| `/reg-debug` | GET | Sensor register dump (values read at init vs now) |
 
 #### Configuration
 
@@ -659,50 +655,58 @@ The camera exposes 3 HTTP servers and an RTSP server:
 |----------|--------|-------------|
 | `/settings` | GET | Full configuration JSON |
 | `/settings` | POST | Update configuration (partial JSON merge) |
-| `/settings-page` | GET | HTML form for all settings (gzipped) |
-| `/credentials` | GET | NVS credential status (without revealing secrets) |
+| `/settings-page` | GET | Settings form HTML (gzipped) |
+| `/credentials` | GET | Which credentials are set in NVS, without the secrets |
 | `/credentials` | POST | Update WiFi/MQTT/Telegram credentials in NVS |
-| `/roi-mask` | GET | Per-block ROI mask (motion detection regions) |
-| `/roi-mask` | POST | Update ROI mask |
+| `/roi-mask` | GET | Per-block ROI mask for motion detection |
+| `/roi-mask` | POST | Update the ROI mask |
+| `/zones` | GET | Named zones as JSON |
+| `/zones` | POST | Add or update a zone: `{name, color, alert, rects: [{x, y, w, h}]}`. `{"delete": "<name>"}` removes one |
 
 #### Control
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/ir-status` | GET | IR LED state, auto mode, current lux |
-| `/ir-control` | POST | `{auto_mode: bool, state: "on"/"off"}` |
-| `/audio-status` | GET | Audio level (dBFS), trigger state |
-| `/save_frame` | POST | Save current frame to SD card |
-| `/record` | POST | `{action: "start"/"stop"}` toggle AVI recording |
-| `/sd-list` | GET | List files on SD card (JSON) |
-| `/sd-download` | GET | `?file=...` download a specific file |
-| `/sd-clear` | POST | `{pattern: "*.avi"}` delete files matching pattern |
-| `/update` | POST | OTA firmware update (binary upload) |
+| `/ir-control` | POST | `{state: "on"/"off"/"auto"}`; also accepts `auto_mode`, `threshold`, `time_based`, `night_start_hour` |
+| `/audio-status` | GET | Audio level (dBFS) and trigger state |
+| `/save_frame` | POST | Store the JPEG sent in the request body (max 500 KB) on the SD card as `/YYYYMMDD_HHMMSS.jpg` |
+| `/record` | POST | `{action: "start"/"stop"}` starts or stops AVI recording |
+| `/sd-list` | GET | Plain-text listing of the SD card root (up to 200 entries) with used/total MB |
+| `/sd-download` | GET | `?file=...` downloads one file (`..` is rejected) |
+| `/sd-clear` | POST | Deletes **every** file on the SD card; returns `files_deleted`, `freed_mb`, `remaining_mb` |
+| `/sd-log` | GET | Status of the SD debug-log session |
+| `/sd-log` | POST | `{action: "start", timeout_h: 4}`, `{action: "stop"}` or `{action: "flush"}`. While a session runs, log lines are buffered in RAM and written to SD every 60 s. No auth check |
+| `/update` | GET | OTA upload page |
+| `/update` | POST | OTA firmware update (raw binary body) |
+| `/reboot` | POST | Restarts the board after a 500 ms delay; A12 uses it for recovery |
 
 #### Captive Portal (AP mode only)
 
-These endpoints return HTTP 403 in station mode, including when a lab build bypasses Basic Auth elsewhere.
+These endpoints return HTTP 403 in station mode, even in a `LAB_MODE` build that skips Basic Auth.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/setup` | GET | WiFi setup HTML form |
-| `/wifi-scan` | GET | Scan available networks |
+| `/setup` | GET | WiFi setup form |
+| `/wifi-scan` | GET | Visible networks (up to 15) as JSON |
 | `/wifi-save` | POST | Save WiFi credentials and reboot |
-| `/generate_204` | GET | Android captive portal redirect |
-| `/hotspot-detect.html` | GET | iOS captive portal redirect |
+| `/generate_204` | GET | 302 redirect to `/setup` (Android captive portal check) |
+| `/hotspot-detect.html` | GET | 302 redirect to `/setup` (iOS captive portal check) |
 
 ### Stream Server (Port 81)
 
+Both streams are `multipart/x-mixed-replace` MJPEG from the same ring buffer, with boundary `123456789000000000000987654321`. They also answer `HEAD`.
+
 | Endpoint | Description |
 |----------|-------------|
-| `/stream` | MJPEG stream (no detection overlay) — boundary: `--frame` |
-| `/detection-stream` | MJPEG stream (with motion overlay if enabled) |
+| `/stream` | MJPEG at the capture rate, for the web GUI |
+| `/detection-stream` | Same frames capped at 10 FPS, with its own client counter; this is what A12 reads. No overlay is drawn |
 
 ### Audio Server (Port 82)
 
 | Endpoint | Description |
 |----------|-------------|
-| `/audio.wav` | Continuous WAV stream, 16 kHz mono PCM16, 44-byte header + raw samples |
+| `/audio.wav` | Continuous WAV stream, 16 kHz mono PCM16: a 44-byte header, then raw samples |
 
 ### RTSP Server (Port 554)
 
@@ -710,34 +714,59 @@ These endpoints return HTTP 403 in station mode, including when a lab build bypa
 rtsp://<device-ip>:554/mjpeg/1
 ```
 
-Tested with VLC, Frigate, BlueIris, Synology Surveillance Station, ffmpeg.
+The capture task feeds every frame to the RTSP server. Any client that plays MJPEG over RTSP should work; VLC and ffmpeg are the easy ones to test with.
 
 ### MQTT Topics
 
-Prefix: `esp32_camera/`
+Two different things publish over MQTT, under different prefixes.
+
+**Firmware** publishes under `esp32cam/<device_name>/` (`device_name` comes from the camera's config) and sends Home Assistant discovery under `homeassistant/`:
+
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `motion` | publish | `ON` / `OFF` |
+| `motion_score`, `motion_percent` | publish | Motion score and changed area in % |
+| `brightness` | publish | Average frame brightness |
+| `person` | publish | `ON` / `OFF` for a confident person detection |
+| `person_confidence` | publish | Confidence of that detection |
+| `person_uncertain` | publish | `{"detected":true,"confidence":0.xx}` for a low-confidence hit, so A12 can check it |
+| `status` | publish | JSON: `rssi`, `heap_kb`, `psram_kb`, `uptime_s`, `ip` |
+| `recording_state` | publish | `ON` / `OFF` (retained) |
+| `person_detection_state` | publish | `ON` / `OFF` (retained) |
+| `cmd/snapshot` | subscribe | Take a snapshot |
+| `cmd/recording` | subscribe | `ON` / `OFF` |
+| `cmd/person_detection` | subscribe | `ON` / `OFF` |
+
+**A12** publishes under `esp32_camera/` (change it with `MQTT_BASE_TOPIC`):
 
 | Topic | Direction | Description |
 |-------|-----------|-------------|
 | `motion` | publish | `ON` / `OFF` motion state |
-| `person` | publish | `ON` / `OFF` person detected (after temporal filter + tracker) |
+| `person` | publish | `ON` / `OFF` person detected |
+| `face` | publish | Face recognition result (name or `unknown`) |
 | `audio/alert` | publish | Loud noise trigger |
-| `ir/status` | publish | IR LED state JSON |
+| `audio/status` | publish | Camera audio status JSON, relayed |
+| `ir/status` | publish | IR LED state JSON, relayed |
 | `rssi` | publish | WiFi signal strength |
-| `face` | publish | Face recognition result (if A12 enabled) |
-| `camera/status/heartbeat` | publish | 5 s heartbeat (`ON`) |
-| `camera/status/sabotage` | publish | `ON` if stream lost > 30 s |
+| `status` | publish | `offline` (last will and on shutdown) |
+| `camera/status/heartbeat` | publish | `ON` every 5 s |
+| `camera/status/sabotage` | publish | `ON` when no frame has arrived for `security.sabotage_timeout` (default 90 s), `OFF` when it recovers |
 | `camera/status/connection` | publish | `online` / `offline` |
 | `camera/status/profile` | publish | `DAY` / `DUSK` / `NIGHT` |
+| `camera/status/pipeline_state`, `stream_fps`, `decode_fps_target`, `frame_buffer_len`, `notification_queue`, `mem_mb`, `mem_pct` | publish | Pipeline and resource metrics |
 | `camera/detection/classification` | publish | `CONFIRMED_ALARM` / `UNCONFIRMED_CAMERA` / `MONITOR_MODE` / `TEST_MODE` |
 | `camera/detection/priority` | publish | `critical` / `normal` / `low` / `debug` |
 | `camera/detection/sensor_confirmed` | publish | `true` / `false` (Zigbee fusion) |
+| `camera/detection/score` | publish | Event score |
 | `camera/detection/animal` | publish | Animal class name |
-| `camera/alarm/trigger` | publish | Alarm fired |
+| `camera/alarm/trigger` | publish | `ON` when an alarm fires |
 | `camera/config/status/mode` | publish | Current security mode |
+| `camera/config/status/last_update` | publish | Time of the last config change over MQTT |
 | `ir/set` | subscribe | Manual IR LED control |
 | `ir/auto/set` | subscribe | IR auto mode toggle |
-| `camera/config/set/#` | subscribe | Runtime config updates from HA |
-| `zigbee2mqtt/+` | subscribe | External Zigbee sensors for fusion |
+| `camera/config/set/#` | subscribe | Runtime config updates from HA (no prefix) |
+| `zigbee2mqtt/+` | subscribe | External Zigbee sensors for fusion (no prefix) |
+| `esp32cam/<device>/motion`, `esp32cam/<device>/person_uncertain` | subscribe | The firmware signals above |
 
 ---
 
@@ -745,146 +774,154 @@ Prefix: `esp32_camera/`
 
 ```
 firmware/
- +-- main.cpp                       Entry point, WiFi, OTA, Telegram queue, loop
- +-- camera_server.cpp              HTTP servers (port 80/81/82), 30+ endpoints, settings, OTA
- +-- camera_capture.cpp             Capture task, lock-free ring buffer, profile pending writes
+ +-- main.cpp                       Entry point, WiFi, ArduinoOTA, NVS credentials, Telegram queue, loop
+ +-- camera_server.cpp              HTTP servers (ports 80/81/82), endpoints, settings, OTA upload
+ +-- camera_capture.cpp             Capture, motion and person tasks; ring buffer; pending sensor writes
  +-- camera_capture.h               Ring buffer protocol, FRAME_BUFFER_SLOT_SIZE
- +-- motion_detection.cpp           Block-based motion + EMA background + clustering + night mode
- +-- motion_detection.h             Motion config constants, MOTION_GRID_W/H, ROI mask
- +-- person_detection.cpp           Edge Impulse FOMO inference, histogram norm, temporal filter
+ +-- motion_detection.cpp           Block-based motion, EMA background, clustering, night mode
+ +-- motion_detection.h             Motion constants, MOTION_GRID_W/H, ROI mask
+ +-- person_detection.cpp           Edge Impulse FOMO inference, histogram normalisation, temporal filter
  +-- person_detection.h             FOMO config, PD_TEMPORAL_FRAMES
- +-- tracker.cpp                    ByteTrack-style Kalman tracker (NEW v3.11)
- +-- tracker.h                      Track lifecycle, persistent IDs
- +-- ir_handler.cpp                 LTR-308 lux + IR LED auto/manual + day/night profiles
- +-- audio_handler.cpp              I2S PDM microphone + audio.wav streaming
- +-- avi_writer.cpp                 RIFF/AVI 1.0 MJPEG + PCM16 interleaved muxer
- +-- mqtt_handler.cpp               MQTT client + Home Assistant discovery
- +-- ws_log.cpp                     Live log ring buffer + /log + /log-viewer endpoints (NEW v3.11)
- +-- timelapse.cpp                  Periodic JPEG snapshots, per-day SD folders (NEW v3.11)
- +-- health_monitor.cpp             Heartbeat, sabotage watchdog, system stats
+ +-- tracker.cpp / tracker.h        Simplified ByteTrack-style tracker, persistent track IDs
+ +-- ir_handler.cpp                 LTR-308 lux, IR LED auto/manual, day/night profiles
+ +-- audio_handler.cpp              I2S PDM microphone, /audio.wav streaming
+ +-- avi_writer.cpp                 AVI 1.0 muxer, MJPEG video + interleaved PCM16
+ +-- mqtt_handler.cpp               MQTT client, Home Assistant discovery
+ +-- ws_log.cpp                     Live log ring buffer, /log and /log-viewer
+ +-- sd_logger.cpp                  Optional SD debug-log sessions, /sd-log
+ +-- event_log.cpp                  Event ring buffer behind /events
+ +-- zone_manager.cpp               Named zones behind /zones
+ +-- timelapse.cpp                  Periodic JPEG snapshots in per-day SD folders
  +-- config.h                       Compile-time toggles, struct definitions
- +-- credentials.h                  NVS credential management
- +-- platformio.ini                 Build environment (ESP32-S3 16MB Flash 8MB PSRAM)
- +-- partitions.csv                 Custom partition table
- +-- MIGRATION_ESP_DL.md            Future migration plan (FOMO -> ESP-DL YOLOv11n)
+ +-- board_config.h, camera_pins.h  DFR1154 pin map
+ +-- task_priorities.h              FreeRTOS priority levels
+ +-- platformio.ini                 Build environment (ESP32-S3, 16 MB flash, 8 MB PSRAM)
+ +-- partitions.csv                 Partition table
+ +-- MIGRATION_ESP_DL.md            Possible future move from FOMO to ESP-DL YOLOv11n
  +-- lib/
-      +-- ei-person-detection-fomo/  Edge Impulse FOMO model + SDK (~280 KB)
+      +-- ei-person-detection-fomo/  Edge Impulse FOMO model and SDK
       +-- ESP32-RTSPServer/          RTSP server library (local copy)
 
 a12_system/
- +-- __main__.py             Application entry point (python -m a12_system)
- +-- camera.py               ESP32 MJPEG stream handler with reconnect
- +-- detection.py            YOLOv11n ONNX inference + face recognition
- +-- pipeline.py             Detection pipeline (motion -> YOLO cascade)
+ +-- __main__.py             Entry point (python -m a12_system)
+ +-- camera.py               MJPEG stream reader with reconnect
+ +-- detection.py            YOLO ONNX inference and face recognition
+ +-- pipeline.py             Detection pipeline (motion -> YOLO cascade -> faces)
+ +-- scorer_client.py        Client for a shared YOLO scoring service
+ +-- face_*.py               Face backend (YuNet + SFace), quality, liveness, confirmation window
+ +-- door_unlock.py          Decides whether a face verdict may open the door
+ +-- presence_gate.py        Optional Home Assistant presence check for unlocking
+ +-- nuki_log.py             Reads the lock's activity log
  +-- mqtt_client.py          MQTT v2 client with HA discovery
- +-- notifier.py             Telegram + GIF/MP4 creation
+ +-- notifier.py             Telegram messages, GIF/MP4 clips
+ +-- telegram_bot.py         Interactive Telegram bot
+ +-- messages.py             Message catalogue (English source, Czech translation)
+ +-- status_monitor.py       Heartbeat, sabotage detection, day/night profiles
  +-- ha_monitor.py           Home Assistant sensor polling for fusion
  +-- audio_monitor.py        Audio level threshold detection
- +-- database.py             SQLite event logging with indexes
+ +-- database.py             SQLite event log
  +-- stats.py                Persistent statistics
- +-- runtime_config.py       Thread-safe RuntimeConfig with MQTT updates
- +-- logging_setup.py        Colored console + rotating file handlers
- +-- config.py               Configuration loading (DEFAULT_CONFIG + ENV overrides)
+ +-- runtime_config.py       Thread-safe runtime config with MQTT updates
+ +-- logging_setup.py        Console and rotating file logs
+ +-- config.py               Config loading (DEFAULT_CONFIG + env overrides)
  +-- config.env.example      Configuration template
- +-- test_*.py               28 test modules, 379 tests
- +-- requirements.txt        Python dependencies (paho-mqtt v2, opencv, telebot)
+ +-- test_*.py               44 test modules
+ +-- requirements.txt        Python dependencies (paho-mqtt v2, OpenCV, pyTelegramBotAPI)
  +-- tools/
-      +-- a12                CLI wrapper (status, logs, restart, build, up, down, events, tail, enroll)
-      +-- enroll_sface.py    Face enrollment (SFace gallery + whitelist)
+      +-- a12                CLI wrapper (status, logs, restart, build, up, down, doctor,
+                             test-camera, config, setup, events, calibrate, review, tail, enroll)
+      +-- enroll_sface.py    Face enrolment (SFace gallery + whitelist)
       +-- setup.sh           First-run data directory setup
 
 firmware/web/
- +-- index_src.html          Dashboard source (cz/en table, 36 keys each)
- +-- settings_src.html       Settings page source (cz/en table, 57 keys each)
-                             Embedded into camera_server.cpp as gzip arrays by
-                             tools/build_web_assets.py; CI runs --check so the
-                             compiled page cannot drift from the source.
+ +-- index_src.html          Dashboard source (cz/en strings)
+ +-- settings_src.html       Settings page source (cz/en strings)
+                             tools/build_web_assets.py embeds both into
+                             camera_server.cpp as gzip arrays; CI runs it with
+                             --check so the compiled page matches the source.
 
 tools/
  +-- build_web_assets.py     Embed firmware/web/ into the firmware, or --check it
  +-- scan_ui_secrets.py      Reject real values posing as examples in the UI
  +-- pre_push_checks.sh      Project pre-push checks, chained from the global hook
- +-- serial_telemetry.py     Serial -> SQLite logger (37 regex patterns, 9 tables, WAL mode)
- +-- esp_monitor.py          HTTP health check + alerting
- +-- telegram_download.py    HTTP photo collector from /frame
+ +-- serial_telemetry.py     Serial log -> SQLite
+ +-- esp_monitor.py          HTTP health check and alerting
+ +-- telegram_download.py    Photo collector using /frame
  +-- telegram_monitor.py     Telegram message log
- +-- brightness_test.py      Automated brightness analysis tool
+ +-- brightness_test.py      Brightness analysis
  +-- stress_test.py          Load testing
- +-- serial_watch.sh         Persistent USB console capture, reopens across panics
+ +-- serial_watch.sh         USB console capture that reopens after a panic
  +-- soak_sample.sh          One CSV row per minute: camera health + A12 counters
 ```
 
 ### Data Flow
 
-```
-                                 +------------------+
-   ESP32 frame   -->  ring buf -->  motionTask     | --> motion event (~10 ms)
-                                 +------------------+
-                                          |
-                                          v (notify FreeRTOS task)
-                                 +------------------+
-                                 | personDetectTask | --> FOMO inference (~300-500 ms)
-                                 +------------------+
-                                          |
-                                          v (centroids)
-                                 +------------------+
-                                 | objectTracker    | --> persistent IDs
-                                 +------------------+
-                                          |
-                                          v (confirmed unnotified track)
-                                 +------------------+
-                                 | recordingTask    | --> AVI on SD
-                                 +------------------+
+The ring buffer has 3 slots of 256 KB in PSRAM. `captureTask` copies each JPEG into a free slot and hands it to RTSP. Readers take a reference on a slot, copy the frame out and release it straight away, so slow work never holds a slot.
 
-                                 +------------------+
-                                 | Telegram queue   | --> Bot API (TLS)
-                                 +------------------+
-
-                                 +------------------+
-                                 | MQTT publish     | --> Broker --> HA
-                                 +------------------+
 ```
+ captureTask (core 1, prio 10, ~30 FPS)
+    |-- RTSP frame
+    |-- copy into ring buffer (3 x 256 KB, PSRAM)
+    |-- apply pending sensor settings, every 150 frames read lux / IR / profile
+    v  task notify
+ motionTask (core 0, prio 2)
+    |-- copies frame out, block motion detection
+    |-- starts/stops SD auto-recording if sd_auto_record is on
+    v  task notify on motion (in active hours, person detection enabled)
+ personDetectionTask (core 0, prio 3)
+    |-- copies frame out, FOMO inference (~300-500 ms)
+    |-- tracker update, dedup by track ID + cooldown
+    |-- confident: MQTT person + Telegram photo queue
+    '-- uncertain: MQTT person_uncertain for A12 (Telegram if MQTT is down)
+
+ Recording task  (core 1, prio 1)  copies frames out, writes AVI + PCM to SD
+ Telegram task   (core 0, prio 3)  sends queued messages to the Bot API over TLS
+ Timelapse task  (core 0, prio 1)  periodic JPEG snapshots
+ MJPEG / HTTP handlers             read the ring buffer the same way
+```
+
+Stack sizes: capture, motion and person detection 8 KB each, recording 6 KB, Telegram 32 KB, timelapse 4 KB.
 
 ---
 
 ## Camera & Sensor Quirks
 
 > [!WARNING]
-> The OV3660 sensor has several behaviors that are not documented in the standard `sensor_t` API. Working around them required several iterations.
+> The OV3660 has several behaviours that the `sensor_t` API does not document. Each workaround below took a few tries.
 
 ### SCCB Bus Contention
 
-**The problem:** The OV3660 uses an I2C-like serial bus (SCCB) for register access. The `esp32-camera` driver holds this bus during every frame capture (~33 ms at 30 FPS). Any `set_reg()` or `get_reg()` call from another task **silently fails** and returns `0xFF` because `captureTask` is holding the bus.
+The OV3660 registers are accessed over SCCB, an I2C-like bus. The `esp32-camera` driver uses that bus during capture. In my testing, `set_reg()` or `get_reg()` calls from other tasks while `captureTask` was capturing failed silently: reads came back as `0xFF` and writes did not stick.
 
-**Symptoms:**
-- HTTP POST `/settings` returns 200 OK but settings don't take effect
-- Log shows "register write failed" or values revert
-- Reading current register state returns `0xFF` for everything
+What it looked like:
+- `POST /settings` returned 200 OK but nothing changed
+- Values reverted, or the log showed failed register writes
+- Register reads returned `0xFF` across the board
 
-**Workaround:** A `pendingSensorAction` flag mechanism in `captureTask`:
-1. HTTP handler sets the flag with intended changes
-2. `captureTask` reads the flag after `fb_return()` (when SCCB is free)
-3. Settings are applied within the same task that owns the SCCB
+The workaround is a pending-write mechanism in `captureTask`:
+1. The HTTP handler stores the new values in `pendingSensorValues` and sets `pendingSensorAction`.
+2. After `esp_camera_fb_return()`, when the bus is free, `captureTask` calls `applyPendingSensorSettings()`.
+3. The writes happen in the task that owns the bus.
 
-This means runtime settings changes have a **latency of one frame** (~33 ms), but they actually work.
+A settings change therefore takes effect about one frame later.
 
 ### LTR-308 I2C Bus Sharing
 
-**The problem:** The LTR-308 ambient light sensor and the OV3660 SCCB share GPIO 8/9. Direct LTR-308 reads from a separate task were stuck on bus contention.
+The LTR-308 ambient light sensor sits on the same GPIO 8/9 as the camera's SCCB. Reading it from a separate task ran into the same contention.
 
-**Workaround:** Lux is read from `captureTask` (after `fb_return()`) every 100 ms. The cached value is exposed to other tasks via a non-blocking getter.
+Lux is now read from `captureTask` after `esp_camera_fb_return()`, every 150 frames (about every 5 s at 30 FPS). Other tasks get the cached value through a non-blocking getter.
 
 ### OV3660 Cannot Upscale
 
-**The problem:** The OV3660 can downscale at runtime, but cannot upscale. If you initialize at VGA, you cannot switch to UXGA later — the sensor returns garbage frames or fails entirely.
+The driver allocates its frame buffers for the resolution used at init. You can switch to a smaller frame size at runtime but not to a larger one, so a camera initialised at VGA cannot later move to UXGA.
 
-**Workaround:** Always initialize at the highest resolution you might want (UXGA 1600 × 1200), then downscale at runtime if needed. Memory penalty: 256 KB ring buffer slots instead of 64 KB, but the OV3660's 3 MP sensor fully utilizes UXGA.
+The firmware therefore always initialises at UXGA (1600 × 1200) when PSRAM is present and then sets the configured frame size. The cost is 256 KB ring buffer slots instead of 64 KB.
 
 ### ESP-NN — EON Export Incompatibility (resolved in v3.12.41)
 
-**The problem:** Edge Impulse FOMO with `ESP_NN=1` causes heap corruption or WDT reset on DFR1154 when the model is exported using the **EON Compiler** (`EI_CLASSIFIER_COMPILED=1`). All three fix attempts (static DRAM arena, PSRAM arena, enlarged arena) failed — root cause is the EON runtime, not the DRAM budget.
+With `ESP_NN=1`, an Edge Impulse FOMO model exported with the **EON Compiler** (`EI_CLASSIFIER_COMPILED=1`) caused heap corruption or a watchdog reset on the DFR1154. A static DRAM arena, a PSRAM arena and a larger arena all failed the same way, which points at the EON runtime rather than the memory budget.
 
-**Resolution:** Export the model from Edge Impulse Studio as **TFLite Micro** (uncheck EON Compiler in Deployment). The standard TFLite Micro interpreter works correctly with `ESP_NN=1` on ESP32-S3. Inference drops from ~3500 ms to ~300–500 ms.
+The fix is to export the model as **TFLite Micro** (untick EON Compiler under Deployment in Edge Impulse Studio). The standard TFLite Micro interpreter works with `ESP_NN=1` on the ESP32-S3, and inference dropped from about 3500 ms to 300–500 ms.
 
 ```ini
 ; platformio.ini — only valid with TFLite Micro export (EI_CLASSIFIER_COMPILED=0)
@@ -893,165 +930,159 @@ build_flags =
 ```
 
 > [!WARNING]
-> If you re-export your EI model and accidentally pick the EON Compiler option, you will get `CORRUPT HEAP` or `TG1WDT_SYS_RST` on first inference. Revert to TFLite Micro export and reflash.
+> If you re-export the model and pick the EON Compiler by mistake, the first inference ends in `CORRUPT HEAP` or `TG1WDT_SYS_RST`. Export as TFLite Micro again and reflash.
 
 ### Camera Init Pixel Correction
 
-**The problem:** Some OV3660 modules ship with stuck pixels visible as bright dots in dark frames. The default BPC/WPC settings don't catch all of them.
+Some OV3660 modules have stuck pixels that show up as bright dots in dark frames, and the default BPC/WPC settings miss some of them.
 
-**Workaround:** Init-time register writes enable BPC/WPC auto-adaptation (`0x5025`), SDE (Special Digital Effects, `0x5001`), and confirm LENC/GMA are active (`0x5000`). They run only when the fitted sensor is an OV3660; the AEC zone weights (`0x5688`–`0x568F`) run on OV3660 and OV5640, which share that register map. These features are not exposed in the `sensor_t` API.
+At init the firmware writes registers that `sensor_t` does not expose. On an OV3660 only, it enables BPC/WPC auto-adaptation (`0x5025`), SDE (`0x5001`) and sets the ISP control register `0x5000` with LENC, gamma, BPC and WPC on; the OV5640 uses those bits for other blocks. The AEC zone weights (`0x5688`–`0x568F`) are written on both the OV3660 and the OV5640, which share that register map.
 
 > [!WARNING]
-> Register `0x5580` (2D noise reduction) **must not be written** on this OV3660 revision — writing `0x40` causes an inverted/negative image. The register is intentionally skipped in `initCamera()`.
+> Do not write register `0x5580` (2D noise reduction) on this OV3660 revision. Writing `0x40` there inverts the image. `initCamera()` skips it on purpose.
 
 ---
 
 ## Configuration
 
-Camera settings live in `config.json` on LittleFS. Credentials live in NVS (encrypted). Both can be edited via the web GUI or API.
+Settings live in `/config.json` on LittleFS. Credentials (WiFi, Telegram, HTTP auth, OTA, AP, MQTT user and password) live in NVS. NVS is not encrypted, so anyone with physical access to the flash can read them. Both can be changed from the web GUI or over the API (`/settings` and `/credentials`).
+
+The defaults below are what a board gets on first boot, when no `config.json` exists yet. Out-of-range values in a loaded file are clamped to the listed range.
 
 ### Camera Settings
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `frame_size` | 13 (UXGA 1600×1200) | 0-13 | OV3660 frame size enum (downscale only at runtime) |
-| `jpeg_quality` | 12 | 5-63 | Lower = better quality, larger files |
-| `flip_vertical` | true | bool | |
-| `flip_horizontal` | true | bool | |
-| `lens_fov_deg` | 0 | 0-220 | Horizontal FOV of the fitted lens, entered by the owner (`0` = unknown). The sensor is detected; a lens is passive glass and is not. |
-| `brightness` | 3 | -3 to 3 | OV3660 driver range (wider than standard ±2) |
-| `contrast` | 1 | -2 to 2 | |
-| `saturation` | 0 | -2 to 2 | |
-| `sharpness` | 0 | -3 to 3 | |
-| `denoise` | 4 | 0 to 8 | |
-| `ae_level` | 5 | -5 to 5 | OV3660 driver range |
-| `gainceiling` | 128 | 0-128× | Auto gain ceiling |
-| `bpc` | true | bool | Bad pixel correction |
-| `wpc` | true | bool | White pixel correction |
-| `lenc` | true | bool | Lens correction (vignetting) |
+| `frame_size` | 13 (UXGA 1600×1200) | 0-13 | Frame size enum. The sensor is initialised at UXGA and only smaller sizes can be applied. Changing it reboots the camera. A firmware version change resets anything below UXGA back to UXGA. |
+| `jpeg_quality` | 12 | 5-63 | Lower means better quality and larger files. A firmware version change raises values below 12 to 12. |
+| `flip_vertical` | true | bool | Set over the API as `vflip` |
+| `flip_horizontal` | true | bool | Set over the API as `hmirror` |
+| `lens_fov_deg` | 0 | 0-220 | Horizontal FOV of the fitted lens, entered by the owner (`0` = unknown). The firmware detects the sensor but cannot detect the lens. |
+
+Sensor tuning (`brightness`, `contrast`, `saturation`, `sharpness`, `denoise`, `ae_level`, `gainceiling`, and so on) is not stored in `config.json`. Boot applies DUSK-profile values (brightness 3, contrast 1, saturation -1, sharpness 0, denoise 3, ae_level 5, gain ceiling 128×, BPC/WPC/LENC on), and the DAY/DUSK/NIGHT light profiles overwrite them whenever the profile changes. Values posted to `/settings` take effect immediately but last only until the next profile switch or reboot. The OV3660 driver accepts brightness -3..3 and ae_level -5..5, a wider range than the usual ±2.
 
 ### Detection Settings
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `motion_telegram_photo` | false | Send photo on motion |
-| `motion_telegram_video` | false | Send AVI clip on motion stop |
-| `motion_telegram_cooldown` | 30 s | Min interval between Telegram photos |
-| `motion_notify_start_hour` | 0 | Active hours start (0-23) |
-| `motion_notify_end_hour` | 23 | Active hours end (0-23, supports midnight wrap) |
-| `person_detection_enabled` | false | Cascade motion → AI → Telegram |
-| `person_telegram_photo` | true | Send Telegram photo on CONFIDENT / UNCERTAIN detection (independent of `motion_telegram_photo`) |
-| `person_confidence_threshold` | 0.6 | FOMO minimum confidence — detections below this are NONE (dropped) |
-| `person_confident_threshold` | 0.75 | FOMO upper threshold — ≥ 75% = CONFIDENT → direct Telegram or A12 MQTT |
-| `person_detection_cooldown` | 60 s | Min interval between AI-triggered photos |
-| `person_recheck_interval` | 12 s | How often to re-run AI while person is still present (same track) |
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| `motion_detection_enabled` | true | bool | Firmware motion detection |
+| `motion_telegram_photo` | false | bool | Send a photo on motion |
+| `motion_telegram_video` | false | bool | Send an AVI clip when motion stops |
+| `motion_telegram_cooldown` | 30 s | 5-3600 | Minimum interval between motion photos |
+| `motion_notify_start_hour` | 0 | 0-23 | Start of active hours |
+| `motion_notify_end_hour` | 23 | 0-23 | End of active hours; wrapping past midnight is supported |
+| `person_detection_enabled` | false | bool | Motion → on-device model → Telegram/A12 cascade |
+| `person_telegram_photo` | true | bool | Send a photo on a CONFIDENT or UNCERTAIN detection, independent of `motion_telegram_photo` |
+| `person_confidence_threshold` | 0.6 | 0.1-1.0 | Detections below this are NONE and are dropped |
+| `person_detection_cooldown` | 60 s | 5-600 | Minimum interval between AI-triggered photos |
+| `person_recheck_interval` | 12 s | 5-120 | How often the model re-runs while the same track is still present |
+
+The upper threshold (≥ 0.75 = CONFIDENT) is not a config key. It is the compile-time constant `PERSON_CONFIDENT_THRESHOLD` in `firmware/person_detection.h`.
 
 ### SD Recording & Time-lapse
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
 | `sd_auto_record` | false | bool | Start recording on motion |
-| `sd_auto_record_duration` | 30 s | 3-300 | Keep recording N seconds after last motion |
-| `sd_max_usage_percent` | 90 | 10-99 | Auto-delete oldest files above this % |
-| `sd_record_fps` | 10 | 1-30 | AVI recording frame rate |
-| `timelapse_enabled` | false | bool | Enable periodic JPEG capture |
+| `sd_auto_record_duration` | 30 s | 3-300 | Keep recording this long after the last motion |
+| `sd_max_usage_percent` | 90 | 10-99 | Delete the oldest files above this usage |
+| `sd_record_fps` | 10 | 1-30 | AVI frame rate |
+| `timelapse_enabled` | false | bool | Periodic JPEG capture |
 | `timelapse_interval_sec` | 60 | 5-3600 | Time-lapse interval |
+
+The default build does not start the recording or time-lapse tasks (see `LITE_MODE_NO_RUNTIME_TASKS` below), so these settings do nothing until that define is removed.
 
 ### MQTT
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `mqtt_enabled` | false | Enable MQTT client |
+| `mqtt_enabled` | false | Enable the MQTT client |
 | `mqtt_server` | (empty) | Broker IP or hostname |
 | `mqtt_port` | 1883 | 1-65535 |
-| `mqtt_user` | (NVS) | Stored in encrypted NVS |
-| `mqtt_pass` | (NVS) | Stored in encrypted NVS |
+| `mqtt_user` | (empty) | Stored in NVS, set via `/credentials` |
+| `mqtt_pass` | (empty) | Stored in NVS, set via `/credentials` |
 
 ---
 
 ## Compile-Time Feature Toggles
 
-Edit `firmware/config.h` and rebuild to disable features and save flash + RAM:
+Feature switches live in two places. `INCLUDE_TELEGRAM` is set in `firmware/platformio.ini` under `build_flags` (`-DINCLUDE_TELEGRAM`) so it applies to every translation unit. The rest are in `firmware/config.h`:
 
 ```cpp
-#define INCLUDE_TELEGRAM       // ~30 KB flash + Telegram queue + WiFiClientSecure
-#define INCLUDE_MQTT           // ~25 KB flash + PubSubClient
-#define INCLUDE_AUDIO          // ~15 KB flash + I2S buffer RAM
-#define INCLUDE_PERSON_DETECT  // ~280 KB flash + 384 KB PSRAM (FOMO model)
-#define INCLUDE_SD_RECORDING   // ~40 KB flash + AVI muxer
-#define INCLUDE_TIMELAPSE      // ~5 KB flash + 1 task
+#define INCLUDE_MQTT          // MQTT + Home Assistant discovery
+#define INCLUDE_AUDIO         // I2S/PDM microphone + audio streaming
+#define INCLUDE_PERSON_DETECT // On-device person detection (Edge Impulse model)
+#define INCLUDE_SD_RECORDING  // SD card AVI recording + auto-delete
+#define INCLUDE_TIMELAPSE     // Periodic JPEG snapshots to SD
 ```
 
-To disable a feature, comment out the `#define`:
+To drop a feature, comment out its `#define` (or remove `-DINCLUDE_TELEGRAM` from `build_flags`) and rebuild. The code is excluded by `#ifdef` guards. I build and run the default configuration. Other combinations are not tested regularly, so expect to fix a compile error now and then.
 
-```cpp
-// #define INCLUDE_TELEGRAM   // Disabled
+`config.h` also defines `LITE_MODE_NO_RUNTIME_TASKS`, which is on by default. It keeps the code compiled but skips starting the RTSP server, the SD recording task and the time-lapse task at boot. Audio is not affected. With it off, an overnight test dropped `min_free_heap` to about 13.5 KB and ended in a crash loop, so turning it off on a board that also runs Telegram is not recommended.
+
+`LAB_MODE` (default `false`) turns off HTTP Basic Auth on the mutable endpoints. Enable it only for bench work:
+
+```bash
+PLATFORMIO_BUILD_FLAGS="-DLAB_MODE=1" ~/.platformio/penv/bin/pio run --target upload
 ```
-
-The build system automatically excludes the corresponding code via `#ifdef` guards. Stub functions are provided for disabled Telegram so the rest of the code compiles unchanged.
-
-**Example:** A minimal build with motion detection only:
-```cpp
-// #define INCLUDE_TELEGRAM
-// #define INCLUDE_MQTT
-// #define INCLUDE_AUDIO
-// #define INCLUDE_PERSON_DETECT
-// #define INCLUDE_SD_RECORDING
-// #define INCLUDE_TIMELAPSE
-```
-Reduces flash usage by ~395 KB and PSRAM usage by ~400 KB.
 
 ---
 
 ## Known Issues & Limitations
 
 > [!NOTE]
-> `LAB_MODE false` is the default since v3.12.5 — HTTP Basic Auth is **on** out of the box. The default credentials are `admin / admin`. Change them immediately via Settings → Credentials before exposing the device to an untrusted network. Pass `-DLAB_MODE=1` at build time only for bench testing.
+> HTTP Basic Auth is on by default (`LAB_MODE false` since v3.12.5) with the credentials `admin / admin`. Change them under Settings → Credentials before the camera goes on a network you don't trust. `/health` reports `default_credentials: true` until you do.
 
 <details>
 <summary><strong>Hardware / Platform limitations (won't fix)</strong></summary>
 
-- **OV3660 cannot upscale at runtime** — only frame size *down*-changes work. The camera initializes at UXGA and resizes downward.
-- **SCCB bus contention** — runtime `set_reg`/`get_reg` calls fail because `captureTask` holds the bus. Workaround: pending-flag mechanism applies settings within `captureTask`.
-- **I2C bus shared with LTR-308** — light sensor and camera SCCB share GPIO 8/9. Lux reads scheduled from `captureTask` after each frame return.
-- **ESP-NN requires TFLite Micro export** — EON Compiler export (`EI_CLASSIFIER_COMPILED=1`) causes heap corruption with ESP-NN enabled. Resolved in v3.12.41 by switching to TFLite Micro export (`EI_CLASSIFIER_COMPILED=0`). See [ESP-NN quirks](#esp-nn--eon-export-incompatibility-resolved-in-v31241) for details.
-- **PDM mic limited to 16 kHz mono** — stereo or higher sample rates require external I2S MEMS mic on different GPIO.
-- **arduino-esp32 3.0.0 pinned** — newer cores (3.3.0+) have a regression with FOMO inference (`cam_hal: DMA overflow`).
+- **The OV3660 cannot upscale at runtime.** The camera initialises at UXGA and only smaller frame sizes can be applied.
+- **SCCB bus contention.** `set_reg`/`get_reg` calls from the HTTP handlers fail because `captureTask` holds the bus. Settings are queued with a pending flag and applied inside `captureTask`.
+- **The I2C bus is shared with the LTR-308.** The light sensor and the camera SCCB both use GPIO 8/9, so lux reads are scheduled from `captureTask` between frames.
+- **ESP-NN needs a TFLite Micro export.** The EON Compiler export (`EI_CLASSIFIER_COMPILED=1`) corrupted the heap with ESP-NN enabled. Since v3.12.41 the model is exported as TFLite Micro (`EI_CLASSIFIER_COMPILED=0`). See [ESP-NN quirks](#esp-nn--eon-export-incompatibility-resolved-in-v31241).
+- **The PDM mic is 16 kHz mono.** Stereo or a higher sample rate needs an external I2S MEMS mic on other GPIOs.
+- **arduino-esp32 is pinned to 3.0.0.** Newer cores (3.3.0+) show `cam_hal: DMA overflow` with the inference workload.
 
 </details>
 
 <details>
 <summary><strong>Software limitations</strong></summary>
 
-- **`LAB_MODE`** — defaults to `false` (HTTP Basic Auth required, credentials `admin / admin`). Pass `-DLAB_MODE=1` at build time to bypass auth on mutable endpoints for bench testing.
-- **No HTTPS** — all HTTP endpoints are plain. Telegram uses TLS via `WiFiClientSecure.setInsecure()` (skips cert validation to fit ESP32-S3 heap).
-- **FOMO 64×64 false positives** — small objects are inherently noisy. Mitigated by temporal filter (2+ consecutive frames) + ByteTrack tracker (2+ hits before confirming a track). Future: lux-gate (skip FOMO in low light) + ESP-DL YOLOv11n (see `firmware/MIGRATION_ESP_DL.md`).
-- **AVI auto-stop** — recording stops at 45 MB or 120 s. No segmented recording yet (planned).
-- **MQTT min heap** — connection requires ~25 KB free heap; under heavy load, MQTT may disconnect.
-- **NTP required** for time-lapse and SD per-day folders — no internet = no per-day organization.
-- **Web UI ships as a gzipped PROGMEM array** — edit `firmware/web/*.html`, re-embed with `tools/build_web_assets.py`, then rebuild. Editing the array in `camera_server.cpp` directly is not a thing you can do.
-- **No multi-camera coordination** — each camera is independent (planned).
+- **RTSP, SD recording and time-lapse are off in the default build** because of `LITE_MODE_NO_RUNTIME_TASKS` (see above). The A12 pipeline uses `/frame` and `/detection-stream` over HTTP and does not need them.
+- **The ESP32 does not poll Telegram for commands.** `getUpdates` polling was disabled because every TLS session left a heap fragment and after about an hour sends started failing. The camera only sends. Bot commands are handled by A12 (`telegram_bot.py`).
+- **No HTTPS.** All HTTP endpoints are plain. Telegram uses TLS through `WiFiClientSecure.setInsecure()`, which skips certificate validation, so a MITM on the LAN is possible.
+- **Credentials in NVS are not encrypted.**
+- **No OTA rollback.** There is no automatic fallback to the previous image if a new one fails to boot. Keep a USB cable within reach when flashing over the air.
+- **Small-object false positives.** The model runs on a 64×64 input, so small or distant objects are noisy. The temporal filter (2 consecutive frames) and the tracker (2 hits before a track is confirmed) catch most of them, not all. `firmware/MIGRATION_ESP_DL.md` describes a possible move to ESP-DL.
+- **AVI recording stops at 45 MB or 120 s.** There is no segmented recording.
+- **MQTT backs off under memory pressure.** Reconnects are deferred while free heap is below 60 KB.
+- **Low heap restarts the board.** Free heap below 30 KB for 15 s forces a restart. Below 50 KB for 60 s triggers a planned restart, limited to two per hour and not within 10 minutes of boot. The reason appears in `/health` as `last_restart_reason_name` and in the event log.
+- **Time-lapse and per-day SD folders need NTP.** Without internet access there is no per-day organisation.
+- **The web UI ships as a gzipped PROGMEM array** in `camera_server.cpp`. Edit `firmware/web/*_src.html`, regenerate the arrays with `tools/build_web_assets.py`, then rebuild. Editing the array by hand does not work.
+- **No multi-camera coordination.** Each camera runs on its own.
 
 </details>
 
 <details>
 <summary><strong>Compared to alternatives</strong></summary>
 
+The columns for the other projects are based on their READMEs when I wrote this and may be out of date.
+
 | Aspect | This project | s60sc/ESP32-CAM_MJPEG2SD | ESPHome Camera | jameszah/ESP32-CAM-Video-Recorder |
 |--------|:------------|:-------------------------|:---------------|:----------------------------------|
 | Lock-free ring buffer | :white_check_mark: CAS protocol | :x: Mutex-based | :x: | :x: |
-| On-device person detection | :white_check_mark: FOMO + tracker | :x: | :x: | :x: |
+| On-device person detection | :white_check_mark: Edge Impulse model + tracker | :x: | :x: | :x: |
 | Day/Night/Dusk profiles | :white_check_mark: 3-level + LTR-308 | :warning: 2-level | :x: | :x: |
 | MQTT HA discovery | :white_check_mark: Auto | :warning: Manual config | :white_check_mark: | :x: |
-| RTSP server | :white_check_mark: | :white_check_mark: | :x: | :x: |
-| AVI recording with audio | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: |
-| Time-lapse | :white_check_mark: Per-day folders | :white_check_mark: | :x: | :x: |
+| RTSP server | :warning: Off in the default build | :white_check_mark: | :x: | :x: |
+| AVI recording with audio | :warning: Off in the default build | :white_check_mark: | :x: | :white_check_mark: |
+| Time-lapse | :warning: Off in the default build | :white_check_mark: | :x: | :x: |
 | Live log viewer | :white_check_mark: HTML + auto-refresh | :white_check_mark: WebSocket | :x: | :x: |
-| FTP/WebDAV upload | :x: Planned | :white_check_mark: | :x: | :x: |
-| Intercom (2-way audio) | :x: Planned | :white_check_mark: | :x: | :x: |
+| FTP/WebDAV upload | :x: | :white_check_mark: | :x: | :x: |
+| Intercom (2-way audio) | :x: | :white_check_mark: | :x: | :x: |
 | Server-side cascade | :white_check_mark: Python A12 + YOLOv11 | :x: | :x: | :x: |
 | Compile-time toggles | :white_check_mark: 6 features | :white_check_mark: | :x: | :x: |
-| Free / open-source | :white_check_mark: MIT | :white_check_mark: GPL | :white_check_mark: MIT | :white_check_mark: MIT |
+| License | MIT | GPL | MIT | MIT |
 
 </details>
 
@@ -1062,25 +1093,23 @@ Reduces flash usage by ~395 KB and PSRAM usage by ~400 KB.
 <details>
 <summary><strong>Camera doesn't show up on the network after flashing</strong></summary>
 
-**Symptoms:** No IP shown in serial monitor, web dashboard unreachable.
+**Symptom:** no IP in the serial monitor, dashboard unreachable.
 
-**Causes & fixes:**
-1. **WiFi credentials missing** — connect to AP `ESP32-Camera-Setup` (password: `12345678`) from your phone, captive portal opens automatically
-2. **Wrong WiFi credentials** — same as above, re-enter via captive portal
-3. **5 GHz WiFi network** — ESP32-S3 supports 2.4 GHz only. Make sure your router has 2.4 GHz enabled.
-4. **AP isolation enabled on router** — disable client isolation in router settings
-5. **DHCP exhausted** — assign a static IP from your router's settings
+- **No or wrong WiFi credentials.** The camera falls back to an access point named `<device_name>_AP` (on a fresh board `ESP32-Camera-<chip id>_AP`), password `12345678` unless you set an AP password. Join it from a phone and the captive portal opens, or browse to `/setup`.
+- **5 GHz network.** The ESP32-S3 supports 2.4 GHz only.
+- **Client isolation on the router.** Turn it off for this network.
+- **The IP changed.** DHCP can hand out a different address after a reboot. Use `<device_name>.local` or a DHCP reservation.
 
 </details>
 
 <details>
 <summary><strong>Build fails with "DMA overflow" or memory errors</strong></summary>
 
-**Symptoms:** `cam_hal: DMA overflow` or `Guru Meditation Error` at boot.
+**Symptom:** `cam_hal: DMA overflow` or `Guru Meditation Error` at boot.
 
-**Cause:** ESP32 Arduino core 3.3.0+ has a regression with FOMO inference and DMA buffers. Some users on the [Edge Impulse forum](https://forum.edgeimpulse.com/t/14723) report this.
+**Cause:** arduino-esp32 3.3.0+ has a regression with the inference workload and DMA buffers, also reported on the [Edge Impulse forum](https://forum.edgeimpulse.com/t/14723).
 
-**Fix:** Pin `arduino-espressif32` to `3.0.0` in `platformio.ini` (already the default in this project):
+**Fix:** keep the core pinned to 3.0.0 in `platformio.ini`, which is the project default:
 ```ini
 platform_packages =
     framework-arduinoespressif32 @ https://github.com/espressif/arduino-esp32.git#3.0.0
@@ -1091,84 +1120,80 @@ platform_packages =
 <details>
 <summary><strong>Person detection has too many false positives at night</strong></summary>
 
-**Symptoms:** FOMO triggers on noise patches in dark frames, IR LED reflections, or moving shadows.
+**Symptom:** detections on noise in dark frames, IR LED reflections or moving shadows.
 
-**Cause:** Histogram normalization stretches dark frames into IR sensor noise; FOMO model trained on full-range images.
+**Cause:** stretching the histogram of a dark frame amplifies sensor noise, and the model was trained on full-range images.
 
-**Fix:** Already mitigated in v3.11:
-1. `normalizeContrast()` skips frames with range < 20 (true night)
-2. Temporal filter requires 2+ consecutive detected frames
-3. ByteTrack tracker requires 2+ hits before confirming a track
+**Already in place:** `normalizeContrast()` skips frames with a pixel range below 20, the temporal filter needs 2 consecutive positive frames, and the tracker needs 2 hits to confirm a track.
 
-If issues persist, increase `PD_TEMPORAL_FRAMES` from 2 to 3 in `person_detection.h` and rebuild. Or disable person detection at night via active hours.
+**Fix:** raise `PD_TEMPORAL_FRAMES` from 2 to 3 in `firmware/person_detection.h` and rebuild, or restrict notifications to daytime with `motion_notify_start_hour` / `motion_notify_end_hour`.
 
 </details>
 
 <details>
 <summary><strong>Telegram bot doesn't respond to commands</strong></summary>
 
-**Symptoms:** Bot doesn't reply to `/photo`, `/status`, etc.
+**Symptom:** no reply to `/photo`, `/status` and so on.
 
-**Causes & fixes:**
-1. **Token wrong or chat ID wrong** — POST new credentials via `/credentials` in the web GUI
-2. **Bot not added to chat** — for group chats, the bot must be a member; use [@userinfobot](https://t.me/userinfobot) to find your chat ID
-3. **`getUpdates` polling not running** — watch serial for `Telegram polling` log lines every 30 s
-4. **Network issue** — Telegram API requires outbound HTTPS (port 443)
+**Cause:** the firmware does not poll Telegram for commands (see Known Issues). Commands are answered by A12.
+
+**Fix:**
+- Run A12 with `TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set in `config.env`.
+- In a group chat, the bot must be a member. [@userinfobot](https://t.me/userinfobot) shows your chat ID.
+- If the camera's own notifications don't arrive either, check the token and chat ID with `GET /credentials` (`telegram_token_set`, `telegram_chat_id`) and fix them with `POST /credentials`. The camera needs outbound HTTPS (port 443).
 
 </details>
 
 <details>
 <summary><strong>SD card recording fails to start</strong></summary>
 
-**Symptoms:** `/record` returns 500, serial shows `SD Card Mount Failed`.
+**Symptom:** `/record` answers `"No SD card"` or `"Failed to start recording"`, serial shows `SD Card Mount Failed`.
 
-**Causes & fixes:**
-1. **SD card not detected** — check wiring, try a different card slot
-2. **Card too slow** — use Class 10 or U1+ minimum (recording at 10 FPS UXGA needs ~3 MB/s sustained writes)
-3. **Filesystem corrupt** — reformat as FAT32 (NOT exFAT — ESP32 SD library doesn't support it)
-4. **SPI frequency too high** — try lowering from 4 MHz to 1 MHz in `camera_server.cpp` `startCameraServer()` for marginal cards
+- **Card not detected.** Reseat it or try another card. The firmware already retries the mount at 1 MHz when 4 MHz fails.
+- **Wrong filesystem.** Format as FAT32. The ESP32 SD library does not read exFAT.
+- **Card too slow.** Use Class 10 / U1 or better.
+- **Recording starts but nothing is written.** The default build does not run the recording task. See `LITE_MODE_NO_RUNTIME_TASKS`.
 
 </details>
 
 <details>
 <summary><strong>MQTT not connecting / no Home Assistant entities</strong></summary>
 
-**Causes & fixes:**
-1. **MQTT server IP wrong** — check `/credentials` GET (with HTTP auth) — if `mqtt_server` is empty, POST new credentials
-2. **MQTT broker not running** — verify with `mosquitto_sub -h <broker> -t '#'` from another machine
-3. **Wrong MQTT credentials** — check broker logs for failed auth attempts
-4. **HA discovery prefix wrong** — default is `homeassistant`, must match HA's `mqtt:` config
-5. **Free heap too low** — MQTT publish needs ~20 KB. Check `/health` for `min_heap` field.
+- **Broker address wrong or empty.** `GET /settings` shows `mqtt_enabled` and `mqtt_server`; set them with `POST /settings`. `/status` reports `mqtt_connected`, `mqtt_state` and the failure count.
+- **Broker not running.** Check with `mosquitto_sub -h <broker> -t '#'` from another machine.
+- **Wrong MQTT credentials.** Look for failed auth in the broker log. `GET /credentials` shows whether a password is set.
+- **Discovery prefix mismatch.** The firmware publishes under `homeassistant/`, which must match the discovery prefix in Home Assistant.
+- **Low heap.** Reconnects are skipped while free heap is below 60 KB. Check `free_heap` in `/health`.
 
 </details>
 
 <details>
 <summary><strong>Camera restarts every 30-200 seconds</strong></summary>
 
-**Symptoms:** Sabotage alarm fires repeatedly, web dashboard reconnects every few minutes.
+**Symptom:** the dashboard keeps reconnecting, A12 reports the stream as lost.
 
-**Causes & fixes:**
-1. **Power supply too weak** — 5V 1A minimum required, IR LED + WiFi can spike higher
-2. **WiFi RSSI too weak** — check `/status` for `wifi_rssi`. Below -85 dBm = unstable.
-3. **Heap fragmentation** — check `/health` for `min_heap`. Below 30 KB = OOM imminent.
-4. **WDT timeout** — increase WDT timeout in `main.cpp` if a long-running task triggers it
-5. **Sabotage timeout too tight** — increase `security.sabotage_timeout` in config (default 30 s)
+Start with `/health`: `last_restart_reason_name`, `power_restarts_brownout`, `restarts_1h` and `power_health`.
+
+- **Brownout or power-on resets.** The supply is too weak or the cable drops voltage. Use at least 5 V 1 A. The IR LED and WiFi transmit peaks draw more.
+- **`heap_low_planned` or `heap_critical`.** The heap guard restarted the board (see Known Issues). Look at `free_heap` and `max_alloc_heap` in `/status` to see what is eating memory.
+- **Task watchdog.** The WDT timeout is 60 s (`main.cpp`, `esp_task_wdt_init`). A WDT reset means a task hung, and the panic output is only readable over USB serial.
+- **Weak WiFi.** `wifi_rssi` in `/status` or `/health`. Below about -85 dBm the link is unreliable.
+- **A12 sabotage alarm, no actual restart.** The camera is up but A12 flags stream loss. Raise `security.sabotage_timeout` in A12's `config.json` (default 90 s). Sabotage detection is only on in SECURITY mode.
 
 </details>
 
 <details>
 <summary><strong>Factory reset</strong></summary>
 
-To clear all NVS credentials and config:
+Erase the whole flash, which clears NVS credentials and `config.json`, then flash again:
 
 ```bash
+cd firmware
 ~/.platformio/penv/bin/pio run --target erase
 ~/.platformio/penv/bin/pio run --target upload
 ```
 
-Or via the web GUI: `/credentials` POST with empty fields. Then reboot.
-
-The device will enter AP mode for fresh configuration.
+The board then boots into AP mode for fresh setup.
 
 </details>
 
@@ -1176,10 +1201,12 @@ The device will enter AP mode for fresh configuration.
 
 ## A12 CLI
 
-The `a12_system/tools/a12` wrapper is the local entry point for A12 Docker operation:
-`setup`, `doctor`, `build`, `up`, `logs`, `restart`, `events`, `tail`, and `enroll`.
+`a12_system/tools/a12` is a small shell wrapper around Docker Compose for running A12.
+The commands you will use most are `setup`, `doctor`, `build`, `up`, `logs`, `restart`
+and `down`. It also has `status`, `config`, `test-camera`, `events`, `tail`,
+`calibrate`, `review` and `enroll`; `a12 help` lists them all.
 
-The full command table and multi-instance examples live in
+The full command table and multi-instance examples are in
 [`docs/A12_COMPANION.md`](docs/A12_COMPANION.md#a12-cli) and
 [`a12_system/DOCKER.md`](a12_system/DOCKER.md).
 
@@ -1187,61 +1214,60 @@ The full command table and multi-instance examples live in
 
 ## Roadmap
 
+Everything above [Future Features](#future-features) has shipped. The working list is
+in [`TODO.md`](TODO.md).
+
 ### Detection Improvements (TIER 1 — done in v3.11)
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Temporal filter for person detection | :white_check_mark: Done | 2-frame confirmation, ~90% false-positive reduction |
-| Histogram clamp at true night | :white_check_mark: Done | Skip stretch when range < 20 to avoid IR noise amplification |
-| Night motion detection (relaxed) | :white_check_mark: Done | Stricter cluster + 2.5× trigger percentage instead of blanket suppress |
-| Background reset on light changes | :white_check_mark: Done | Current code resets the EMA after a brightness jump >40/255 |
-| LTR-308 sample rate 5× faster | :white_check_mark: Done | 100 ms vs 500 ms — faster sunset/headlight reactions |
+| Temporal filter for person detection | :white_check_mark: Done | A person is confirmed only after 2 consecutive positive frames |
+| Histogram clamp at true night | :white_check_mark: Done | The contrast stretch is skipped when the pixel range is below 20, so IR noise is not amplified |
+| Night motion detection (relaxed) | :white_check_mark: Done | A stricter cluster check and a 2.5× trigger percentage at night, instead of suppressing motion altogether |
+| Background reset on light changes | :white_check_mark: Done | The EMA background is reset after a brightness jump of more than 40/255 |
+| LTR-308 sample rate 5× faster | :white_check_mark: Done | 100 ms instead of 500 ms, so the profile reacts sooner to sunset or headlights |
 
 ### Detection Improvements (TIER 2/3 — done in v3.11)
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| MR²-ByteTrack Kalman tracker | :white_check_mark: Done | Persistent IDs (`tracker.cpp`), eliminates duplicate notifications, +1 KB SRAM |
-| OV3660 HDR + DPC + 2D denoise | :white_check_mark: Done | Init-time SCCB writes (LENC, BPC/WPC auto, SDE, 2D-NR) |
-| Motion detection detail | :white_check_mark: Done | The current pipeline uses an 80×60 working image and a 20×15 grid |
+| ByteTrack-style tracker | :white_check_mark: Done | Persistent track IDs (`tracker.cpp`) so one person does not trigger repeated notifications; about 1 KB of SRAM |
+| OV3660 HDR + DPC + 2D denoise | :white_check_mark: Done | SCCB register writes at init (LENC, BPC/WPC auto, SDE, 2D-NR) |
+| Motion detection detail | :white_check_mark: Done | Motion runs on an 80×60 working image with a 20×15 grid |
 
 ### Other Features (done in v3.11)
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Compile-time feature toggles | :white_check_mark: Done | INCLUDE_TELEGRAM/MQTT/AUDIO/PERSON_DETECT/SD_RECORDING/TIMELAPSE |
-| Live log viewer | :white_check_mark: Done | `/log` plain text + `/log-viewer` HTML auto-refresh |
-| Time-lapse mode | :white_check_mark: Done | Periodic JPEG to SD in per-day folders |
+| Compile-time feature toggles | :white_check_mark: Done | `INCLUDE_TELEGRAM`, `INCLUDE_MQTT`, `INCLUDE_AUDIO`, `INCLUDE_PERSON_DETECT`, `INCLUDE_SD_RECORDING`, `INCLUDE_TIMELAPSE` |
+| Live log viewer | :white_check_mark: Done | `/log` as plain text, `/log-viewer` as an auto-refreshing HTML page |
+| Time-lapse mode | :white_check_mark: Done | Periodic JPEGs to SD in per-day folders |
 | Per-day SD folders | :white_check_mark: Done | `/sdcard/YYYYMMDD/` for both AVI and time-lapse |
-| Web dashboard overhaul | :white_check_mark: Done | 10 info cards + 5 toggles + 13 tools, dark theme, CZ/EN toggle |
-| A12_System v2 (Python) | :white_check_mark: Done | Modular split (15 modules), paho-mqtt v2, thread safety, persistent DB |
+| Web dashboard overhaul | :white_check_mark: Done | Info cards, toggles and tools on one page, dark theme, CZ/EN switch |
+| A12_System v2 (Python) | :white_check_mark: Done | Split into modules, paho-mqtt v2, thread safety fixes, persistent event database |
 
 ### A12 Companion — Decision Auditing (done 2026-08)
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Decision audit + retention | :white_check_mark: Done | Every YOLO/policy decision stored with the thresholds that applied to it |
-| Learning-data retention | :white_check_mark: Done | `person/`, `candidates/` and `misses/` outlive the 2-day media sweep so old audit rows still have their images |
-| Candidate + miss snapshots | :white_check_mark: Done | Keeps the frame behind decisions that save no other media, including sensor-triggered "found nobody" |
-| Ground truth (`a12 review`) | :white_check_mark: Done | Human verdicts in `decision_labels`, never pruned; `a12 calibrate` reports precision per confidence band |
-| Scorer telemetry | :white_check_mark: Done | Transport / HTTP-status / malformed failures counted apart, latency p50/p95/max, no payloads or URLs retained |
+| Decision audit + retention | :white_check_mark: Done | Every YOLO/policy decision is stored with the thresholds that applied to it |
+| Learning-data retention | :white_check_mark: Done | `person/`, `candidates/` and `misses/` are kept past the 2-day media sweep, so old audit rows still have their images |
+| Candidate + miss snapshots | :white_check_mark: Done | Keeps the frame behind decisions that save no other media, including sensor triggers where nobody was found |
+| Ground truth (`a12 review`) | :white_check_mark: Done | Human verdicts go to `decision_labels` and are never pruned; `a12 calibrate` reports precision per confidence band |
+| Scorer telemetry | :white_check_mark: Done | Transport, HTTP-status and malformed-response failures are counted separately, with latency p50/p95/max; no payloads or URLs are kept |
+| Inference latency in `events.db` | :white_check_mark: Done | `decision_audit.inference_seconds` records how long the inference behind each decision took. `a12 review --stats` reports p50/p95/max per outcome |
 
 ### Future Features
 
+None of these has a date.
+
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Occupant-aware alerting | :bulb: Planned | Treat an **unrecognised** person as the alerting event rather than any person. In a household deployment nearly every person alert is an occupant, so alerting on "person" spends the whole notification budget on expected events. The whitelist suppression path already exists; running it by default does not. |
-| Known/unknown in ground truth | :bulb: Planned | Split the `person` verdict so labels feed occupant recognition, not only threshold tuning |
-| Inference latency in `events.db` | :white_check_mark: Done | `decision_audit.inference_seconds` records how long the inference behind each decision took, so a slow spell can be correlated with the decisions it produced. `a12 review --stats` reports p50/p95/max split by outcome |
-| ESP-DL YOLOv11n pedestrian | :warning: Attempted, blocked | PlatformIO `custom_component_add` is a no-op under `framework = arduino`. Needs hybrid `arduino, espidf`. See `firmware/MIGRATION_ESP_DL.md`. Effort: 5-8 days. |
-| Lux-gate for FOMO | :bulb: Planned | Skip FOMO inference when ambient lux is below threshold — camera already reads LTR-308 every frame. Reduces false positives at night without time-based active hours. |
-| Dedicated YOLO stream endpoint | :bulb: Planned | `/yolo-stream` serving SVGA/VGA MJPEG for A12, reducing A12 CPU decode overhead vs. full-res stream. |
-| FTP / WebDAV upload | :bulb: Planned | Auto-offload recordings to NAS |
-| Intercom (2-way audio) | :bulb: Planned | Browser → ESP speaker output |
-| Deep sleep + PIR wakeup | :bulb: Planned | Battery / solar deployment |
-| Bluetooth presence locator | :bulb: Planned | Separate ESP32 + BLE for arrival detection |
-| Multi-camera mesh | :bulb: Planned | Coordinate multiple cameras into building-wide zones via MQTT |
-| Segmented AVI recording | :bulb: Planned | Continuous recording with rotating segments |
+| Occupant-aware alerting | :bulb: Planned | Alert on an unrecognised person rather than on any person. At home nearly every person alert is someone who lives there. Face recognition and whitelist suppression exist in A12, but `FACE_RECOGNITION_ENABLED` is off by default and face sizes at typical distances are often too small to match. |
+| Known/unknown in ground truth | :bulb: Planned | `a12 review` labels only `person`, `not_person` and `unsure`. Splitting `person` into resident and stranger would let the labels feed recognition, not only threshold tuning. |
+| ESP-DL YOLOv11n pedestrian | :warning: Blocked | PlatformIO `custom_component_add` does nothing under `framework = arduino`; this needs a hybrid `arduino, espidf` build. See `firmware/MIGRATION_ESP_DL.md`. |
+| Lux-gate for FOMO | :bulb: Planned | Skip FOMO inference when ambient lux is below a threshold. The LTR-308 is already read every frame. Only useful if the sensor can see out of the enclosure. |
+| Dedicated YOLO stream endpoint | :bulb: Planned | A lower-resolution (SVGA/VGA) variant of `/detection-stream` so A12 spends less CPU on JPEG decoding. |
 
 ---
 
@@ -1250,62 +1276,95 @@ The full command table and multi-instance examples live in
 <details>
 <summary><strong>Do I need Home Assistant?</strong></summary>
 
-No. The camera works fully standalone with the web dashboard, RTSP server, and Telegram bot. Home Assistant adds remote control and nice dashboards via MQTT auto-discovery, but it's optional.
+No. The camera runs on its own with the web dashboard, the MJPEG stream and the Telegram
+bot. Home Assistant adds MQTT auto-discovery and remote control. A12 needs an MQTT
+broker, but any broker will do.
 
 </details>
 
 <details>
 <summary><strong>Can I use this with Frigate / BlueIris / Synology Surveillance Station?</strong></summary>
 
-Yes — point them at the RTSP URL: `rtsp://<device-ip>:554/mjpeg/1`. The camera streams MJPEG which is supported by all major NVR software. You can also use the MJPEG stream directly: `http://<device-ip>:81/stream`.
+Usually, yes. The simplest source is the MJPEG stream at `http://<device-ip>:81/stream`.
+
+The firmware also has an RTSP server (`rtsp://<device-ip>:554/mjpeg/1`), but the default
+build does not start it: `LITE_MODE_NO_RUNTIME_TASKS` in `firmware/config.h` skips RTSP,
+the recording task and time-lapse to leave enough heap for Telegram's TLS handshake.
+Comment that define out and rebuild if you need RTSP. Expect less free heap afterwards.
 
 </details>
 
 <details>
 <summary><strong>How accurate is the on-device person detection?</strong></summary>
 
-The Edge Impulse FOMO model is good at detecting **medium-sized people in well-lit scenes** (person occupies ~10-30% of frame). It's poor at:
-- Distant people (small targets)
-- Profile views or partial occlusions
-- Low-light scenes
-- Crowded scenes (FOMO is centroid-based, not bounding boxes)
+The Edge Impulse FOMO model works on a 64×64 grayscale input. It does best when a person
+is fairly large in a well-lit frame. It does poorly with:
 
-For higher accuracy, use the **server-side YOLOv11n cascade** in `a12_system/` which runs on a desktop / Raspberry Pi and processes the MJPEG stream.
+- distant people (small targets)
+- side views and partly hidden people
+- low light
+- groups (FOMO gives centroids, not bounding boxes)
+
+I have not measured its precision or recall. For better accuracy, run the YOLOv11n
+check in `a12_system/` on a machine on your LAN.
 
 </details>
 
 <details>
 <summary><strong>How much does it cost to run?</strong></summary>
 
-About **$45 one-time** for hardware (DFRobot board + SD card + power supply). **No subscriptions, no cloud fees, no recurring costs.** Power consumption is ~2W average (~0.5 kWh/month at 24/7 operation = ~$0.10/month).
+The hardware in the parts list comes to roughly $45 (board, SD card, power supply).
+There is no subscription or cloud service. A12 needs a machine that can run Docker.
+I have not measured power draw.
 
 </details>
 
 <details>
 <summary><strong>What happens when WiFi goes down?</strong></summary>
 
-The camera continues capturing locally and writing to SD if recording is enabled. MQTT publish silently fails until reconnect. Telegram messages also fail (no offline buffer for Telegram yet). When WiFi returns, the camera auto-reconnects (exponential backoff up to 60 s).
+- The firmware retries the connection with a backoff that starts at 10 s and grows to
+  60 s between attempts.
+- MQTT publishes fail until the link is back. The MQTT socket timeout is 2 s, so a dead
+  broker does not stall the main loop.
+- Telegram messages are dropped, not buffered: the send task discards a queued message
+  if WiFi is down when it gets to it.
+- Local SD recording does not need WiFi, but the recording task is off in the default
+  build (see the Frigate answer above).
 
 </details>
 
 <details>
 <summary><strong>Can I add multiple cameras?</strong></summary>
 
-Yes — flash the same firmware to multiple boards. Each identifies itself by MAC address and gets its own MQTT topic prefix (configurable). Multi-camera mesh coordination is on the roadmap.
+Yes. Flash the same firmware to each board. A board with no saved config gets the
+default name `ESP32-Camera-<chip id>`. That name is used for both the mDNS hostname and
+the MQTT topic prefix (`esp32cam/<device_name>`). A board that already has a
+`/config.json` without a `device_name` falls back to `ESP32-Camera`, and two boards with
+the same name collide on mDNS and on MQTT. Give each board its own `device_name`. See
+[Running Two Boards on One Network](docs/DFROBOT_HARDWARE_GUIDE.md#5-running-two-boards-on-one-network).
 
 </details>
 
 <details>
 <summary><strong>Does the camera work in complete darkness?</strong></summary>
 
-With the on-board IR LED, yes — at distances up to ~3 m. For longer range (5-10 m), add an external IR illuminator. The OV3660 sensor is sensitive to IR (no IR-cut filter), so you get a clear B&W night image. The camera profile auto-switches to NIGHT mode when lux < 5.
+The board has an IR LED. In auto mode it uses a 13 lux threshold with 20 % hysteresis:
+on below about 10 lux, off above about 16 lux. The firmware switches to the NIGHT
+profile below 15 lux. I have not measured how far the IR LED reaches.
+
+Two things to check in an enclosure: the IR LED needs its own opening, or it only lights
+the inside of the box, and the LTR-308 light sensor needs one too, or it reads near 0 lux
+all day and keeps the camera in NIGHT. The workaround for a blocked sensor is in
+[`docs/DFROBOT_HARDWARE_GUIDE.md`](docs/DFROBOT_HARDWARE_GUIDE.md).
 
 </details>
 
 <details>
 <summary><strong>Can I record 4K?</strong></summary>
 
-No — the OV3660 is a 3 MP (UXGA 1600×1200) sensor. For higher resolution, you'd need a different camera module (M5Stack CamS3 5MP with OV5640 is on the roadmap).
+No. The OV3660 is a 3 MP sensor and the firmware runs it at UXGA (1600×1200) by default.
+An OV5640 module (5 MP) also fits the board's connector and runs with the same firmware,
+but that is still nowhere near 4K, and the ESP32-S3 could not encode or store 4K anyway.
 
 </details>
 
@@ -1313,91 +1372,112 @@ No — the OV3660 is a 3 MP (UXGA 1600×1200) sensor. For higher resolution, you
 
 ## Real-World Deployment
 
-Running in production since November 2025. Multiple camera nodes in residential and workshop environments.
+I have run this at home since late 2025: one DFR1154 at the front entrance, with A12 in
+a container on a small server on the same LAN, plus a second DFR1154 as a bench unit.
+The numbers below come from that setup and from [CHANGELOG.md](CHANGELOG.md).
 
 ### Hardware Tested
 
 | Board | Sensor | Notes |
 |-------|--------|-------|
-| **DFRobot FireBeetle 2 ESP32-S3 (DFR1154)** | OV3660 3 MP | Production tested 6+ months — main reference platform |
-| DFR1154 with an OV5640 DVP module (65° lens) on the same flex | OV5640 5 MP | Runs unmodified on a bench board; `sensor` reports `OV5640`, OV3660-only tuning is skipped |
-| ESP32-S3 DevKit + OV2640 module | OV2640 2 MP | Works with reduced quality (OV3660 features missing) |
-| AI-Thinker ESP32-CAM | OV2640 | Older platform — requires custom pinout, no PSRAM_OPI |
+| DFRobot FireBeetle 2 ESP32-S3 (DFR1154) | OV3660 3 MP | The reference platform, in daily use since late 2025 |
+| DFR1154 with an OV5640 DVP module (65° lens) on the same flex | OV5640 5 MP | Runs unmodified on the bench board; `sensor` reports `OV5640` and the OV3660-only tuning is skipped |
+
+The firmware recognises an OV2640 but I have not tested one. Other ESP32-S3 boards need
+their own pin map in `firmware/board_config.h`; the classic ESP32 (AI-Thinker ESP32-CAM)
+is not supported.
 
 ### Memory Profile (v3.12.41)
 
 | Metric | Value |
 |--------|-------|
-| Free heap at boot | ~99 KB |
-| Min heap in operation | ~80 KB+ |
-| RAM (firmware) | ~20.6% (~66 KB / 320 KB DRAM) |
-| Flash (firmware) | ~25% (1.6 MB / 6.29 MB) |
+| Static DRAM | 20.6 % (67,644 bytes) |
+| Free heap after a person-detection inference | ~79 KB |
 | PSRAM ring buffer | 768 KB (3 × 256 KB slots) |
-| PSRAM motion buffers | 576 KB (gray + curr + RGB565 decode) |
-| PSRAM FOMO arena | 140 KB (tensor arena, PSRAM) |
-| PSRAM log buffer | ~9.4 KB (ws_log, moved from DRAM in v3.12.40) |
-| PSRAM sd_logger | 4 KB (moved from DRAM in v3.12.40) |
-| **Total PSRAM used** | **~1.5 MB / 8 MB** |
+| PSRAM FOMO tensor arena | 140 KB |
+| PSRAM log buffer (`ws_log`) | ~9.4 KB (60 × 160 chars, moved from DRAM in v3.12.40) |
+| PSRAM `sd_logger` buffer | 4 KB (moved from DRAM in v3.12.40) |
+| PSRAM total | 8 MB |
 
 ### Performance Metrics
 
 | Metric | Value |
 |--------|-------|
-| Capture FPS @ UXGA | ~25-30 FPS |
-| MJPEG stream FPS | ~25 FPS |
-| Motion detection latency | Not re-measured for the current 80×60 working image |
-| FOMO inference time | ~300–500 ms (TFLite Micro + ESP-NN, v3.12.41+) |
-| Tracker update time | ~2-5 ms |
-| Telegram photo upload (typical) | 2-4 s (256 KB JPEG over WiFi) |
-| AVI recording bandwidth | ~3 MB/s (UXGA quality 12 @ 10 FPS) |
-| Boot to first frame | ~6 s (cold start) |
-| Continuous uptime | 7+ days observed |
+| FOMO inference time | ~314 ms on the production board (v3.12.41), ~253 ms on the bench board |
+| A12 detection stream | Capped at about 10 FPS in the firmware |
+| Telegram `getUpdates` poll interval | 30 s |
+| Motion detection latency | Not measured for the current 80×60 working image |
+| Continuous uptime | Multi-day uptime observed since v3.12.34 |
 
 ---
 
 ## Security & Privacy
 
-> **Full data-privacy guide:** [`docs/DATA_PRIVACY.md`](docs/DATA_PRIVACY.md) — what data is
-> processed, what can leave your LAN (and how to turn it off), biometric/face handling,
-> retention, and how the repo keeps PII out of commits.
+The full data-privacy write-up is [`docs/DATA_PRIVACY.md`](docs/DATA_PRIVACY.md): what is
+processed, what can leave your LAN and how to turn it off, face data, and retention.
+Reporting a vulnerability: [`SECURITY.md`](SECURITY.md).
+
+The firmware is built for a trusted home LAN. The limits are listed below.
 
 <details>
 <summary><strong>Data handling</strong></summary>
 
-- **All processing happens on-device** (motion + AI detection)
-- **No cloud telemetry** — the camera does not phone home or send analytics
-- Recordings stored only on your local SD card (or sent to your Telegram chat / MQTT broker)
-- A12 Python cascade runs on **your local server**, no third-party AI APIs
-- Credentials stored in NVS (encrypted), never serialized to JSON or logs
-- Live log buffer is in-memory only, lost on reboot
+- Motion and FOMO detection run on the camera. A12 runs YOLO and face recognition on
+  your own machine.
+- The firmware sends no telemetry or analytics.
+- Recordings go to the SD card, and to your Telegram chat or MQTT broker if you enable
+  those. Telegram traffic passes through Telegram's servers.
+- A12 has an optional Groq vision path (`groq_vision.py`) that sends camera frames to
+  an external API. It is off unless you set `GROQ_API_KEY`.
+- The live log buffer is in RAM only and is lost on reboot.
 
 </details>
 
 <details>
 <summary><strong>Network exposure</strong></summary>
 
-- **Port 80** — HTTP API + dashboard (basic auth optional, off in `LAB_MODE`)
-- **Port 81** — MJPEG streams (no auth — see warning below)
-- **Port 82** — audio WAV stream (no auth)
-- **Port 554** — RTSP server (no auth — VLC and Frigate use this)
-- **Outbound** — Telegram (TLS), MQTT (plain or TLS depending on broker), HTTP OTA endpoint
+- **Port 80**: HTTP API and dashboard. Basic auth protects the endpoints that change
+  state (`/settings`, `/record`, `/credentials`, `/update`, and others); most read-only
+  endpoints are open. The default login is `admin`/`admin`. `/health` reports
+  `default_credentials: true` until you change it. Basic auth over plain HTTP sends the
+  password in clear text. With `LAB_MODE` (off by default) there is no auth at all.
+- **Port 81**: MJPEG streams, no auth.
+- **Port 82**: audio WAV stream, no auth.
+- **Port 554**: RTSP, no auth. Not started in the default build.
+- **Port 3232**: ArduinoOTA. No password unless you set an OTA password.
+- **AP fallback**: if WiFi fails at boot, the camera opens an access point named
+  `<device_name>_AP`, with password `12345678` unless you set your own.
+- **Outbound**: Telegram over HTTPS, MQTT over plain TCP (the firmware has no MQTT TLS).
+
+The Telegram client calls `setInsecure()`, so the firmware does not check Telegram's
+TLS certificate. Someone who can intercept your traffic could read the bot token and
+the images.
+
+Firmware updates go through `POST /update` or ArduinoOTA. The image is not signed, and
+nothing in the code rolls back automatically if a new image fails to boot.
 
 > [!WARNING]
-> **Recommended deployment:** Isolate the camera to a dedicated IoT VLAN. **Never** expose ports 80/81/82/554 directly to the public internet. Use a reverse proxy with HTTPS + auth (Caddy, nginx, traefik) if remote access is needed.
+> Put the camera on an isolated IoT VLAN and do not expose ports 80, 81, 82, 554 or 3232
+> to the internet. If you need remote access, use a VPN or a reverse proxy with HTTPS
+> and its own authentication.
 
 </details>
 
 <details>
 <summary><strong>Credential storage</strong></summary>
 
-- WiFi SSID + password — NVS (encrypted)
-- HTTP basic auth user/pass — NVS (encrypted)
-- OTA password — NVS (encrypted)
-- AP mode password — NVS (encrypted)
-- Telegram bot token + chat ID — NVS (encrypted)
-- MQTT user + password — NVS (encrypted)
+These are stored in NVS (the `creds` namespace), not in `/config.json`:
 
-NVS is encrypted on ESP32-S3 with secure boot enabled. Without secure boot, NVS data is readable from flash with physical access — but not over the network.
+- WiFi SSID and password
+- HTTP basic auth user and password
+- OTA password
+- AP mode password
+- Telegram bot token and chat ID
+- MQTT user and password
+
+NVS is **not encrypted** in this build. Anyone with physical access to the board can
+read these values from flash. `GET /credentials` returns only whether each password is
+set, not the password itself, but the AP password is printed on the serial console.
 
 </details>
 
@@ -1405,34 +1485,34 @@ NVS is encrypted on ESP32-S3 with secure boot enabled. Without secure boot, NVS 
 
 ## Development History
 
-Started as an exploration of the DFRobot FireBeetle 2 ESP32-S3 camera module in October 2025, evolved into a full security platform over ~6 months.
+The project started in October 2025 as a way to try out the DFR1154 camera board. Full
+details are in [CHANGELOG.md](CHANGELOG.md).
 
 | Phase | Versions | Focus |
 |-------|----------|-------|
-| **Foundation** | v1.x — v2.x | Camera driver, MJPEG streaming, basic motion detection |
-| **Reliability** | v3.0 — v3.5 | Lock-free ring buffer, RTSP server, OTA, sabotage detection |
-| **Features** | v3.6 — v3.9 | NVS credentials, MQTT HA discovery, AVI recording, FOMO person detection, sensor fusion |
-| **Optimization** | v3.10 | OV3660 brightness tuning, LTR-308 lux integration, day/night/dusk profiles |
-| **Detection v2** | v3.11 | Temporal filter, ByteTrack, night mode rework, OV3660 ISP tuning, 4× motion detail, time-lapse, live log, web GUI overhaul |
-| **Hardening** | v3.12 | Concurrency audit (MQTT/recording/audio mutexes), SCCB I2C bus conflict fix, Telegram GUI credentials, CZ/EN bilingual web UI, English-only codebase |
-| **A12 integration** | v3.12.8–3.12.15 | WDT 60 s + panic, SD bailout, HTTP timeout, audio decoupled from LITE_MODE, Telegram disabled for A12 mode (frees 45 KB heap), face enrollment tool |
-| **Dashboard + SD logger** | v3.12.16 | SD debug logger module, dashboard 10 cards / 5 toggles / 13 tools, `/status` extended (temp, FPS, PSRAM%), A12 event scoring + PIR recording + adaptive clip + animals→Telegram + daily summary |
-
-See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+| **Foundation** (Oct 2025) | v1.x — v2.x | Camera driver, MJPEG streaming, basic block-based motion detection |
+| **Core services** (Nov 2025) | v3.0 — v3.5 | Ring buffer, RTSP server, OTA, sabotage detection, LTR-308 day/night profiles, AP fallback, PDM audio |
+| **Features** (Dec 2025 — Jan 2026) | v3.6 — v3.9 | Credentials in NVS, HTTP basic auth, FOMO person detection, AVI recording, DUSK profile |
+| **Home Assistant** (Feb — Mar 2026) | v3.10 | MQTT sensors and discovery, OV3660 brightness tuning |
+| **Detection v2** (Apr 2026) | v3.11 | Temporal filter, ByteTrack tracker, night motion rework, OV3660 ISP tuning, time-lapse, live log, feature toggles; A12 rewritten as v2 |
+| **Hardening** (Apr — May 2026) | v3.12.x | Concurrency fixes, SCCB bus conflict fix, watchdog, Telegram heap fragmentation fixes (v3.12.32–34), TFLite Micro with ESP-NN (v3.12.41) |
+| **Recovery** (Jul — Sep 2026) | v3.12.49 — v3.12.54 | `POST /reboot` and the A12 recovery ladder, 2 s MQTT socket timeout, bounded heap-restart ladder; A12 decision audit and local face recognition |
+| **Face unlock** (Oct 2026) | A12 | Door unlock by face through Nuki Hub, with frontal-look and liveness checks |
 
 ---
 
 ## Acknowledgments
 
-- [Edge Impulse FOMO](https://www.edgeimpulse.com/blog/announcing-fomo-faster-objects-more-objects/) — lightweight on-device object detection model that fits in 280 KB
-- [esp32-camera](https://github.com/espressif/esp32-camera) — Espressif's official camera driver
-- [ESP32-RTSPServer](https://github.com/rzeldent/esp32-camera) — RTSP server library (local copy in `lib/`)
-- [PlatformIO](https://platformio.org/) — build and flash toolchain
-- [Home Assistant](https://www.home-assistant.io/) — MQTT discovery integration target
-- [Ultralytics YOLO](https://github.com/ultralytics/ultralytics) — YOLOv11n ONNX models for the A12 server-side cascade
-- [s60sc/ESP32-CAM_MJPEG2SD](https://github.com/s60sc/ESP32-CAM_MJPEG2SD) — feature inspiration (FTP upload, intercom, time-lapse)
-- [tobiastl/ByteTrack](https://github.com/ifzhang/ByteTrack) — tracker algorithm reference
-- DFRobot — for the well-documented FireBeetle 2 ESP32-S3 camera module
+- [Edge Impulse FOMO](https://www.edgeimpulse.com/blog/announcing-fomo-faster-objects-more-objects/): the on-device person detection model
+- [esp32-camera](https://github.com/espressif/esp32-camera): Espressif's camera driver
+- [ESP32-RTSPServer](https://github.com/rjsachse/ESP32-RTSPServer): RTSP server library (local copy in `firmware/lib/`)
+- [PlatformIO](https://platformio.org/): build and flash toolchain
+- [Home Assistant](https://www.home-assistant.io/): MQTT discovery target
+- [Ultralytics YOLO](https://github.com/ultralytics/ultralytics): YOLOv11n ONNX models for A12
+- [OpenCV](https://opencv.org/): runs YOLO and the YuNet/SFace face models in A12
+- [s60sc/ESP32-CAM_MJPEG2SD](https://github.com/s60sc/ESP32-CAM_MJPEG2SD): ideas for features such as time-lapse
+- [ByteTrack](https://github.com/ifzhang/ByteTrack): reference for the tracker algorithm
+- DFRobot, for documenting the FireBeetle 2 ESP32-S3 camera board well
 
 ---
 
@@ -1444,9 +1524,11 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Build firmware (`cd firmware && pio run`) and run Python tests (`cd a12_system && python3 test_config.py`)
-4. Open a pull request with a clear description
+1. Fork the repository.
+2. Create a feature branch (`git checkout -b feature/my-feature`).
+3. Build the firmware (`cd firmware && pio run`). From the repository root, run the
+   same checks as CI: `ruff check .` and `pytest -q`.
+4. Open a pull request that says what changed and why.
 
-Bug reports and feature requests welcome via [GitHub Issues](../../issues).
+[CONTRIBUTING.md](CONTRIBUTING.md) has the setup details. Bug reports and feature
+requests go to [GitHub Issues](../../issues).
