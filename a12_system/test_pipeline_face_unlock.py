@@ -395,12 +395,52 @@ def test_a_log_that_just_arrived_is_not_asked_for_and_waited_on_again(monkeypatc
     assert asked
 
 
+def test_the_lock_log_is_not_asked_for_while_a_resident_is_at_the_door(monkeypatch):
+    from a12_system import pipeline
+    from a12_system.nuki_log import NukiActivity
+
+    stranger = FaceResult(FaceOutcome.STRANGER, faces=1, quality=GOOD, face_row=live_row(0))
+    p = unlock_pipeline(monkeypatch, [stranger] + [check(live_row(i)) for i in range(4)],
+                        **{"face_unlock.query_lock_on_approach": True})
+    asked = []
+    p.nuki_activity = NukiActivity()
+    p.mqtt_client = SimpleNamespace(query_nuki_lock=lambda: asked.append(p.clock["t"]) or True)
+    p._last_lock_query_at = 0.0
+    run_checks(p, 1)
+    assert asked == [1000.0]  # someone at the door, not yet known: asked
+    p.clock["t"] += 20.0
+    run_checks(p, 4)
+    assert asked == [1000.0]  # the resident's opening has the lock to itself
+    assert p.opened == [("alice", 1)]
+    p.clock["t"] += pipeline.RESIDENT_LOCK_QUERY_PAUSE_SECONDS + 1
+    p._maybe_unlock_for_face(None, stranger)
+    assert len(asked) == 2
+
+
+def test_an_approach_does_not_ask_for_the_lock_log_by_default(monkeypatch):
+    from a12_system.nuki_log import NukiActivity
+
+    # A far or turned face first, the resident a second later: a query sent
+    # at the first check held the lock's Bluetooth link during the unlatch.
+    stranger = FaceResult(FaceOutcome.STRANGER, faces=1, quality=GOOD, face_row=live_row(0))
+    p = unlock_pipeline(monkeypatch, [stranger] + [check(live_row(i)) for i in range(4)])
+    asked = []
+    p.nuki_activity = NukiActivity()
+    p.mqtt_client = SimpleNamespace(query_nuki_lock=lambda: asked.append(p.clock["t"]) or True)
+    p._last_lock_query_at = 0.0
+    run_checks(p, 5)
+    assert asked == []
+    assert p.opened == [("alice", 1)]
+
+
 def test_rolling_and_short_log_topics_are_subscribed():
     from a12_system.mqtt_client import MQTTClient
 
     c = MQTTClient.__new__(MQTTClient)
     c.config = {"mqtt": {"nuki_log_topic": "nukihub/lock/log"}}
-    assert c._nuki_log_topics() == ("nukihub/lock/log", "nukihub/lock/shortLog", "nukihub/lock/rollingLog")
+    assert c._nuki_log_topics() == (
+        "nukihub/lock/log", "nukihub/lock/shortLog", "nukihub/lock/rollingLog", "nukihub/lock/json",
+    )
 
 
 # --- the settings that decide, pinned at their real defaults and edges -------

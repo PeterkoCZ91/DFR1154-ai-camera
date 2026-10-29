@@ -115,14 +115,15 @@ class MQTTClient:
     def _nuki_log_topics(self) -> tuple:
         """The full log, plus the two Nuki Hub sends first: `shortLog` right
         after every read of the lock and `rollingLog` once per new entry. The
-        full `log` can follow only seconds later."""
+        full `log` can follow only seconds later. `json` is the lock's state
+        with its clock, which the log's timestamps are corrected by."""
         log_topic = self._nuki_log_topic()
         if not log_topic:
             return ()
         if not log_topic.endswith("/log"):
             return (log_topic,)
         base = log_topic[: -len("/log")]
-        return (log_topic, base + "/shortLog", base + "/rollingLog")
+        return (log_topic, base + "/shortLog", base + "/rollingLog", base + "/json")
 
     def query_nuki_lock(self) -> bool:
         """Ask Nuki Hub to read the lock state now. Every read that finds the

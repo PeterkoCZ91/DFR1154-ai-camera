@@ -808,6 +808,43 @@ def test_history_failures_and_unnumbered_entries_are_not_announced():
     assert seen == []
 
 
+def test_log_times_are_corrected_by_the_lock_clock_offset():
+    import json
+    import time
+    from a12_system import pipeline
+    from a12_system.nuki_log import NukiActivity
+
+    # 2026-10-29: Nuki Hub set the lock 25 s slow, so A12's own opening was
+    # logged 16 s before the command and announced as a Home Assistant one.
+    now = time.time()
+    seen = []
+    activity = NukiActivity(on_opening=lambda *a: seen.append(a), clock=lambda: now)
+    lock_now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now - 25.0))
+    activity.observe(json.dumps({"lock_state": "unlatching", "currentTime": lock_now}), received_at=now)
+    assert activity.received_at == 0.0  # the state is no answer to a log query
+    assert -26.0 < activity.clock_offset < -24.0
+    activity.observe(json.dumps(_log_entry(9, now - 25.0, age=0.0)), received_at=now)
+    (_, _, at, own), = seen
+    assert own and abs(at - now) <= 1.5
+    assert activity.result_since(now - 1.0) == ("success", None)
+    fake, events, sent = _announcing_pipeline(commands=[now - 1.0])
+    pipeline.DetectionPipeline._announce_lock_opening(fake, "NukiHub", "Unlatch", at, True)
+    assert sent == []
+
+
+def test_one_late_clock_reading_does_not_move_the_offset():
+    import json
+    import time
+    from a12_system.nuki_log import NukiActivity
+
+    activity = NukiActivity()
+    now = time.time()
+    for delay in (0.2, 0.3, 9.0, 0.2, 0.4):
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now - 6.0))
+        activity.observe(json.dumps({"currentTime": stamp}), received_at=now + delay)
+    assert -7.0 < activity.clock_offset < -5.0
+
+
 def _announcing_pipeline(commands=()):
     from types import SimpleNamespace
     events, sent = [], []

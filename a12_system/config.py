@@ -136,6 +136,10 @@ DEFAULT_CONFIG = {
         # Before a face opens: ask Nuki Hub for the lock's log and wait up to
         # this long for it, so a phone opening at the same moment is seen.
         "external_open_hold_seconds": 5.0,
+        # Ask Nuki Hub for the lock's log as soon as someone is at the door.
+        # Off: the query occupies the lock's Bluetooth link just before the
+        # unlatch, and Nuki Hub publishes the log on its own after a change.
+        "query_lock_on_approach": False,
     },
     "telegram": {
         "enabled": False,
@@ -465,6 +469,7 @@ ENV_OVERRIDES = [
     ("FACE_UNLOCK_SKIP_AFTER_EXTERNAL_OPEN_SECONDS", "face_unlock.skip_after_external_open_seconds", _parse_float),
     ("FACE_UNLOCK_OWN_LOCK_NAMES", "face_unlock.own_lock_names", _parse_csv),
     ("FACE_UNLOCK_EXTERNAL_OPEN_HOLD_SECONDS", "face_unlock.external_open_hold_seconds", _parse_float),
+    ("FACE_UNLOCK_QUERY_LOCK_ON_APPROACH", "face_unlock.query_lock_on_approach", _parse_bool),
     # MQTT
     ("MQTT_BROKER", "mqtt.broker_url", str),
     ("MQTT_PORT", "mqtt.port", _parse_int),

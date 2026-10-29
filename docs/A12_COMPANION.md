@@ -120,17 +120,24 @@ the lock's own activity log instead:
 3. Restart Nuki Hub.
 
 A12 subscribes to `nukihub/lock/log`, `shortLog` and `rollingLog`. Nuki Hub
-fetches the log whenever it reads the lock, so A12 asks it to
-(`query/lockstate`) on face checks, at most every 20 s, and once more right
-before a face would open, waiting up to 5 s for the answer (about 2.5 s on the
-test lock). Any opening in the log by a name other than A12's own path blocks
+fetches the log whenever it reads the lock, and it reads the lock by itself
+whenever the lock reports a change, a phone opening included. Right before a
+face would open, A12 asks once more (`query/lockstate`) and waits up to 5 s for
+the answer (about 2.5 s on the test lock); a hold of 0 skips that and uses the
+log already received, and a phone opening in the very same second only means a
+second unlatch. A12 does not ask while someone approaches: Nuki Hub reads the
+log over its single Bluetooth link for seconds, and the unlatch that follows a
+moment later waited behind it. `FACE_UNLOCK_QUERY_LOCK_ON_APPROACH=true` brings
+that request back (at most every 20 s, paused for 30 s once a resident is
+recognised). Any opening in the log by a name other than A12's own path blocks
 face opening for the window below. An opening through A12's Telegram `/od`
 blocks it the same way.
 
 ```bash
 FACE_UNLOCK_SKIP_AFTER_EXTERNAL_OPEN_SECONDS=300  # 0 turns it off
-FACE_UNLOCK_EXTERNAL_OPEN_HOLD_SECONDS=5          # wait for the fresh log before opening
+FACE_UNLOCK_EXTERNAL_OPEN_HOLD_SECONDS=5          # wait for the fresh log before opening; 0 = open at once
 FACE_UNLOCK_OWN_LOCK_NAMES=NukiHub                # log names that are A12/HA itself
+FACE_UNLOCK_QUERY_LOCK_ON_APPROACH=false          # ask for the log as someone approaches
 NUKI_LOG_TOPIC=nukihub/lock/log                   # empty disables the subscription
 ```
 

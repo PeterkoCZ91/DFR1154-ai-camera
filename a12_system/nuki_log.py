@@ -12,11 +12,17 @@ JSON list of entries such as
 
 with the time in UTC. Face unlock uses the latest such opening to stay quiet
 while the resident walks in through a door their phone already opened.
+
+The lock keeps its own clock, and it drifts: +9 s on 2026-10-28, -25 s right
+after Nuki Hub set it the next day. Nuki Hub's state JSON carries the lock's
+`currentTime`, so the offset is measured from it and taken off every entry;
+otherwise A12's own opening reads as someone else's.
 """
 
 import json
 import logging
 import threading
+import statistics
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -26,6 +32,9 @@ OPENING_ACTIONS = frozenset({"unlatch", "unlock", "locknagounlatch", "lockngounl
 # An entry older than this is history (a retained log read after a restart),
 # not an opening worth telling anyone about.
 ANNOUNCE_MAX_AGE_SECONDS = 120.0
+# The offset is the median of this many recent readings of the lock's clock,
+# so one reading delayed in Nuki Hub does not move it.
+CLOCK_SAMPLES = 5
 
 
 class NukiActivity:
@@ -52,6 +61,9 @@ class NukiActivity:
         self.on_opening = on_opening
         self._clock = clock
         self._announced = deque(maxlen=64)
+        # Lock clock minus ours, in seconds; 0 until Nuki Hub reports it.
+        self.clock_offset = 0.0
+        self._clock_samples = deque(maxlen=CLOCK_SAMPLES)
 
     @staticmethod
     def _entry_time(entry: dict) -> Optional[float]:
@@ -64,11 +76,29 @@ class NukiActivity:
         except (KeyError, TypeError, ValueError):
             return None
 
+    def _observe_lock_clock(self, current_time, received_at: float) -> None:
+        """Take the lock's `currentTime` ("YYYY-MM-DD HH:MM:SS", UTC) from Nuki
+        Hub's state JSON. The lock reports whole seconds, hence the +0.5."""
+        try:
+            lock_now = datetime.strptime(str(current_time), "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            ).timestamp() + 0.5
+        except ValueError:
+            return
+        with self._lock:
+            self._clock_samples.append(lock_now - received_at)
+            self.clock_offset = statistics.median(self._clock_samples)
+
     def observe(self, payload: str, received_at: Optional[float] = None) -> None:
-        """Take one published log (a JSON list, or a single entry)."""
+        """Take one published log (a JSON list, or a single entry), or Nuki
+        Hub's state JSON, which only says what the lock's clock reads."""
         try:
             entries = json.loads(payload)
         except (TypeError, ValueError):
+            return
+        if isinstance(entries, dict) and "currentTime" in entries and "type" not in entries:
+            # Not a log: it must not read as the answer to a log query.
+            self._observe_lock_clock(entries["currentTime"], self._clock() if received_at is None else received_at)
             return
         if isinstance(entries, dict):
             entries = [entries]
@@ -87,6 +117,7 @@ class NukiActivity:
             at = self._entry_time(entry)
             if at is None:
                 continue
+            at -= self.clock_offset
             status = str(entry.get("completionStatus", "success"))
             own = who.lower() in self.own_names
             index = entry.get("index")

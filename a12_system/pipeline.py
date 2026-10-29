@@ -65,9 +65,14 @@ FACE_CROP_MAX_AGE_SECONDS = 30.0
 # again, and how long to wait out a lock that answered "busy".
 FACE_UNLOCK_RETRY_SECONDS = 15.0
 FACE_UNLOCK_BUSY_RETRY_SECONDS = 3.0
-# A lock log that arrived this recently, typically the query made at the first
-# face check, is fresh enough: the opening need not ask and wait for it again.
+# A lock log that arrived this recently, published by Nuki Hub after a change
+# or asked for on approach, is fresh enough: the opening need not ask and wait
+# for it again.
 LOCK_LOG_FRESH_SECONDS = 8.0
+# Once a resident who may open is recognised, the lock's log is not asked for
+# this long: Nuki Hub reads it over the one Bluetooth link for ~7 s, and the
+# opening that is about to follow waited behind it (8.5 s on 2026-10-28).
+RESIDENT_LOCK_QUERY_PAUSE_SECONDS = 30.0
 # An opening in the lock's log is A12's own when it follows a command A12 sent
 # within this many seconds (the lock's clock and ours may differ a little).
 OWN_COMMAND_LOG_LEAD_SECONDS = 5.0
@@ -570,6 +575,7 @@ class DetectionPipeline:
         activity = getattr(self, "nuki_activity", None)
         lock_log = activity.result_since if activity is not None else None
         self._note_own_unlock_command()
+        called = time.time()
         opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log)
         if not opened and detail.startswith("open_refused:busy"):
             # The lock was talking to a phone and turned the command away; it
@@ -578,6 +584,8 @@ class DetectionPipeline:
             time.sleep(FACE_UNLOCK_BUSY_RETRY_SECONDS)
             self._note_own_unlock_command()
             opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log)
+        # The door's own time; "whole opening took" also counts the Telegram photo.
+        logging.info(f"{self.log_prefix} Nuki opening timing: lock answered after {time.time() - called:.1f}s ({detail})")
         if opened:
             logging.info(f"{self.log_prefix} Nuki opening confirmed for '{name}' ({detail})")
             self.db.log_event("unlock", name, 1.0)
@@ -849,9 +857,20 @@ class DetectionPipeline:
         if window is None:
             return
         now = time.time()
-        # Someone at the door: have the lock's log fresh by the time a face
-        # confirms, in case their phone is opening the door right now.
-        self._query_lock_log(now)
+        # Only on request: have the lock's log fresh by the time a face
+        # confirms, in case their phone is opening the door right now. Off by
+        # default because the first check of an approach is usually a far or
+        # turned face, so the query left 0-3 s before the unlatch, which then
+        # waited behind the log read (3-9 s on 2026-10-29). Nuki Hub publishes
+        # the log by itself when the lock reports a change. Never once a
+        # resident is recognised, so the lock is free for the opening.
+        if check.is_resident and check.lead_name in window.allowed_names:
+            self._resident_at_door_at = now
+        if (
+            bool(cfg.get("face_unlock.query_lock_on_approach", False))
+            and now - getattr(self, "_resident_at_door_at", 0.0) > RESIDENT_LOCK_QUERY_PAUSE_SECONDS
+        ):
+            self._query_lock_log(now)
         track_ids = getattr(self, "person_track_ids", None) or {}
         track_id = (
             (getattr(self, "_face_track_id", None) if self._face_track_fresh(now) else None)
