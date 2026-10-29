@@ -73,6 +73,18 @@ phone selfies scores noticeably lower through a wide-angle lens. The
 `face_debug` crops (`FACE_DEBUG_CROP_DIR`) are exactly what recognition runs
 on, so they make good enrolment material once sorted by hand.
 
+A second recogniser can run in the shadow to collect evidence before any
+switch: ArcFace MobileFaceNet scores the same YuNet face and its best match is
+appended to each `Face check:` line as `arc=name:score`; it never decides
+anything. Point `FACE_SHADOW_ARCFACE_MODEL` at a local `w600k_mbf.onnx`
+(InsightFace `buffalo_s`, non-commercial, not shipped) and
+`FACE_SHADOW_ARCFACE_GALLERY` at a gallery built from the enrolment photos:
+
+```bash
+python -m a12_system.tools.build_arcface_gallery --photos <one dir per person> \
+    --yunet face_detection_yunet_2023mar.onnx --model w600k_mbf.onnx --out known_faces_arcface.pkl
+```
+
 **How an unlock happens**
 
 1. The PIR, Home Assistant motion sensor or YOLO starts an episode; faces are

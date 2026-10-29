@@ -23,6 +23,7 @@ from .face_result import (
 from .detection import crop_person_box_with_origin, face_row_in_frame
 from .door_unlock import ha_lock, ha_unlock
 from .face_liveness import LivenessPolicy
+from .face_shadow import ArcFaceShadow
 from .face_quality import QualityPolicy, quality_reasons
 from .face_window import FaceUnlockWindow
 from .nuki_log import NukiActivity
@@ -899,6 +900,7 @@ class DetectionPipeline:
             f"pose={self._pose_text(window.pose)} "
             f"look={window.look_seconds:.1f}/{window.min_look_seconds:.1f}s "
             f"-> {reason} ({len(window.hits)}/{window.confirmations})"
+            f"{self._arc_text()}"
         )
         self._record_shadow_unlock(window, check, now, track_id, quality_ok, allowed)
         if not allowed:
@@ -2041,6 +2043,33 @@ class DetectionPipeline:
         # camera crash loop restarts A12 repeatedly, which is exactly when the
         # directory would run away.
         self._face_debug_written = self._count_face_debug_crops()
+        self.face_shadow = self._load_face_shadow(face_cfg)
+        self._last_arc = None
+
+    def _load_face_shadow(self, face_cfg: dict):
+        """The ArcFace second opinion, or None when it is not configured or
+        does not load. It only writes into the log, so failing is harmless."""
+        model = str(face_cfg.get("shadow_arcface_model", "") or "")
+        gallery = str(face_cfg.get("shadow_arcface_gallery", "") or "")
+        if not model or not gallery:
+            return None
+        base = os.environ.get("A12_DATA_DIR", "")
+        model, gallery = (p if os.path.isabs(p) else os.path.join(base, p) for p in (model, gallery))
+        try:
+            shadow = ArcFaceShadow.from_paths(model, gallery)
+        except Exception as e:
+            logging.warning(f"ArcFace shadow off: {e}")
+            return None
+        sizes = ", ".join(f"{name} {len(rows)}" for name, rows in sorted(shadow.gallery.items()))
+        logging.info(f"ArcFace shadow ready (log only): {sizes}")
+        return shadow
+
+    def _arc_text(self) -> str:
+        """` arc=name:score` for the "Face check:" line while the shadow runs."""
+        if getattr(self, "face_shadow", None) is None:
+            return ""
+        arc = getattr(self, "_last_arc", None)
+        return " arc=-" if arc is None else f" arc={arc[0]}:{arc[1]:.3f}"
 
     def _count_face_debug_crops(self) -> int:
         if not self._face_debug_dir:
@@ -2144,6 +2173,10 @@ class DetectionPipeline:
             )
             check = self.detector.identify_person(crop)
             self._save_face_debug_crop(crop, check, now)
+            # Same face, same crop pixels, before the row moves to the frame.
+            shadow = getattr(self, "face_shadow", None)
+            row = getattr(check, "face_row", None)
+            self._last_arc = shadow.best(crop, row) if shadow is not None and row is not None else None
             if getattr(check, "face_row", None) is not None:
                 check = check._replace(face_row=face_row_in_frame(check.face_row, origin))
             episode.record(check)

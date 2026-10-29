@@ -62,6 +62,11 @@ DEFAULT_CONFIG = {
         # disables it; the limit stops a forgotten flag filling the disk.
         "debug_crop_dir": "",
         "debug_crop_limit": 200,
+        # ArcFace MobileFaceNet scoring the same face in the shadow: its best
+        # match goes into the "Face check:" line, nothing else. Model and
+        # gallery are local files (A12_DATA_DIR-relative); empty turns it off.
+        "shadow_arcface_model": "",
+        "shadow_arcface_gallery": "",
         # Names to skip Telegram notifications for (household members).
         # Populated at runtime from known_faces.pkl + user config.
         "whitelisted_names": [],
@@ -443,6 +448,8 @@ ENV_OVERRIDES = [
     ("FACE_DETECTOR_SCORE_THRESHOLD", "face_recognition.detector_score_threshold", _parse_float),
     ("FACE_MIN_FACE_SIZE", "face_recognition.min_face_size", _parse_int),
     ("FACE_DEBUG_CROP_DIR", "face_recognition.debug_crop_dir", str),
+    ("FACE_SHADOW_ARCFACE_MODEL", "face_recognition.shadow_arcface_model", str),
+    ("FACE_SHADOW_ARCFACE_GALLERY", "face_recognition.shadow_arcface_gallery", str),
     ("FACE_DEBUG_CROP_LIMIT", "face_recognition.debug_crop_limit", _parse_int),
     ("FACE_UNLOCK_ENABLED", "face_unlock.enabled", _parse_bool),
     ("FACE_UNLOCK_DRY_RUN", "face_unlock.dry_run", _parse_bool),
