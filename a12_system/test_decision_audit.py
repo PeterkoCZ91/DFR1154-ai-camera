@@ -65,7 +65,8 @@ def test_calibrate_aggregates_local_audit(tmp_path):
         ["bash", "a12_system/tools/a12", "calibrate", "1"],
         capture_output=True,
         check=False,
-        cwd=os.getcwd(),
+        # The repo root, wherever pytest was started from.
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         env=env,
         text=True,
     )
