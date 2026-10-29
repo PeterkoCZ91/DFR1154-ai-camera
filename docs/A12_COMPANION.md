@@ -150,8 +150,19 @@ FACE_UNLOCK_SKIP_AFTER_EXTERNAL_OPEN_SECONDS=300  # 0 turns it off
 FACE_UNLOCK_EXTERNAL_OPEN_HOLD_SECONDS=5          # wait for the fresh log before opening; 0 = open at once
 FACE_UNLOCK_OWN_LOCK_NAMES=NukiHub                # log names that are A12/HA itself
 FACE_UNLOCK_QUERY_LOCK_ON_APPROACH=false          # ask for the log as someone approaches
+NUKI_HUB_WATCH_SECONDS=300                        # Telegram when the hub or lock is gone; 0 = off
 NUKI_LOG_TOPIC=nukihub/lock/log                   # empty disables the subscription
 ```
+
+An opening is confirmed by whichever comes first: Home Assistant showing the
+lock opening, or Nuki Hub's own verdict on the action (`commandResult`,
+about a fifth of a second earlier); the lock's log can still overrule both.
+When Home Assistant cannot be reached at all (restart, update, expired
+token), A12 sends `unlatch` straight to Nuki Hub over MQTT and waits for that
+verdict. A lock that HA reports lost, busy or blocked is not retried this way.
+A12 also tells Telegram when Nuki Hub publishes no uptime for
+`NUKI_HUB_WATCH_SECONDS` or cannot read the lock that long, and when it is
+back.
 
 In the log, `Nuki log: Unlatch by '<name>' at HH:MM:SS` shows each outside
 opening as it arrives, and `Face unlock skipped for '<name>': door opened by

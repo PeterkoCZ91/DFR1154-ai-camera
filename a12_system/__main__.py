@@ -28,6 +28,7 @@ from .audio_monitor import AudioMonitor
 from .ha_monitor import HAMonitor
 from .status_monitor import StatusMonitor
 from .pipeline import DetectionPipeline
+from .nuki_log import NukiHubWatch
 
 # Script directory
 try:
@@ -222,6 +223,18 @@ class Application:
                 if activity is not None:
                     activity.observe(payload.get("payload", ""))
 
+            elif event_type == "nuki_state":
+                topic = payload.get("topic", "")
+                value = payload.get("payload", "")
+                if payload.get("retained"):
+                    return
+                watch = getattr(self, "nuki_watch", None)
+                if watch is not None:
+                    watch.observe(topic, value)
+                activity = getattr(self.pipeline, "nuki_activity", None)
+                if activity is not None and topic.endswith("/commandResult"):
+                    activity.observe_command_result(value)
+
             elif event_type == "config":
                 topic = payload.get("topic", "")
                 value = payload.get("payload", "")
@@ -233,6 +246,10 @@ class Application:
                     )
                     logging.info(f"Config updated via MQTT: {topic} = {value}")
 
+        # Before MQTT connects: its first messages already feed the watch.
+        self.nuki_watch = NukiHubWatch(
+            float(self.runtime_config.get("nuki_hub_watch_seconds", 300.0) or 0.0)
+        )
         self.mqtt_client = MQTTClient(config, callback=mqtt_callback)
 
         # Status monitor
@@ -240,6 +257,7 @@ class Application:
             self.runtime_config, self.mqtt_client, notifier, self.db,
             shared_state, self.http_session, stats=self.stats, camera=camera
         )
+        self.status_monitor.nuki_watch = self.nuki_watch
         self.status_monitor.start()
 
         # Audio monitor

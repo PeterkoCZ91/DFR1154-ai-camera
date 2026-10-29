@@ -156,6 +156,9 @@ DEFAULT_CONFIG = {
         "preview_fps": 4,
     },
     "telegram_cooldown_seconds": 60,
+    # Telegram when Nuki Hub stays silent (no uptime) or cannot reach the lock
+    # for this long, and again when it is back. 0 turns it off.
+    "nuki_hub_watch_seconds": 300.0,
     "detection_cooldown_seconds": 5,
     "periodic_yolo_interval": 30,
     "external_trigger_yolo_window_seconds": 15.0,
@@ -485,6 +488,7 @@ ENV_OVERRIDES = [
     ("MQTT_BASE_TOPIC", "mqtt.base_topic", str),
     ("MQTT_DISCOVERY_NODE", "mqtt.discovery_node", str),
     ("NUKI_LOG_TOPIC", "mqtt.nuki_log_topic", str),
+    ("NUKI_HUB_WATCH_SECONDS", "nuki_hub_watch_seconds", _parse_float),
     # Audio
     ("AUDIO_ENABLED", "audio_enabled", _parse_bool),
     ("AUDIO_BUFFER_SECONDS", "audio.buffer_seconds", _parse_int),

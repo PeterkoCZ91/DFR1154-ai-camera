@@ -51,6 +51,12 @@ CZECH: dict[str, str] = {
     'ESP32 Power Warning: reason={} total_restarts={} poweron={} brownout={} uptime={}s': 'Varování o napájení ESP32: příčina={} restartů celkem={} zapnutí={} podpětí={} běží={}s',
     'A12 resource warning\nRAM: {}/{} MB ({}%)\nConsider reducing clip buffer or raising mem_limit in compose.': 'A12 varování o zdrojích\nRAM: {}/{} MB ({} %)\nZvaž zmenšení bufferu klipů nebo zvýšení mem_limit v compose.',
 
+    # status_monitor.py — Nuki Hub watch
+    'Nuki Hub has been silent for {} min: the door opens neither by face nor by /od.': '⚠️ Nuki Hub nehlásí už {} min: dveře teď neotevře obličej ani /od.',
+    'Nuki Hub is answering again (out for {} min).': '✅ Nuki Hub zase odpovídá (výpadek {} min).',
+    'Nuki Hub cannot reach the lock for {} min: the door opens neither by face nor by /od.': '⚠️ Nuki Hub už {} min nevidí zámek: dveře teď neotevře obličej ani /od.',
+    'Nuki Hub reaches the lock again (lost for {} min).': '✅ Nuki Hub zámek zase vidí (výpadek {} min).',
+
     # status_monitor.py — daily summary
     'A12 daily summary': 'A12 denní přehled',
     'Events (24h):': 'Události (24h):',

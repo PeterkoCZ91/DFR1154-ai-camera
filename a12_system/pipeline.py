@@ -21,7 +21,7 @@ from .face_result import (
     should_run_face_check,
 )
 from .detection import crop_person_box_with_origin, face_row_in_frame
-from .door_unlock import ha_lock, ha_unlock
+from .door_unlock import ha_lock, ha_unlock, mqtt_unlatch
 from .face_liveness import LivenessPolicy
 from .face_shadow import ArcFaceShadow
 from .face_quality import QualityPolicy, quality_reasons
@@ -575,16 +575,33 @@ class DetectionPipeline:
     def _nuki_unlock_report(self, name: str, faces=None, media_path=None, manual: bool = False):
         activity = getattr(self, "nuki_activity", None)
         lock_log = activity.result_since if activity is not None else None
+        command_result = activity.command_result_since if activity is not None else None
         self._note_own_unlock_command()
         called = time.time()
-        opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log)
+        opened, detail = ha_unlock(
+            self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log, command_result=command_result,
+        )
         if not opened and detail.startswith("open_refused:busy"):
             # The lock was talking to a phone and turned the command away; it
             # is free a moment later and nobody is told about a miss yet.
             logging.info(f"{self.log_prefix} Nuki busy, retrying the opening for '{name}'")
             time.sleep(FACE_UNLOCK_BUSY_RETRY_SECONDS)
             self._note_own_unlock_command()
-            opened, detail = ha_unlock(self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log)
+            opened, detail = ha_unlock(
+                self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log, command_result=command_result,
+            )
+        publish = getattr(getattr(self, "mqtt_client", None), "publish_nuki_action", None)
+        if (
+            not opened
+            and detail.startswith(("state_before_open_failed", "service_call_failed"))
+            and publish is not None
+            and command_result is not None
+        ):
+            # Home Assistant is down or refused the call (restart, update,
+            # expired token), not the lock: Nuki Hub can still be told directly.
+            logging.warning(f"{self.log_prefix} HA unreachable ({detail}), unlatching through Nuki Hub directly")
+            self._note_own_unlock_command()
+            opened, detail = mqtt_unlatch(publish, command_result)
         # The door's own time; "whole opening took" also counts the Telegram photo.
         logging.info(f"{self.log_prefix} Nuki opening timing: lock answered after {time.time() - called:.1f}s ({detail})")
         if opened:

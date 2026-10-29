@@ -125,6 +125,31 @@ class MQTTClient:
         base = log_topic[: -len("/log")]
         return (log_topic, base + "/shortLog", base + "/rollingLog", base + "/json")
 
+    def _nuki_state_topics(self) -> tuple:
+        """What says whether Nuki Hub and the lock are alive, and how a lock
+        action ended: `commandResult` (Nuki Hub's own verdict on an action),
+        `availability` (offline once it cannot read the lock), and the hub's
+        `maintenance/uptime`, published every minute."""
+        log_topic = self._nuki_log_topic()
+        if not log_topic.endswith("/log"):
+            return ()
+        base = log_topic[: -len("/log")]
+        root = base.rsplit("/", 1)[0] if "/" in base else base
+        return (base + "/commandResult", base + "/availability", root + "/maintenance/uptime")
+
+    def publish_nuki_action(self, action: str) -> bool:
+        """Send a lock action straight to Nuki Hub, bypassing Home Assistant.
+        The same message HA's lock.open publishes, so the lock cannot tell."""
+        log_topic = self._nuki_log_topic()
+        if not log_topic.endswith("/log") or not self.client or not self.connected:
+            return False
+        try:
+            self.client.publish(log_topic[: -len("/log")] + "/action", action)
+            return True
+        except Exception as e:
+            logging.error(f"{self.log_prefix} Nuki action publish failed: {e}")
+            return False
+
     def query_nuki_lock(self) -> bool:
         """Ask Nuki Hub to read the lock state now. Every read that finds the
         lock locked or unlocked also fetches and republishes the activity log,
@@ -182,7 +207,7 @@ class MQTTClient:
             self.esp32_uncertain_topic = f"esp32cam/{esp32_device}/person_uncertain"
             self.client.subscribe(self.esp32_motion_topic)
             self.client.subscribe(self.esp32_uncertain_topic)
-            for nuki_topic in self._nuki_log_topics():
+            for nuki_topic in self._nuki_log_topics() + self._nuki_state_topics():
                 self.client.subscribe(nuki_topic)
 
             logging.info(
@@ -276,6 +301,15 @@ class MQTTClient:
                     self.callback("nuki_log", {"payload": payload})
                 except Exception as e:
                     logging.error(f"Nuki log callback error: {e}")
+            if topic in self._nuki_state_topics() and self.callback:
+                try:
+                    # A retained copy is history, not news that the hub is alive
+                    # or that the action just sent has ended.
+                    self.callback("nuki_state", {
+                        "topic": topic, "payload": payload, "retained": bool(getattr(msg, "retain", False)),
+                    })
+                except Exception as e:
+                    logging.error(f"Nuki state callback error: {e}")
 
             # Config Updates
             if topic.startswith("camera/config/set/") and self.callback:

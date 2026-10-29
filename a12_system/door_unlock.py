@@ -73,6 +73,7 @@ def ha_unlock(
     timeout: float = 5.0,
     lock_log: Optional[Callable[[float], Tuple[Optional[str], Optional[str]]]] = None,
     clock: Callable[[], float] = time.time,
+    command_result: Optional[Callable[[float], Optional[str]]] = None,
 ) -> Tuple[bool, str]:
     """Call lock.open (unlatch) and observe the lock react.
 
@@ -96,6 +97,12 @@ def ha_unlock(
     than `success` (`busy`, `motorBlocked`) fails at once, however the HA
     state looks, and an opening by someone else never confirms ours: a phone
     that opens the door while the command is refused must not read as success.
+
+    `command_result(called_at)` is Nuki Hub's own verdict on the action
+    (`commandResult` over MQTT) once one arrived after the call. `success`
+    confirms as soon as it arrives, between HA reads, about a fifth of a
+    second before HA shows `opening`; anything else is a retry in progress
+    and waits. The lock's log still overrules it.
     """
     if not ha_url or not token:
         return False, "no_ha_config"
@@ -160,8 +167,48 @@ def ha_unlock(
             state = f"unreadable:{e}"
         if waited >= settle_seconds:
             return False, f"open_not_confirmed:{state}"
-        sleep(1.0)
-        waited += 1.0
+        if command_result is None:
+            sleep(1.0)
+            waited += 1.0
+            continue
+        # Until the next HA read, watch for Nuki Hub's own answer.
+        for _ in range(4):
+            sleep(0.25)
+            waited += 0.25
+            verdict = command_result(called_at)
+            if verdict is not None and verdict.lower() == "success":
+                own_status, _ = lock_log(called_at) if lock_log is not None else (None, None)
+                if own_status is not None and own_status.lower() != "success":
+                    return False, f"open_refused:{own_status}"
+                return True, f"{state}/command_success"
+
+
+def mqtt_unlatch(
+    publish: Callable[[str], bool],
+    command_result: Callable[[float], Optional[str]],
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.time,
+    settle_seconds: float = 10.0,
+) -> Tuple[bool, str]:
+    """Unlatch straight through Nuki Hub when Home Assistant is unreachable.
+
+    The same MQTT message HA's lock.open sends; only Nuki Hub's `success`
+    for an action after this call confirms it. A failure verdict is waited
+    out, since Nuki Hub retries and may still succeed.
+    """
+    called_at = clock()
+    if not publish("unlatch"):
+        return False, "mqtt_unavailable"
+    verdict = None
+    waited = 0.0
+    while waited < settle_seconds:
+        sleep(0.25)
+        waited += 0.25
+        verdict = command_result(called_at) or verdict
+        if verdict is not None and verdict.lower() == "success":
+            return True, "mqtt/command_success"
+    return False, f"mqtt_not_confirmed:{verdict}"
 
 
 def _advanced(initial: dict, current: dict, key: str) -> bool:

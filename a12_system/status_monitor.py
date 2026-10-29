@@ -158,6 +158,7 @@ class StatusMonitor(threading.Thread):
                 if current_time - self.last_adaptive > self.adaptive_interval:
                     self._run_adaptive_logic()
                     self._check_daily_summary()
+                    self._check_nuki_hub(current_time)
                     self.last_adaptive = current_time
 
                 if current_time - self.last_resource_check > self.resource_check_interval:
@@ -422,6 +423,24 @@ class StatusMonitor(threading.Thread):
             pass
         except Exception as e:
             logging.debug(f"Resource check error: {e}")
+
+    def _check_nuki_hub(self, now: float) -> None:
+        """One message when Nuki Hub or the lock stops answering, one when it
+        is back: without them the door opens neither by face nor by /od."""
+        watch = getattr(self, "nuki_watch", None)
+        if watch is None:
+            return
+        for event, minutes in watch.check(now):
+            logging.warning(f"Nuki Hub watch: {event} ({minutes} min)")
+            if event == "hub_silent":
+                text = "Nuki Hub has been silent for {} min: the door opens neither by face nor by /od.".format(minutes)
+            elif event == "hub_back":
+                text = "Nuki Hub is answering again (out for {} min).".format(minutes)
+            elif event == "lock_lost":
+                text = "Nuki Hub cannot reach the lock for {} min: the door opens neither by face nor by /od.".format(minutes)
+            else:
+                text = "Nuki Hub reaches the lock again (lost for {} min).".format(minutes)
+            self.notifier.send_telegram(text, bypass_cooldown=True, critical=True)
 
     def _load_daily_summary_date(self) -> date | None:
         if not self._daily_summary_state_path:

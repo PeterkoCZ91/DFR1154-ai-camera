@@ -64,6 +64,9 @@ class NukiActivity:
         # Lock clock minus ours, in seconds; 0 until Nuki Hub reports it.
         self.clock_offset = 0.0
         self._clock_samples = deque(maxlen=CLOCK_SAMPLES)
+        # Nuki Hub's verdict on the last lock action ("success", "failed",
+        # "timeOut"...) and when it arrived (our clock).
+        self._command_result: Optional[Tuple[float, str]] = None
 
     @staticmethod
     def _entry_time(entry: dict) -> Optional[float]:
@@ -153,6 +156,21 @@ class NukiActivity:
                 except Exception as e:
                     logging.error(f"Nuki opening callback failed: {e}")
 
+    def observe_command_result(self, payload: str, received_at: Optional[float] = None) -> None:
+        """Take Nuki Hub's `commandResult` (the caller skips the retained copy
+        the broker hands over on subscribe: that is an old action's)."""
+        at = self._clock() if received_at is None else received_at
+        with self._lock:
+            self._command_result = (at, str(payload).strip())
+
+    def command_result_since(self, since: float) -> Optional[str]:
+        """Nuki Hub's verdict on a lock action that arrived after `since`."""
+        with self._lock:
+            result = self._command_result
+        if result is None or result[0] < since:
+            return None
+        return result[1]
+
     def result_since(self, since: float, skew: float = 3.0) -> Tuple[Optional[str], Optional[str]]:
         """What the lock logged for an opening asked at `since`: (A12's own
         completion status or None, who else opened successfully or None).
@@ -174,3 +192,61 @@ class NukiActivity:
         if -60.0 <= now - last[0] <= within:
             return last[0], last[1]
         return None
+
+
+class NukiHubWatch:
+    """Notices when Nuki Hub or the lock stops answering.
+
+    Nuki Hub publishes its uptime every minute; silence for `silent_after`
+    seconds means the hub is gone (power, Wi-Fi, crash). Its lock
+    `availability` turns "offline" once it cannot read the lock over
+    Bluetooth. Either way face opening and /od cannot work. `check` answers
+    each outage once when it starts and once when it ends.
+    """
+
+    def __init__(self, silent_after: float = 300.0, clock=time.time):
+        self.silent_after = float(silent_after)
+        self._clock = clock
+        # A12 may start while the hub is already gone: count from now.
+        self.hub_seen_at = clock()
+        self.lock_offline_since: Optional[float] = None
+        self._hub_down_since: Optional[float] = None
+        self._lock_reported = False
+        self._lock = threading.Lock()
+
+    def observe(self, topic: str, payload: str, received_at: Optional[float] = None) -> None:
+        now = self._clock() if received_at is None else received_at
+        with self._lock:
+            if topic.endswith("/maintenance/uptime"):
+                self.hub_seen_at = now
+            elif topic.endswith("/availability"):
+                if str(payload).strip().lower() == "offline":
+                    if self.lock_offline_since is None:
+                        self.lock_offline_since = now
+                else:
+                    self.lock_offline_since = None
+
+    def check(self, now: Optional[float] = None) -> list:
+        """[(event, minutes)] to tell someone about, each outage once:
+        hub_silent / hub_back / lock_lost / lock_back."""
+        now = self._clock() if now is None else now
+        events = []
+        if self.silent_after <= 0:
+            return events
+        with self._lock:
+            silent = now - self.hub_seen_at
+            if self._hub_down_since is None and silent >= self.silent_after:
+                self._hub_down_since = self.hub_seen_at
+                events.append(("hub_silent", round(silent / 60)))
+            elif self._hub_down_since is not None and silent < self.silent_after:
+                events.append(("hub_back", round((self.hub_seen_at - self._hub_down_since) / 60)))
+                self._hub_down_since = None
+            lost = self.lock_offline_since
+            if not self._lock_reported and lost is not None and now - lost >= self.silent_after:
+                self._lock_reported = True
+                self._lock_lost_at = lost
+                events.append(("lock_lost", round((now - lost) / 60)))
+            elif self._lock_reported and lost is None:
+                self._lock_reported = False
+                events.append(("lock_back", round((now - self._lock_lost_at) / 60)))
+        return events
