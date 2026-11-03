@@ -1,0 +1,15 @@
+# gitleaks configuration for the CI secret scan (.github/workflows/ci.yml).
+# The default rules apply; the allowlist only drops verified false positives.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented factory defaults, not secrets"
+regexTarget = "match"
+regexes = [
+    # The firmware's out-of-the-box HTTP Basic Auth login. The README and
+    # docs/FIRST_FLASH.md tell users to change it; the OTA upload command in
+    # platformio.ini uses it as the default.
+    '''-u admin:admin\b''',
+]
