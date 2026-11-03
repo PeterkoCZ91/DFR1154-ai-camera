@@ -2,6 +2,7 @@
 
 import logging
 import os
+import statistics
 import threading
 import time
 from datetime import date, datetime
@@ -478,6 +479,33 @@ class StatusMonitor(threading.Thread):
             self._last_daily_date = today
             self._save_daily_summary_date(today)
 
+    def _door_summary(self, count_type, t) -> str | None:
+        """One line on the door's last 24 h, or None when nothing touched it.
+
+        A slow lock shows up here as a rising median before it turns into
+        missed openings, so the answer time is reported next to the counts.
+        """
+        opened = count_type("unlock")
+        failed = count_type("unlock_failed")
+        external = count_type("unlock_external")
+        if not (opened or failed or external):
+            return None
+        line = t("Door (24h): {} opened / {} not confirmed / {} from outside A12").format(
+            opened, failed, external
+        )
+        values_since = getattr(self.db, "get_event_values_since", None)
+        if opened and values_since is not None:
+            # Rows from before the answer time was stored carry a flat 1.0; a
+            # measured time is a float difference and never exactly that.
+            seconds = sorted(
+                v for v in values_since("unlock", time.time() - 86400) if v > 0 and v != 1.0
+            )
+            if seconds:
+                line += " " + t("(lock answered in {} s median, {} s slowest)").format(
+                    f"{statistics.median(seconds):.1f}", f"{seconds[-1]:.1f}"
+                )
+        return line
+
     def _send_daily_summary(self) -> bool:
         """True only if the summary was actually delivered."""
         if not self.stats:
@@ -543,6 +571,9 @@ class StatusMonitor(threading.Thread):
                 msg += "\n" + t(
                     "Faces (24h): {} known / {} strangers / {} with no readable face"
                 ).format(faces["resident"], faces["stranger"], faces["no_face"])
+        door = self._door_summary(count_type, t)
+        if door:
+            msg += "\n" + door
         if not self.notifier.send_telegram(msg, bypass_cooldown=True):
             logging.warning(
                 "Daily summary could not be delivered — will retry on the next "

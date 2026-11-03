@@ -305,6 +305,20 @@ class EventDB:
                 logging.error(f"Failed to get event counts: {e}")
                 return {}
 
+    def get_event_values_since(self, event_type: str, since_timestamp: float) -> list[float]:
+        """Return the `value` of every event of one type since a Unix timestamp."""
+        with self.lock:
+            try:
+                c = self.conn.cursor()
+                c.execute(
+                    "SELECT value FROM events WHERE type = ? AND timestamp >= ? ORDER BY timestamp",
+                    (event_type, since_timestamp),
+                )
+                return [float(v) for (v,) in c.fetchall() if v is not None]
+            except Exception as e:
+                logging.error(f"Failed to get event values: {e}")
+                return []
+
     def close(self) -> None:
         """Close the database connection."""
         with self.lock:

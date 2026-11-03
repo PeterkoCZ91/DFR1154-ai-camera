@@ -372,7 +372,9 @@ def test_confirmed_opening_notifies_with_name_and_captured_photo(monkeypatch):
     )
     monkeypatch.setattr(pipeline, "ha_unlock", lambda *args, **kw: (True, "opening"))
     pipeline.DetectionPipeline._nuki_unlock_report(fake, "alice", 1, "/data/face_debug/match.jpg")
-    assert events == [("unlock", "alice", 1.0)]
+    assert len(events) == 1 and events[0][:2] == ("unlock", "alice")
+    # The value is the lock's answer time, which the daily summary reports.
+    assert 0 <= events[0][2] < 1.0
     text, options = sent[0]
     assert "alice" in text and "confirmed" in text
     assert options == {"media_path": "/data/face_debug/match.jpg", "bypass_cooldown": True, "critical": True}

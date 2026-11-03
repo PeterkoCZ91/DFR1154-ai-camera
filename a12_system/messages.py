@@ -72,6 +72,8 @@ CZECH: dict[str, str] = {
     '(none)': '(žádné)',
     'Scorer (since start): {} OK / {} errors / {} fallbacks, p95 {}s': 'Scorer (od startu): {} OK / {} chyb / {} fallbacků, p95 {}s',
     'Faces (24h): {} known / {} strangers / {} with no readable face': 'Obličeje (24h): {} známých / {} cizích / {} bez čitelného obličeje',
+    'Door (24h): {} opened / {} not confirmed / {} from outside A12': 'Dveře (24h): {} otevřeno / {} nepotvrzeno / {} mimo A12',
+    '(lock answered in {} s median, {} s slowest)': '(zámek odpověděl za {} s medián, nejpomaleji {} s)',
 
     # __main__.py — startup banner and stream availability
     'A12 System v2 started\nRuntime: {}\nMode: {}\nCamera: {} ({})\nCamera URL: {}\nMQTT base topic: {}\nKnown faces: {}\nLimits: {}\nData: {}': 'A12 System v2 nastartoval\nProstředí: {}\nRežim: {}\nKamera: {} ({})\nURL kamery: {}\nZákladní MQTT téma: {}\nZnámé obličeje: {}\nLimity: {}\nData: {}',

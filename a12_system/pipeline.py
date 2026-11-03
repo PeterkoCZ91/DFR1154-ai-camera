@@ -607,10 +607,13 @@ class DetectionPipeline:
             self._note_own_unlock_command()
             opened, detail = mqtt_unlatch(publish, command_result, settle_seconds=confirm)
         # The door's own time; "whole opening took" also counts the Telegram photo.
-        logging.info(f"{self.log_prefix} Nuki opening timing: lock answered after {time.time() - called:.1f}s ({detail})")
+        answered = time.time() - called
+        logging.info(f"{self.log_prefix} Nuki opening timing: lock answered after {answered:.1f}s ({detail})")
         if opened:
             logging.info(f"{self.log_prefix} Nuki opening confirmed for '{name}' ({detail})")
-            self.db.log_event("unlock", name, 1.0)
+            # The value is the lock's answer time, for the daily summary. Rows
+            # written before 2026-11-03 hold a flat 1.0 there instead.
+            self.db.log_event("unlock", name, round(answered, 2))
             if manual:
                 # The person who asked is walking in: the face must not open
                 # the door behind them again.
