@@ -47,6 +47,7 @@ Standalone fits a camera that works on its own, say at a remote spot with no ser
 - [Who It's For](#who-its-for)
 - [What You Need](#what-you-need)
 - [Quick Start](#quick-start) (~15 min)
+- [Home Assistant setup](docs/HOME_ASSISTANT.md) (MQTT, entities, example automations)
 - [A12 Companion](docs/A12_COMPANION.md)
 - [Public Release Scan](docs/PUBLIC_RELEASE_SCAN.md)
 - [How It Works](#how-it-works)
@@ -483,6 +484,8 @@ If the sensor sits behind opaque plastic and always reads near zero, enable the 
 | **Sensor fusion** | A12 only. In `SECURITY` mode a person counts as `CONFIRMED_ALARM` when a Home Assistant sensor or the camera's own motion signal fired within the fusion window (default 10 s) |
 
 ### :house: Integrations
+
+Step-by-step setup with example automations: [`docs/HOME_ASSISTANT.md`](docs/HOME_ASSISTANT.md).
 
 | Feature | Description |
 |---------|-------------|
