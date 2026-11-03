@@ -49,7 +49,8 @@ Used for automatic DAY/DUSK/NIGHT camera profile switching based on real ambient
 ### IR LED (Night Vision Illuminator)
 
 - Controlled via `IR_LEDS_PIN` (GPIO **2** or **48** depending on board revision)
-- Auto-control: activated when lux < 5 (NIGHT profile), deactivated when lux > 10 (hysteresis)
+- Auto-control: `lux_threshold` (default 13 lux, `DEFAULT_LUX_THRESHOLD` in `ir_control.h`) with 20 % hysteresis (at least 1 lux) — on below ~10.4 lux, off above ~15.6 lux (`updateIRAutoMode()`, `ir_handler.cpp`)
+- The camera profile has its own thresholds, independent of the LED (`updateCameraProfile()`, `main.cpp`): DAY above 100 lux (back to DUSK below 60), NIGHT below 15 lux (back to DUSK above 20)
 - Manual override via `/ir-control` API or dashboard toggle
 
 > **A manual `on`/`off` disables the night schedule permanently.** `updateIRAutoMode()` returns immediately when `auto_mode` is false, so `time_based` / `night_start_hour` / `night_end_hour` are never evaluated and the LED stays pinned to `manual_state` forever. `POST /ir-control` sets `auto_mode = false` by itself for `state: "on"` and `state: "off"` — only `state: "auto"` puts it back. One toggle from a dashboard or a Home Assistant switch therefore kills the night automation until someone notices. Check `GET /ir-status`: `auto_mode: false` with a stale `last_update_ms` is the signature.
