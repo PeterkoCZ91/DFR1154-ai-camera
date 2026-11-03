@@ -62,6 +62,48 @@ def test_only_a_verdict_after_the_call_counts():
     assert activity.command_result_since(clock.t - 0.5) == "timeOut"
 
 
+def test_the_hub_giving_up_ends_the_wait_at_once():
+    # 2026-10-30 09:17: four Bluetooth attempts failed and Nuki Hub published
+    # `retry failed`; waiting out the rest of the window only delays the miss.
+    clock = _Clock()
+    activity = NukiActivity(clock=clock)
+
+    def sleep(seconds):
+        clock.sleep(seconds)
+        if clock.t >= 1002.0 and activity.command_result_since(1000.0) is None:
+            activity.observe_command_result("error")
+            activity.observe_retry("failed")
+
+    ok, detail = ha_unlock(
+        "http://ha", "t", "lock.x", sleep=sleep, clock=clock, settle_seconds=25,
+        command_result=activity.command_result_since, **_unchanged_ha(),
+    )
+    assert (ok, detail) == (False, "open_failed:hub_gave_up")
+    assert clock.t < 1003.0
+    ok, detail = mqtt_unlatch(lambda a: True, lambda since: "gave_up", sleep=clock.sleep, clock=clock)
+    assert (ok, detail) == (False, "mqtt_failed:hub_gave_up")
+
+
+def test_a_retry_count_is_not_a_verdict():
+    clock = _Clock()
+    activity = NukiActivity(clock=clock)
+    activity.observe_command_result("error")
+    activity.observe_retry("1")
+    activity.observe_retry("--")
+    assert activity.command_result_since(clock.t) == "error"
+
+
+def test_a_slow_retry_still_confirms_inside_the_window():
+    # The hub now waits 8 s per attempt: a second attempt lands after 10 s.
+    clock = _Clock()
+    ok, detail = ha_unlock(
+        "http://ha", "t", "lock.x", sleep=clock.sleep, clock=clock, settle_seconds=25,
+        command_result=lambda since: "success" if clock.t >= since + 16 else ("error" if clock.t >= since + 8 else None),
+        **_unchanged_ha(),
+    )
+    assert (ok, detail) == (True, "unlocked/command_success")
+
+
 def test_the_direct_path_publishes_unlatch_and_waits_for_success():
     clock = _Clock()
     sent = []
@@ -91,7 +133,7 @@ def _report_pipeline(monkeypatch, ha_answer, mqtt_answer=(True, "mqtt/command_su
         **_own_commands(),
     )
     monkeypatch.setattr(pipeline, "ha_unlock", lambda *a, **k: ha_answer)
-    monkeypatch.setattr(pipeline, "mqtt_unlatch", lambda publish, result: (publish("unlatch"), mqtt_answer)[1])
+    monkeypatch.setattr(pipeline, "mqtt_unlatch", lambda publish, result, **kw: (publish("unlatch"), mqtt_answer)[1])
     pipeline.DetectionPipeline._nuki_unlock_report(fake, "alice", 1)
     return sent, published, events
 
@@ -174,7 +216,8 @@ def test_state_topics_follow_the_log_topic():
     c = MQTTClient.__new__(MQTTClient)
     c.config = {"mqtt": {"nuki_log_topic": "nukihub/lock/log"}}
     assert c._nuki_state_topics() == (
-        "nukihub/lock/commandResult", "nukihub/lock/availability", "nukihub/maintenance/uptime",
+        "nukihub/lock/commandResult", "nukihub/lock/retry", "nukihub/lock/availability",
+        "nukihub/maintenance/uptime",
     )
     c.config = {"mqtt": {"nuki_log_topic": ""}}
     assert c._nuki_state_topics() == ()

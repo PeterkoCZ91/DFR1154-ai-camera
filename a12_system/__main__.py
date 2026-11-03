@@ -234,6 +234,8 @@ class Application:
                 activity = getattr(self.pipeline, "nuki_activity", None)
                 if activity is not None and topic.endswith("/commandResult"):
                     activity.observe_command_result(value)
+                elif activity is not None and topic.endswith("/retry"):
+                    activity.observe_retry(value)
 
             elif event_type == "config":
                 topic = payload.get("topic", "")

@@ -163,6 +163,15 @@ class NukiActivity:
         with self._lock:
             self._command_result = (at, str(payload).strip())
 
+    def observe_retry(self, payload: str, received_at: Optional[float] = None) -> None:
+        """Take Nuki Hub's `retry`: a count while it tries again, `failed` once
+        it has given up on the action. Only giving up is a verdict."""
+        if str(payload).strip().lower() != "failed":
+            return
+        at = self._clock() if received_at is None else received_at
+        with self._lock:
+            self._command_result = (at, "gave_up")
+
     def command_result_since(self, since: float) -> Optional[str]:
         """Nuki Hub's verdict on a lock action that arrived after `since`."""
         with self._lock:

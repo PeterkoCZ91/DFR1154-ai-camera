@@ -576,10 +576,13 @@ class DetectionPipeline:
         activity = getattr(self, "nuki_activity", None)
         lock_log = activity.result_since if activity is not None else None
         command_result = activity.command_result_since if activity is not None else None
+        cfg = getattr(self, "runtime_config", None)
+        confirm = float(cfg.get("face_unlock.confirm_seconds", 25.0)) if cfg is not None else 25.0
         self._note_own_unlock_command()
         called = time.time()
         opened, detail = ha_unlock(
             self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log, command_result=command_result,
+            settle_seconds=confirm,
         )
         if not opened and detail.startswith("open_refused:busy"):
             # The lock was talking to a phone and turned the command away; it
@@ -589,6 +592,7 @@ class DetectionPipeline:
             self._note_own_unlock_command()
             opened, detail = ha_unlock(
                 self.ha_url, self.ha_token, self.nuki_entity_id, lock_log=lock_log, command_result=command_result,
+                settle_seconds=confirm,
             )
         publish = getattr(getattr(self, "mqtt_client", None), "publish_nuki_action", None)
         if (
@@ -601,7 +605,7 @@ class DetectionPipeline:
             # expired token), not the lock: Nuki Hub can still be told directly.
             logging.warning(f"{self.log_prefix} HA unreachable ({detail}), unlatching through Nuki Hub directly")
             self._note_own_unlock_command()
-            opened, detail = mqtt_unlatch(publish, command_result)
+            opened, detail = mqtt_unlatch(publish, command_result, settle_seconds=confirm)
         # The door's own time; "whole opening took" also counts the Telegram photo.
         logging.info(f"{self.log_prefix} Nuki opening timing: lock answered after {time.time() - called:.1f}s ({detail})")
         if opened:

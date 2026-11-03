@@ -128,6 +128,7 @@ class MQTTClient:
     def _nuki_state_topics(self) -> tuple:
         """What says whether Nuki Hub and the lock are alive, and how a lock
         action ended: `commandResult` (Nuki Hub's own verdict on an action),
+        `retry` (`failed` once it gives up retrying),
         `availability` (offline once it cannot read the lock), and the hub's
         `maintenance/uptime`, published every minute."""
         log_topic = self._nuki_log_topic()
@@ -135,7 +136,10 @@ class MQTTClient:
             return ()
         base = log_topic[: -len("/log")]
         root = base.rsplit("/", 1)[0] if "/" in base else base
-        return (base + "/commandResult", base + "/availability", root + "/maintenance/uptime")
+        return (
+            base + "/commandResult", base + "/retry", base + "/availability",
+            root + "/maintenance/uptime",
+        )
 
     def publish_nuki_action(self, action: str) -> bool:
         """Send a lock action straight to Nuki Hub, bypassing Home Assistant.

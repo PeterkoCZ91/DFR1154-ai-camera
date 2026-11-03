@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-10-28
 
+### Changed (A12 — slow Nuki retries no longer reported as a miss)
+- **An opening may take up to 25 s to confirm (`FACE_UNLOCK_CONFIRM_SECONDS`, was a fixed 10 s).** On 2026-10-30 at 09:17 a recognised face sent the unlatch, but each of Nuki Hub's Bluetooth attempts timed out after about 5 s (the lock answers an unlatch in about 4 s; the hub's command timeout was 3 s). Telegram reported a miss after 10 s. With a longer hub timeout, a second attempt can succeed after 10 s, and A12 would then report a miss even though the door opened.
+- **Nuki Hub giving up ends the wait at once.** A12 also subscribes to Nuki Hub's `retry` topic. `retry failed` fails the opening immediately (`open_failed:hub_gave_up`), so a real miss is not reported any later than before.
+
 ### Added (A12 — door opened from outside A12)
 - **Telegram tells you when the door was opened by something other than A12.** Home Assistant buttons and automations unlock through Nuki Hub, so their lock-log entries carry the same name as A12's own openings. A12 now remembers the moment of every `lock.open` it sends and announces a successful opening that follows none of them ("Door opened from Home Assistant"), recorded as an `unlock_external` event. Entries older than 2 minutes (a retained log read after a restart) and openings by phones are not announced; each log index is announced once.
 

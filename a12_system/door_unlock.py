@@ -101,8 +101,9 @@ def ha_unlock(
     `command_result(called_at)` is Nuki Hub's own verdict on the action
     (`commandResult` over MQTT) once one arrived after the call. `success`
     confirms as soon as it arrives, between HA reads, about a fifth of a
-    second before HA shows `opening`; anything else is a retry in progress
-    and waits. The lock's log still overrules it.
+    second before HA shows `opening`; `gave_up` (Nuki Hub's `retry failed`)
+    fails at once; anything else is a retry in progress and waits. The lock's
+    log still overrules it.
     """
     if not ha_url or not token:
         return False, "no_ha_config"
@@ -176,6 +177,8 @@ def ha_unlock(
             sleep(0.25)
             waited += 0.25
             verdict = command_result(called_at)
+            if verdict == "gave_up":
+                return False, "open_failed:hub_gave_up"
             if verdict is not None and verdict.lower() == "success":
                 own_status, _ = lock_log(called_at) if lock_log is not None else (None, None)
                 if own_status is not None and own_status.lower() != "success":
@@ -195,7 +198,7 @@ def mqtt_unlatch(
 
     The same MQTT message HA's lock.open sends; only Nuki Hub's `success`
     for an action after this call confirms it. A failure verdict is waited
-    out, since Nuki Hub retries and may still succeed.
+    out, since Nuki Hub retries and may still succeed, until it gives up.
     """
     called_at = clock()
     if not publish("unlatch"):
@@ -206,6 +209,8 @@ def mqtt_unlatch(
         sleep(0.25)
         waited += 0.25
         verdict = command_result(called_at) or verdict
+        if verdict == "gave_up":
+            return False, "mqtt_failed:hub_gave_up"
         if verdict is not None and verdict.lower() == "success":
             return True, "mqtt/command_success"
     return False, f"mqtt_not_confirmed:{verdict}"
