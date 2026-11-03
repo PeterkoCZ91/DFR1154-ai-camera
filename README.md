@@ -1263,7 +1263,7 @@ None of these has a date.
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Occupant-aware alerting | :bulb: Planned | Alert on an unrecognised person rather than on any person. At home nearly every person alert is someone who lives there. Face recognition and whitelist suppression exist in A12, but `FACE_RECOGNITION_ENABLED` is off by default and face sizes at typical distances are often too small to match. |
+| Occupant-aware alerting | :construction: Partly done | Alert on an unrecognised person rather than on any person. With `FACE_RECOGNITION_ENABLED=true`, a person matched to a name in `face_recognition.whitelisted_names` gets no Telegram message (the photo is still saved). Recognition is off by default. A person whose face is turned away or too small to match still triggers an alert. |
 | Known/unknown in ground truth | :bulb: Planned | `a12 review` labels only `person`, `not_person` and `unsure`. Splitting `person` into resident and stranger would let the labels feed recognition, not only threshold tuning. |
 | ESP-DL YOLOv11n pedestrian | :warning: Blocked | PlatformIO `custom_component_add` does nothing under `framework = arduino`; this needs a hybrid `arduino, espidf` build. See `firmware/MIGRATION_ESP_DL.md`. |
 | Lux-gate for FOMO | :bulb: Planned | Skip FOMO inference when ambient lux is below a threshold. The LTR-308 is already read every frame. Only useful if the sensor can see out of the enclosure. |
