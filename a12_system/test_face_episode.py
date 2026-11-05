@@ -776,3 +776,62 @@ def test_approaching_resident_not_locked_out_by_early_distance():
     assert verdict.lead_name == "alice"
     assert verdict.lead_score == 0.76
 
+
+
+# --- early stop of an empty burst -------------------------------------------
+
+
+def _calls_after(p, det, n):
+    for _ in range(n):
+        p._face_verdict(_frame())
+    return len(det.calls)
+
+
+def test_stops_after_n_no_face_once_the_resident_is_confirmed():
+    det = _StubDetector([RESIDENT, RESIDENT] + [NO_FACE] * 30)
+    p = _pipeline(det, _face_no_face_stop_after=5, _face_max_checks=50, _face_max_attempts=50)
+    assert _calls_after(p, det, 32) == 2 + 5
+
+
+def test_stops_when_no_face_was_ever_seen():
+    det = _StubDetector([NO_FACE] * 30)
+    p = _pipeline(det, _face_no_face_stop_after=5, _face_max_checks=50, _face_max_attempts=50)
+    assert _calls_after(p, det, 20) == 5
+
+
+def test_a_real_face_resets_the_run_of_no_face():
+    det = _StubDetector([NO_FACE] * 4 + [STRANGER] + [NO_FACE] * 4 + [RESIDENT])
+    p = _pipeline(det, _face_no_face_stop_after=5, _face_max_checks=50, _face_max_attempts=50)
+    assert _calls_after(p, det, 10) == 10
+
+
+def test_never_stops_before_a_decision_when_a_face_was_seen():
+    det = _StubDetector([RESIDENT] + [NO_FACE] * 30)  # one sighting: undecided
+    p = _pipeline(det, _face_no_face_stop_after=5, _face_max_checks=50, _face_max_attempts=50)
+    assert _calls_after(p, det, 31) == 31
+
+
+def test_stranger_seen_then_empty_keeps_checking():
+    det = _StubDetector([STRANGER] + [NO_FACE] * 30)
+    p = _pipeline(det, _face_no_face_stop_after=5, _face_max_checks=50, _face_max_attempts=50)
+    assert _calls_after(p, det, 31) == 31
+
+
+def test_stops_after_the_lock_was_handled_in_this_episode():
+    det = _StubDetector([RESIDENT] + [NO_FACE] * 30)
+    p = _pipeline(det, _face_no_face_stop_after=5, _face_max_checks=50, _face_max_attempts=50)
+    p._face_verdict(_frame())
+    p._last_face_unlock_at = p._face_episode.started_at + 1.0
+    assert _calls_after(p, det, 30) == 1 + 5
+
+
+def test_zero_disables_the_early_stop():
+    det = _StubDetector([NO_FACE] * 30)
+    p = _pipeline(det, _face_no_face_stop_after=0, _face_max_checks=50, _face_max_attempts=50)
+    assert _calls_after(p, det, 20) == 20
+
+
+def test_config_wires_no_face_stop_after():
+    p = _pipeline(_StubDetector([]), face_cfg={"no_face_stop_after": 3})
+    assert p._face_no_face_stop_after == 3
+    assert _pipeline(_StubDetector([]))._face_no_face_stop_after == 8

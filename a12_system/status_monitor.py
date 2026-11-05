@@ -72,6 +72,9 @@ class StatusMonitor(threading.Thread):
             os.path.join(data_dir, "daily_summary_date.txt") if data_dir else None
         )
         self._last_daily_date: date | None = self._load_daily_summary_date()
+        # Memory monitor: sampled once per calendar day (and at startup).
+        self._last_memory_date: date | None = None
+        self._last_memory_mib: float | None = None
         # Resource monitoring
         self.resource_check_interval = 60
         self.last_resource_check = 0
@@ -159,6 +162,7 @@ class StatusMonitor(threading.Thread):
                 if current_time - self.last_adaptive > self.adaptive_interval:
                     self._run_adaptive_logic()
                     self._check_daily_summary()
+                    self._check_memory()
                     self._check_nuki_hub(current_time)
                     self.last_adaptive = current_time
 
@@ -479,6 +483,45 @@ class StatusMonitor(threading.Thread):
             self._last_daily_date = today
             self._save_daily_summary_date(today)
 
+    @staticmethod
+    def read_process_memory_mib() -> float | None:
+        """Anonymous memory in MiB: cgroup memory.stat anon, else VmRSS."""
+        try:
+            with open("/sys/fs/cgroup/memory.stat", encoding="utf-8") as handle:
+                for line in handle:
+                    key, _, value = line.partition(" ")
+                    if key == "anon":
+                        return int(value) / 1048576
+        except (OSError, ValueError):
+            pass
+        try:
+            with open("/proc/self/status", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) / 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        return None
+
+    def _check_memory(self) -> None:
+        """Log memory once per day; one warning per day above the threshold."""
+        today = date.today()
+        if self._last_memory_date == today:
+            return
+        mib = self.read_process_memory_mib()
+        if mib is None:
+            return
+        self._last_memory_date = today
+        self._last_memory_mib = mib
+        if self.db:
+            self.db.log_event("health", "memory", round(mib, 1))
+        limit = float(self.runtime_config.get("memory_warn_mib", 800.0) or 0.0)
+        if limit > 0 and mib > limit:
+            text = "A12 memory is {} MiB (limit for warning: {} MiB). Check for a leak; a restart clears it.".format(
+                f"{mib:.0f}", f"{limit:.0f}"
+            )
+            self.notifier.send_telegram(text)
+
     def _door_summary(self, count_type, t) -> str | None:
         """One line on the door's last 24 h, or None when nothing touched it.
 
@@ -574,6 +617,9 @@ class StatusMonitor(threading.Thread):
         door = self._door_summary(count_type, t)
         if door:
             msg += "\n" + door
+        memory_mib = getattr(self, "_last_memory_mib", None)
+        if memory_mib is not None:
+            msg += "\n" + t("Memory: {} MiB").format(f"{memory_mib:.0f}")
         if not self.notifier.send_telegram(msg, bypass_cooldown=True):
             logging.warning(
                 "Daily summary could not be delivered — will retry on the next "

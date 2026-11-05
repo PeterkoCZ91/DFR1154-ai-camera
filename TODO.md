@@ -35,6 +35,14 @@
 - [x] Animal/Bird filter (A12 System)
 - [x] Fix ESP32 GUI (Socket Starvation)
 
+## Recently Completed (2026-11-05)
+- [x] A12: person alerts muted for a short window after a confirmed face opening (stranger verdict still alerts), audited as `suppressed_after_unlock`
+- [x] A12: daily process-memory sample, shown in the summary, one warning per day above a threshold
+- [x] A12: face-check burst stops early after a run of `no_face` once the opening is handled
+- [x] A12: Telegram polling outage and dark-frame logging rate-limited
+- [ ] Measure after a week: share of alerts muted, alerts per day, memory trend (baseline 2026-11-05: ~146 alerts/day, ~700 MiB)
+- [ ] Label decisions (`a12 review`) so `notify_confidence` can be tuned against ground truth
+
 ## Recently Completed (2026-08-26)
 - [x] A12: Shared-scorer failure classes split (transport / HTTP status / malformed) with exception-class-only telemetry, latency p50/p95/max
 - [x] A12: Learning-data retention — `screenshots/person/` and `candidates/` opt out of the 2-day media sweep; a retention of `0` now means "keep forever" for files too

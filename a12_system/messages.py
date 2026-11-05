@@ -57,6 +57,10 @@ CZECH: dict[str, str] = {
     'Nuki Hub cannot reach the lock for {} min: the door opens neither by face nor by /od.': '⚠️ Nuki Hub už {} min nevidí zámek: dveře teď neotevře obličej ani /od.',
     'Nuki Hub reaches the lock again (lost for {} min).': '✅ Nuki Hub zámek zase vidí (výpadek {} min).',
 
+    # status_monitor.py — memory monitor
+    'A12 memory is {} MiB (limit for warning: {} MiB). Check for a leak; a restart clears it.': '⚠️ A12 používá {} MiB paměti (práh varování: {} MiB). Zkontroluj únik paměti; restart ho vymaže.',
+    'Memory: {} MiB': 'Paměť: {} MiB',
+
     # status_monitor.py — daily summary
     'A12 daily summary': 'A12 denní přehled',
     'Events (24h):': 'Události (24h):',

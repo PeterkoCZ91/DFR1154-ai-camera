@@ -15,6 +15,7 @@ import numpy as np
 
 from .face_result import (
     FaceEpisode,
+    FaceOutcome,
     FaceResult,
     debug_crop_name,
     notification_name,
@@ -29,6 +30,7 @@ from .face_window import FaceUnlockWindow
 from .nuki_log import NukiActivity
 from .presence_gate import PresenceGate
 from .flat_episode import FlatEpisodeState
+from .log_noise import EpisodeLogGate
 from .messages import translate
 
 
@@ -476,6 +478,11 @@ class DetectionPipeline:
 
         # Suppress motion Telegram when known person was recently identified
         self._known_person_until = 0.0
+        # Person alerts are muted for a short window after the door confirmed a
+        # face opening for a resident (OCCUPANT_SUPPRESS_AFTER_UNLOCK_SECONDS).
+        # Any stranger verdict since that opening cancels the mute.
+        self._last_face_unlock_confirmed_at = 0.0
+        self._last_stranger_at = 0.0
 
         # Brightness watchdog — detects AEC freeze (OV3660 UXGA issue)
         self.configure_frame_health_watchdog(runtime_config)
@@ -614,6 +621,11 @@ class DetectionPipeline:
             # The value is the lock's answer time, for the daily summary. Rows
             # written before 2026-11-03 hold a flat 1.0 there instead.
             self.db.log_event("unlock", name, round(answered, 2))
+            if not manual:
+                # Only a face verdict earns the mute; a phone button says
+                # nothing about who is walking in behind the opener.
+                self._last_face_unlock_confirmed_at = time.time()
+                self._last_face_unlock_started_at = called
             if manual:
                 # The person who asked is walking in: the face must not open
                 # the door behind them again.
@@ -649,6 +661,27 @@ class DetectionPipeline:
                 bypass_cooldown=True,
                 critical=True,
             )
+
+    def _note_stranger_verdicts(self, *results) -> None:
+        for result in results:
+            if result is not None and getattr(result, "outcome", None) is FaceOutcome.STRANGER:
+                self._last_stranger_at = time.time()
+
+    def _suppress_after_unlock_active(self) -> bool:
+        """True while a confirmed resident opening still mutes person alerts.
+
+        A stranger outcome at or after the opening ends the mute at once, so
+        someone tailgating the resident in is still reported.
+        """
+        window = float(self.runtime_config.get("occupant_suppress_after_unlock_seconds", 120.0) or 0.0)
+        opened_at = getattr(self, "_last_face_unlock_confirmed_at", 0.0)
+        if window <= 0 or opened_at <= 0:
+            return False
+        if time.time() - opened_at > window:
+            return False
+        # Strangers seen while the lock was still confirming count too.
+        started_at = getattr(self, "_last_face_unlock_started_at", opened_at)
+        return getattr(self, "_last_stranger_at", 0.0) < started_at
 
     def _note_own_unlock_command(self):
         with self._own_unlock_commands_lock:
@@ -1017,6 +1050,7 @@ class DetectionPipeline:
         self._dark_consecutive_required = int(runtime_config.get("brightness_watchdog_strikes", 1))
         self._flat_frame_std_threshold = float(runtime_config.get("flat_frame_std_threshold", 1.0))
         self._dark_consecutive_count = 0
+        self._frame_fault_log = EpisodeLogGate(interval=900.0)
         self._last_exposure_reset = 0.0
         # Image appearance cannot prove a sensor fault, especially at night, so
         # the only recovery driven from here is a non-disruptive AEC/AGC rewrite.
@@ -1431,11 +1465,19 @@ class DetectionPipeline:
             self._note_stream_frame_health(frame_fault is None, current_time)
             if frame_fault:
                 self._dark_consecutive_count += 1
-                logging.warning(
-                    f"{self.log_prefix} {frame_fault.capitalize()} frame detected"
-                    f" (brightness={brightness:.1f}, std={flatness:.1f},"
-                    f" strike {self._dark_consecutive_count}/{self._dark_consecutive_required})"
-                )
+                logged = self._frame_fault_log.note()
+                if logged is not None:
+                    count, elapsed = logged
+                    since = (
+                        f", {count} checks over {EpisodeLogGate.describe(elapsed)} so far"
+                        if count > 1 else ""
+                    )
+                    logging.warning(
+                        f"{self.log_prefix} {frame_fault.capitalize()} frame detected"
+                        f" (brightness={brightness:.1f}, std={flatness:.1f},"
+                        f" strike {self._dark_consecutive_count}/{self._dark_consecutive_required}"
+                        f"{since})"
+                    )
                 # Both black and gray uniform frames can be legitimate low-light
                 # images. Report their appearance without diagnosing a hang.
                 route = route_low_detail_frame(
@@ -1449,6 +1491,12 @@ class DetectionPipeline:
                     self._flat_ladder_note_nonflat(current_time)
                 # route == "hold": an unlit room. Logged above, acted on nowhere.
             else:
+                ended = self._frame_fault_log.recover()
+                if ended is not None:
+                    logging.info(
+                        f"{self.log_prefix} Frame back to normal after {ended[0]} low-quality"
+                        f" checks over {EpisodeLogGate.describe(ended[1])}"
+                    )
                 self._dark_consecutive_count = 0
                 self._flat_consecutive_count = 0
                 self._flat_ladder_note_nonflat(current_time)
@@ -2049,6 +2097,8 @@ class DetectionPipeline:
         self._face_max_attempts = max(
             self._face_max_checks, int(face_cfg.get("max_attempts_per_episode", 30)),
         )
+        # Consecutive no_face checks after which the burst stops (0 = never).
+        self._face_no_face_stop_after = max(0, int(face_cfg.get("no_face_stop_after", 8)))
         self._face_min_check_interval = max(
             0.0, float(face_cfg.get("min_check_interval_seconds", 0.5))
         )
@@ -2165,6 +2215,29 @@ class DetectionPipeline:
         """Spend at most one face check on this frame, then answer for the episode."""
         return self._face_check(frame)[0]
 
+    def _face_burst_is_pointless(self, episode) -> bool:
+        """Stop the burst after a run of empty checks, but never before a decision.
+
+        After the person has passed (resident confirmed, or the lock already
+        handled in this episode) or when no face was ever seen, a long run of
+        no_face only wastes CPU. With a face seen and nothing decided, keep going.
+        """
+        stop_after = getattr(self, "_face_no_face_stop_after", 0)
+        if stop_after <= 0 or episode.consecutive_no_face < stop_after:
+            return False
+        started = episode.started_at
+        unlocked = started is not None and getattr(self, "_last_face_unlock_at", 0.0) >= started
+        handled = unlocked or episode.verdict().is_resident
+        stop = episode.should_stop_on_no_face(stop_after, handled)
+        if stop and getattr(self, "_face_stop_logged", None) is not episode:
+            self._face_stop_logged = episode
+            logging.info(
+                f"{self.log_prefix} Face checks stopped after "
+                f"{episode.consecutive_no_face} consecutive no_face "
+                f"({'decision handled' if handled else 'no face seen'})"
+            )
+        return stop
+
     def _face_check(self, frame):
         """Spend at most one face check on this frame: (episode verdict, check).
 
@@ -2179,7 +2252,7 @@ class DetectionPipeline:
         episode = self._current_face_episode(now)
         check = None
         attempts, usable = self._face_budget_used(now, episode)
-        if attempts < self._face_max_attempts and should_run_face_check(
+        if attempts < self._face_max_attempts and not self._face_burst_is_pointless(episode) and should_run_face_check(
             enabled=True,
             pir_window_active=self._pir_window_active(now),
             require_pir_window=self._face_require_pir_window,
@@ -2203,10 +2276,14 @@ class DetectionPipeline:
             self._last_arc = shadow.best(crop, row) if shadow is not None and row is not None else None
             if getattr(check, "face_row", None) is not None:
                 check = check._replace(face_row=face_row_in_frame(check.face_row, origin))
+            if episode.started_at is None:
+                episode.started_at = now
             episode.record(check)
             self._last_face_check_at = now
             self.stats.record_face_attempt(check)
-        return episode.verdict(), check
+        verdict = episode.verdict()
+        self._note_stranger_verdicts(verdict, check)
+        return verdict, check
 
     def _buffer_clip_frame_if_needed(self, frame, current_time: float) -> None:
         """Keep a rolling pre-event buffer at idle FPS; ramp to clip_fps during active windows.
@@ -2362,9 +2439,14 @@ class DetectionPipeline:
                     )
                     continue
 
+            audit_outcome = "recorded_and_notified" if should_notify else "recorded_local_only"
+            if should_notify and self._suppress_after_unlock_active():
+                should_notify = False
+                audit_outcome = "suppressed_after_unlock"
+                logging.info("Person alert muted: resident opened the door moments ago")
             audit_id = self._log_decision_audit(
                 audit_context, confirmation_streak, sensor_confirmed, active_sensors, event_score,
-                "recorded_and_notified" if should_notify else "recorded_local_only",
+                audit_outcome,
                 frame=frame,
             )
 

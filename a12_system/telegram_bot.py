@@ -16,6 +16,8 @@ from typing import Optional
 
 import cv2
 
+from .log_noise import TelebotNetworkFilter
+
 
 def _format_age(seconds: float) -> str:
     seconds = int(seconds)
@@ -587,6 +589,9 @@ class TelegramBotService:
 
     def _polling_worker(self) -> None:
         logging.info("Starting Telegram bot infinity_polling...")
+        tb_logger = logging.getLogger("TeleBot")
+        if not any(isinstance(f, TelebotNetworkFilter) for f in tb_logger.filters):
+            tb_logger.addFilter(TelebotNetworkFilter())
         try:
             if hasattr(self.bot, "infinity_polling"):
                 self.bot.infinity_polling(

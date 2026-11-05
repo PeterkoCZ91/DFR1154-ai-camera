@@ -181,6 +181,11 @@ class FaceEpisode:
         self._stranger = 0
         self._no_face = 0
         self._error = 0
+        # Unbroken run of NO_FACE outcomes at the end of the episode, and
+        # whether any check ever saw a face. Both feed the early stop.
+        self.consecutive_no_face = 0
+        self.face_seen = False
+        self.started_at = None
         self.checks_done = 0
         self.usable_checks = 0
         self._last_face_row = None
@@ -193,6 +198,12 @@ class FaceEpisode:
             self.usable_checks += 1
         if result.faces:
             self._max_faces = max(self._max_faces, result.faces)
+        if result.outcome is FaceOutcome.NO_FACE:
+            self.consecutive_no_face += 1
+        else:
+            self.consecutive_no_face = 0
+        if result.faces or result.outcome in (FaceOutcome.RESIDENT, FaceOutcome.STRANGER):
+            self.face_seen = True
         if result.lead_name and result.lead_score is not None:
             self._lead_hits[result.lead_name] = self._lead_hits.get(result.lead_name, 0) + 1
             if result.lead_name not in self._lead_scores:
@@ -210,6 +221,18 @@ class FaceEpisode:
             self._no_face += 1
         elif result.outcome is FaceOutcome.ERROR:
             self._error += 1
+
+    def should_stop_on_no_face(self, stop_after: int, decision_handled: bool) -> bool:
+        """True when the burst of checks is only burning CPU on an empty doorway.
+
+        Needs `stop_after` consecutive NO_FACE outcomes AND either nothing was
+        ever seen in this episode, or the occurrence was already decided (the
+        resident confirmed or the lock handled). A face seen but undecided
+        keeps checking: the person may still turn towards the camera.
+        """
+        if stop_after <= 0 or self.consecutive_no_face < stop_after:
+            return False
+        return decision_handled or not self.face_seen
 
     def verdict(self) -> FaceResult:
         if self._name_hits:

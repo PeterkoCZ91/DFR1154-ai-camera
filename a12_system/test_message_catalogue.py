@@ -196,6 +196,7 @@ def test_catalogue_has_no_entry_for_text_nobody_sends():
         "Faces (24h): {} known / {} strangers / {} with no readable face",
         "Door (24h): {} opened / {} not confirmed / {} from outside A12",
         "(lock answered in {} s median, {} s slowest)",
+        "Memory: {} MiB",
     }
     orphans = sorted(set(CZECH) - literals - assembled)
     assert orphans == [], f"catalogue entries nothing sends: {orphans}"

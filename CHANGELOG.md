@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased] - 2026-10-28
 
+### Added (A12 — fewer redundant alerts and quieter logs)
+- **Person alerts are muted for a short window after a confirmed face opening (`OCCUPANT_SUPPRESS_AFTER_UNLOCK_SECONDS`, default 120, `0` disables).** Alert volume had grown from about 16 to about 146 a day, most of it residents coming through the door. The clip and snapshot are still saved and the decision is audited as `suppressed_after_unlock`. A stranger verdict inside the window still alerts, and a manual or Home Assistant opening does not start the mute. Trade-off: a second person without a visible face can go unreported for up to the window length.
+- **A daily process-memory sample** (cgroup `anon`, falling back to `VmRSS`) is stored as a `health`/`memory` event and shown in the 08:00 summary. One Telegram warning per day when it exceeds `MEMORY_WARN_MIB` (default 800, `0` disables the warning).
+- **The face-check burst stops after a run of `no_face` results (`FACE_NO_FACE_STOP_AFTER`, default 8, `0` disables)** — only when no face was seen in the episode or the opening was already handled. A face that was seen but not yet decided keeps the checks going, so unlock and stranger detection are unchanged.
+
+### Changed (A12 — log noise)
+- Telegram polling outages log the first failure in full and one recovery line with the failure count and duration, instead of three tracebacks per outage.
+- The dark-frame warning is logged once per episode, then at most every 15 minutes with the strike count and elapsed time, plus one line when the image is back to normal. The strike counters and recovery logic are unchanged.
+
 ### Added (A12 — the door in the daily summary)
 - **The 08:00 summary reports the door's last 24 hours:** openings, openings that were not confirmed, openings from outside A12, and the lock's median and slowest answer time. A slowing lock or Nuki Hub shows up as a rising median before openings start to fail. The line is left out on a day nothing touched the door.
 - The `unlock` event's value now holds the lock's answer time in seconds instead of a flat `1.0`. Older rows are recognised by that `1.0` and counted without a time.

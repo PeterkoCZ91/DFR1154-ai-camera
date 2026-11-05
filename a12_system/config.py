@@ -79,6 +79,9 @@ DEFAULT_CONFIG = {
         # Missing faces and backend errors do not consume the usable-face
         # budget, but all attempts remain bounded to cap CPU and disk work.
         "max_attempts_per_episode": 30,
+        # Stop the burst after this many consecutive no_face checks, but only
+        # once the occurrence is decided or no face was ever seen. 0 = off.
+        "no_face_stop_after": 8,
         "min_check_interval_seconds": 0.5,
         # YOLO person boxes clip the crown; a face detector needs the head.
         "person_box_margin": 0.25,
@@ -163,6 +166,9 @@ DEFAULT_CONFIG = {
     # Telegram when Nuki Hub stays silent (no uptime) or cannot reach the lock
     # for this long, and again when it is back. 0 turns it off.
     "nuki_hub_watch_seconds": 300.0,
+    # One Telegram warning per day when the process's anonymous memory exceeds
+    # this many MiB (checked once a day and at startup). 0 turns it off.
+    "memory_warn_mib": 800.0,
     "detection_cooldown_seconds": 5,
     "periodic_yolo_interval": 30,
     "external_trigger_yolo_window_seconds": 15.0,
@@ -266,6 +272,9 @@ DEFAULT_CONFIG = {
     },
     "media_retention_days": 2,
     "decision_audit_retention_days": 30,
+    # Mute person alerts this long after a confirmed face opening for a
+    # resident, unless a stranger verdict followed. 0 disables.
+    "occupant_suppress_after_unlock_seconds": 120.0,
     # Learning data: person media and candidate snapshots outlive the 2-day
     # media sweep so 30-day-old audit rows still have their images.
     "person_media_retention_days": 30,
@@ -444,6 +453,7 @@ ENV_OVERRIDES = [
     ("FACE_RECOGNITION_ENABLED", "face_recognition.enabled", _parse_bool),
     ("FACE_REQUIRE_PIR_WINDOW", "face_recognition.require_pir_window", _parse_bool),
     ("FACE_MAX_CHECKS_PER_EPISODE", "face_recognition.max_checks_per_episode", _parse_int),
+    ("FACE_NO_FACE_STOP_AFTER", "face_recognition.no_face_stop_after", _parse_int),
     ("FACE_MAX_ATTEMPTS_PER_EPISODE", "face_recognition.max_attempts_per_episode", _parse_int),
     ("FACE_MIN_CHECK_INTERVAL_SECONDS", "face_recognition.min_check_interval_seconds", _parse_float),
     ("FACE_PERSON_BOX_MARGIN", "face_recognition.person_box_margin", _parse_float),
@@ -494,6 +504,7 @@ ENV_OVERRIDES = [
     ("MQTT_DISCOVERY_NODE", "mqtt.discovery_node", str),
     ("NUKI_LOG_TOPIC", "mqtt.nuki_log_topic", str),
     ("NUKI_HUB_WATCH_SECONDS", "nuki_hub_watch_seconds", _parse_float),
+    ("MEMORY_WARN_MIB", "memory_warn_mib", _parse_float),
     # Audio
     ("AUDIO_ENABLED", "audio_enabled", _parse_bool),
     ("AUDIO_BUFFER_SECONDS", "audio.buffer_seconds", _parse_int),
@@ -520,6 +531,7 @@ ENV_OVERRIDES = [
     ("EVENT_SCORE_LOCAL_RECORD_THRESHOLD", "event_scoring.local_record_threshold", _parse_int),
     ("MEDIA_RETENTION_DAYS", "media_retention_days", _parse_float),
     ("DECISION_AUDIT_RETENTION_DAYS", "decision_audit_retention_days", _parse_float),
+    ("OCCUPANT_SUPPRESS_AFTER_UNLOCK_SECONDS", "occupant_suppress_after_unlock_seconds", _parse_float),
     ("PERSON_MEDIA_RETENTION_DAYS", "person_media_retention_days", _parse_float),
     ("CANDIDATE_SNAPSHOT_ENABLED", "candidate_snapshot_enabled", _parse_bool),
     ("CANDIDATE_SNAPSHOT_MIN_INTERVAL_SECONDS", "candidate_snapshot_min_interval_seconds", _parse_float),
